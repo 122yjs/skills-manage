@@ -395,8 +395,7 @@
     },
     "aiProviderGroup": {
       "global": "全球",
-      "regional": "区域",
-      "custom": "自定义"
+      "regional": "区域"
     },
     "aiRegionLabel": "区域",
     "aiRegion": {
@@ -412,12 +411,13 @@
     "aiModelFallback": "使用备用模型列表",
     "aiApiFormatLabel": "API 格式",
     "aiApiFormatDefaultHint": "预载默认：{{format}}（可修改）",
+    "aiApiUrlLabel": "API URL",
+    "aiApiUrlDefaultHint": "已预载提供商默认 URL（可修改）",
     "aiProtocol": {
       "auto": "自动",
       "anthropic": "Anthropic",
       "openai": "OpenAI"
     },
-    "aiApiUrlLabel": "API URL",
     "aiTestButton": "测试连接",
     "aiTestTesting": "测试中...",
     "aiTestSuccess": "连接成功",

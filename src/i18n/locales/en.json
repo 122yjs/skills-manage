@@ -395,8 +395,7 @@
     },
     "aiProviderGroup": {
       "global": "Global",
-      "regional": "Regional",
-      "custom": "Custom"
+      "regional": "Regional"
     },
     "aiRegionLabel": "Region",
     "aiRegion": {
@@ -412,12 +411,13 @@
     "aiModelFallback": "Using fallback model list",
     "aiApiFormatLabel": "API Format",
     "aiApiFormatDefaultHint": "Preloaded default: {{format}} (you can change it)",
+    "aiApiUrlLabel": "API URL",
+    "aiApiUrlDefaultHint": "Preloaded with the provider default URL (you can change it)",
     "aiProtocol": {
       "auto": "Auto",
       "anthropic": "Anthropic",
       "openai": "OpenAI"
     },
-    "aiApiUrlLabel": "API URL",
     "aiTestButton": "Test Connection",
     "aiTestTesting": "Testing...",
     "aiTestSuccess": "Connection OK",

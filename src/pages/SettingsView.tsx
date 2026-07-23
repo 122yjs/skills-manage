@@ -242,40 +242,49 @@ export function SettingsView() {
   const [modelsError, setModelsError] = useState<string | null>(null);
 
   /**
-   * 프리셋 제공자 URL을 레지스트리와 맞춘다.
-   * - URL이 바뀌면(구버전 OpenRouter 등) 프로토콜도 레지스트리 기본값으로 마이그레이션
-   * - URL이 같으면 사용자가 저장한 프로토콜을 유지 (없으면 기본값)
-   * @returns 화면에 표시할 프로토콜
+   * 프리셋 URL/프로토콜 초깃값 결정.
+   * - 저장된 URL이 있으면 유지 (사용자가 수정한 값)
+   * - 없거나 OpenRouter 구형 엔드포인트면 레지스트리 기본 URL로 채움
    */
   async function syncPresetEndpoint(
     providerId: string,
     region: RegionId,
     savedProtocol: string | null
-  ): Promise<ApiProtocol | ""> {
+  ): Promise<{ protocol: ApiProtocol | ""; url: string }> {
     const p = AI_PROVIDERS.find((x) => x.id === providerId);
     if (!p || providerId === "custom") {
-      return (savedProtocol as ApiProtocol | "") || "";
+      return {
+        protocol: (savedProtocol as ApiProtocol | "") || "",
+        url: "",
+      };
     }
     const useRegion = p.regions.includes(region) ? region : p.regions[0];
     const registryUrl = p.endpoints[useRegion] ?? "";
-    if (!registryUrl) return (savedProtocol as ApiProtocol | "") || p.protocol;
-
     const savedUrl = await invoke<string | null>("get_setting", { key: `ai_api_url__${providerId}` });
-    const urlChanged = savedUrl !== registryUrl;
-    if (urlChanged) {
-      await invoke("set_setting", { key: `ai_api_url__${providerId}`, value: registryUrl });
-    }
 
-    const nextProtocol: ApiProtocol | "" = urlChanged
+    // OpenRouter: 예전 Anthropic 경로 → 새 OpenAI chat/completions 로 마이그레이션
+    const needsOpenRouterMigrate =
+      providerId === "openrouter" &&
+      !!savedUrl &&
+      savedUrl.includes("openrouter.ai") &&
+      !savedUrl.includes("/chat/completions");
+
+    const nextUrl =
+      !savedUrl || needsOpenRouterMigrate ? registryUrl : savedUrl;
+
+    const nextProtocol: ApiProtocol | "" = needsOpenRouterMigrate
       ? p.protocol
       : savedProtocol
         ? (savedProtocol as ApiProtocol | "")
         : p.protocol;
 
-    if (urlChanged || !savedProtocol) {
+    if (nextUrl && nextUrl !== savedUrl) {
+      await invoke("set_setting", { key: `ai_api_url__${providerId}`, value: nextUrl });
+    }
+    if (needsOpenRouterMigrate || !savedProtocol) {
       await invoke("set_setting", { key: `ai_protocol__${providerId}`, value: nextProtocol });
     }
-    return nextProtocol;
+    return { protocol: nextProtocol, url: nextUrl || registryUrl };
   }
 
   // Load AI settings on mount
@@ -298,12 +307,14 @@ export function SettingsView() {
             const p = AI_PROVIDERS.find((x) => x.id === provider);
             if (p) setAiModel(p.defaultModel);
           }
-          if (baseUrl) setAiCustomUrl(baseUrl);
           if (provider === "custom") {
             setAiProtocol(protocol ? (protocol as ApiProtocol | "") : "");
+            setAiCustomUrl(baseUrl ?? "");
           } else {
-            const nextProtocol = await syncPresetEndpoint(provider, nextRegion, protocol);
-            setAiProtocol(nextProtocol);
+            const synced = await syncPresetEndpoint(provider, nextRegion, protocol);
+            setAiProtocol(synced.protocol);
+            // 입력칸에 기본 URL이 미리 보이도록 채움
+            setAiCustomUrl(synced.url || baseUrl || "");
           }
         }
       } catch { /* first run, no settings yet */ }
@@ -320,9 +331,7 @@ export function SettingsView() {
         await invoke("set_setting", { key: "ai_region", value: aiRegion });
         await invoke("set_setting", { key: `ai_api_key__${aiProvider}`, value: aiApiKey });
         await invoke("set_setting", { key: `ai_model__${aiProvider}`, value: aiModel });
-        const p = AI_PROVIDERS.find((x) => x.id === aiProvider);
-        const url = aiProvider === "custom" ? resolveCustomUrl(aiCustomUrl, aiProtocol) : (p?.endpoints[aiRegion] ?? "");
-        // Global/Regional도 사용자가 고른 API Format을 저장 (초기값은 레지스트리 기본)
+        const url = resolveCustomUrl(aiCustomUrl, aiProtocol);
         await invoke("set_setting", { key: `ai_api_url__${aiProvider}`, value: url });
         await invoke("set_setting", { key: `ai_custom_base_url__${aiProvider}`, value: aiCustomUrl });
         await invoke("set_setting", { key: `ai_protocol__${aiProvider}`, value: aiProtocol });
@@ -355,19 +364,19 @@ export function SettingsView() {
       setAiModel(model ?? p?.defaultModel ?? "");
       if (id === "custom") {
         setAiProtocol(protocol ? (protocol as ApiProtocol | "") : "");
+        setAiCustomUrl(baseUrl ?? "");
       } else {
-        // 저장된 값이 있으면 그걸, 없으면 제공자 기본 프로토콜을 초깃값으로 표시
-        const nextProtocol = await syncPresetEndpoint(id, nextRegion, protocol);
-        setAiProtocol(nextProtocol);
+        const synced = await syncPresetEndpoint(id, nextRegion, protocol);
+        setAiProtocol(synced.protocol);
+        setAiCustomUrl(synced.url || baseUrl || "");
       }
-      setAiCustomUrl(baseUrl ?? "");
       setModelOptions([]);
       setModelsSource(null);
       setModelsError(null);
     } catch {
       setAiApiKey("");
       setAiModel(p?.defaultModel ?? "");
-      setAiCustomUrl("");
+      setAiCustomUrl(p?.endpoints[nextRegion] ?? "");
       setAiProtocol(p?.protocol ?? "");
     } finally {
       setAiLoaded(true);
@@ -375,10 +384,25 @@ export function SettingsView() {
     }
   }
 
+  /** 지역 변경 시: URL이 비었거나 기존 지역 기본값과 같으면 새 지역 URL로 교체 */
+  function handleRegionChange(r: RegionId) {
+    setHasUserInteracted(true);
+    const provider = AI_PROVIDERS.find((x) => x.id === aiProvider);
+    const prevEndpoints = provider
+      ? Object.values(provider.endpoints).filter(Boolean)
+      : [];
+    const shouldReplaceUrl =
+      !aiCustomUrl.trim() || prevEndpoints.includes(aiCustomUrl.trim());
+    setAiRegion(r);
+    if (shouldReplaceUrl && provider?.endpoints[r]) {
+      setAiCustomUrl(provider.endpoints[r] ?? "");
+    }
+  }
+
   const currentProvider = AI_PROVIDERS.find((p) => p.id === aiProvider);
-  const resolvedUrl = aiProvider === "custom"
-    ? resolveCustomUrl(aiCustomUrl, aiProtocol)
-    : (currentProvider?.endpoints[aiRegion] ?? "");
+  const registryUrl = currentProvider?.endpoints[aiRegion] ?? "";
+  // 입력칸 값 우선, 비어 있으면 레지스트리 기본 URL
+  const resolvedUrl = resolveCustomUrl(aiCustomUrl.trim() || registryUrl, aiProtocol);
   // 화면에서 고른 프로토콜을 Test/모델목록에도 그대로 사용
   const resolvedProtocol: ApiProtocol | "" = aiProtocol;
   const resolvedModelsUrl =
@@ -802,7 +826,7 @@ export function SettingsView() {
                   <label className="text-xs text-muted-foreground mb-2 block">{t("settings.aiRegionLabel")}</label>
                   <div className="flex gap-1.5">
                     {currentProvider.regions.map((r) => (
-                      <button key={r} onClick={() => { setHasUserInteracted(true); setAiRegion(r); }} className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiRegion === r ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40"}`}>
+                      <button key={r} onClick={() => handleRegionChange(r)} className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiRegion === r ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40"}`}>
                         {t(`settings.aiRegion.${r}`)}
                       </button>
                     ))}
@@ -878,12 +902,19 @@ export function SettingsView() {
                   </p>
                 ) : null}
               </div>
-              {aiProvider === "custom" && (
-                <div>
-                  <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiApiUrlLabel")}</label>
-                  <Input placeholder="https://..." value={aiCustomUrl} onChange={(e) => { setHasUserInteracted(true); setAiCustomUrl(e.target.value); }} />
-                </div>
-              )}
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiApiUrlLabel")}</label>
+                <Input
+                  placeholder={registryUrl || "https://..."}
+                  value={aiCustomUrl}
+                  onChange={(e) => { setHasUserInteracted(true); setAiCustomUrl(e.target.value); }}
+                />
+                {aiProvider !== "custom" && registryUrl ? (
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    {t("settings.aiApiUrlDefaultHint")}
+                  </p>
+                ) : null}
+              </div>
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                 <div className="min-w-0">
                   {aiTestResult?.ok ? (
@@ -891,7 +922,7 @@ export function SettingsView() {
                       <Check className="size-3.5" />
                       {t("settings.aiTestConnectionVerified")}
                     </span>
-                  ) : aiProvider === "custom" && !aiCustomUrl.trim() ? (
+                  ) : !resolvedUrl ? (
                     <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                       <Info className="size-3.5" />
                       {t("settings.aiTestEnterUrl")}

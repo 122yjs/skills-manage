@@ -2,7 +2,7 @@ export type RegionId = "cn" | "intl";
 
 export type ApiProtocol = "anthropic" | "openai";
 
-export type ProviderGroup = "global" | "regional" | "custom";
+export type ProviderGroup = "global" | "regional";
 
 export interface AiProvider {
   id: string;
@@ -90,6 +90,15 @@ export const AI_PROVIDERS: AiProvider[] = [
     group: "global",
   },
   {
+    id: "custom",
+    name: { zh: "自定义", en: "Custom" },
+    regions: ["intl"],
+    endpoints: {},
+    defaultModel: "",
+    protocol: "anthropic",
+    group: "global",
+  },
+  {
     id: "glm",
     name: { zh: "智谱 GLM", en: "Zhipu GLM" },
     regions: ["cn", "intl"],
@@ -135,15 +144,6 @@ export const AI_PROVIDERS: AiProvider[] = [
     protocol: "anthropic",
     group: "regional",
   },
-  {
-    id: "custom",
-    name: { zh: "自定义", en: "Custom" },
-    regions: ["intl"],
-    endpoints: {},
-    defaultModel: "",
-    protocol: "anthropic",
-    group: "custom",
-  },
 ];
 
 export const API_PROTOCOLS: {
@@ -173,4 +173,5 @@ export const REGION_LABELS: Record<RegionId, { zh: string; en: string }> = {
   intl: { zh: "国际", en: "International" },
 };
 
-export const PROVIDER_GROUPS: ProviderGroup[] = ["global", "regional", "custom"];
+/** UI 그룹 순서: Custom은 Global 맨 뒤(배열 순서)에 포함 */
+export const PROVIDER_GROUPS: ProviderGroup[] = ["global", "regional"];
