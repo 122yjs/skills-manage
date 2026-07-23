@@ -383,11 +383,19 @@
     "aiProviderLabel": "提供商",
     "aiProvider": {
       "claude": "Claude",
+      "chatgpt": "ChatGPT",
+      "gemini": "Gemini",
+      "opencode-go": "OpenCode Go",
+      "openrouter": "OpenRouter",
       "glm": "智谱 GLM",
       "minimax": "MiniMax",
       "kimi": "Kimi",
       "deepseek": "DeepSeek",
-      "openrouter": "OpenRouter",
+      "custom": "自定义"
+    },
+    "aiProviderGroup": {
+      "global": "全球",
+      "regional": "区域",
       "custom": "自定义"
     },
     "aiRegionLabel": "区域",
@@ -398,6 +406,10 @@
     "aiApiKeyLabel": "API Key",
     "aiModelLabel": "模型",
     "aiModelPlaceholder": "模型名称",
+    "aiModelRefresh": "刷新模型列表",
+    "aiModelLoading": "正在加载模型...",
+    "aiModelLive": "已加载 {{count}} 个模型",
+    "aiModelFallback": "使用备用模型列表",
     "aiApiFormatLabel": "API 格式",
     "aiProtocol": {
       "auto": "自动",

@@ -383,11 +383,19 @@
     "aiProviderLabel": "Provider",
     "aiProvider": {
       "claude": "Claude",
+      "chatgpt": "ChatGPT",
+      "gemini": "Gemini",
+      "opencode-go": "OpenCode Go",
+      "openrouter": "OpenRouter",
       "glm": "Zhipu GLM",
       "minimax": "MiniMax",
       "kimi": "Kimi",
       "deepseek": "DeepSeek",
-      "openrouter": "OpenRouter",
+      "custom": "Custom"
+    },
+    "aiProviderGroup": {
+      "global": "Global",
+      "regional": "Regional",
       "custom": "Custom"
     },
     "aiRegionLabel": "Region",
@@ -398,6 +406,10 @@
     "aiApiKeyLabel": "API Key",
     "aiModelLabel": "Model",
     "aiModelPlaceholder": "Model name",
+    "aiModelRefresh": "Refresh models",
+    "aiModelLoading": "Loading models...",
+    "aiModelLive": "Loaded {{count}} models",
+    "aiModelFallback": "Using fallback model list",
     "aiApiFormatLabel": "API Format",
     "aiProtocol": {
       "auto": "Auto",

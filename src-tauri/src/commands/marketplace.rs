@@ -1,7 +1,8 @@
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use super::github_import;
@@ -610,6 +611,92 @@ fn resolve_custom_url(raw_url: &str, protocol: &ExplanationApiProtocol) -> Strin
     }
 }
 
+/// Derive a models-list URL from a chat/messages endpoint.
+fn derive_models_url(api_url: &str) -> String {
+    let trimmed = api_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        return format!(
+            "{}/models",
+            trimmed.trim_end_matches("/chat/completions").trim_end_matches('/')
+        );
+    }
+    if trimmed.ends_with("/v1/messages") {
+        return format!(
+            "{}/v1/models",
+            trimmed.trim_end_matches("/v1/messages").trim_end_matches('/')
+        );
+    }
+    if trimmed.ends_with("/messages") {
+        return format!(
+            "{}/models",
+            trimmed.trim_end_matches("/messages").trim_end_matches('/')
+        );
+    }
+    if trimmed.ends_with("/v1") {
+        return format!("{}/models", trimmed);
+    }
+    format!("{}/models", trimmed)
+}
+
+const MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
+
+struct ModelsCacheEntry {
+    models: Vec<String>,
+    fetched_at: Instant,
+}
+
+static MODELS_CACHE: LazyLock<Mutex<HashMap<String, ModelsCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAiModelsRequest {
+    pub api_key: Option<String>,
+    pub api_url: Option<String>,
+    pub protocol: Option<String>,
+    pub models_url: Option<String>,
+    pub fallback_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAiModelsResult {
+    pub models: Vec<String>,
+    pub source: String,
+    pub error: Option<String>,
+}
+
+fn parse_models_response(body: &str) -> Vec<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    if let Some(arr) = val.get("data").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                if !id.is_empty() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+    } else if let Some(arr) = val.get("models").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                if !id.is_empty() {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Error kind for AI explanation network failures, used by the frontend
 /// to render targeted UI (friendly summary + expandable details).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -823,21 +910,49 @@ pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Resul
     Err(format!("无法解析响应: {}", &body[..body.len().min(500)]))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiEndpointOverride {
+    pub api_key: Option<String>,
+    pub api_url: Option<String>,
+    pub protocol: Option<String>,
+    pub model: Option<String>,
+}
+
 // ─── Test AI Connection ─────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, String> {
-    let api_key = get_provider_setting(&state.db, "ai_api_key")
-        .await
-        .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?;
+pub async fn test_ai_connection(
+    state: State<'_, AppState>,
+    request: Option<AiEndpointOverride>,
+) -> Result<String, String> {
+    let req = request.unwrap_or(AiEndpointOverride {
+        api_key: None,
+        api_url: None,
+        protocol: None,
+        model: None,
+    });
 
-    let api_url = get_provider_setting(&state.db, "ai_api_url")
-        .await
-        .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
+    let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
+        Some(k) => k,
+        None => get_provider_setting(&state.db, "ai_api_key")
+            .await
+            .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?,
+    };
 
-    let model = get_provider_setting(&state.db, "ai_model")
-        .await
-        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
+    let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
+        Some(u) => u,
+        None => get_provider_setting(&state.db, "ai_api_url")
+            .await
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string()),
+    };
+
+    let model = match req.model.filter(|m| !m.trim().is_empty()) {
+        Some(m) => m,
+        None => get_provider_setting(&state.db, "ai_model")
+            .await
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
+    };
 
     let client = reqwest::Client::builder()
         .user_agent("skills-manage/0.9.1")
@@ -846,7 +961,7 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
         .build()
         .map_err(|e| e.to_string())?;
 
-    let request = serde_json::json!({
+    let body = serde_json::json!({
         "model": model,
         "max_tokens": 1,
         "messages": [{
@@ -855,9 +970,11 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
         }]
     });
 
-    let explicit_protocol_opt = get_provider_setting(&state.db, "ai_protocol").await;
-    let explicit_protocol = explicit_protocol_opt.as_deref();
-    let protocol = resolve_api_protocol(&api_url, explicit_protocol);
+    let explicit_protocol = match req.protocol.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => Some(p.to_string()),
+        None => get_provider_setting(&state.db, "ai_protocol").await,
+    };
+    let protocol = resolve_api_protocol(&api_url, explicit_protocol.as_deref());
     let resolved_url = resolve_custom_url(&api_url, &protocol);
     let mut req_builder = client
         .post(&resolved_url)
@@ -875,7 +992,7 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
     }
 
     let resp = req_builder
-        .json(&request)
+        .json(&body)
         .send()
         .await
         .map_err(|e| format!("API 请求失败: {}", format_reqwest_error(&e)))?;
@@ -904,6 +1021,144 @@ pub async fn test_ai_connection(state: State<'_, AppState>) -> Result<String, St
             &body[..body.len().min(200)]
         ))
     }
+}
+
+#[tauri::command]
+pub async fn list_ai_models(
+    state: State<'_, AppState>,
+    request: Option<ListAiModelsRequest>,
+) -> Result<ListAiModelsResult, String> {
+    let req = request.unwrap_or(ListAiModelsRequest {
+        api_key: None,
+        api_url: None,
+        protocol: None,
+        models_url: None,
+        fallback_model: None,
+    });
+
+    let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
+        Some(k) => k,
+        None => get_provider_setting(&state.db, "ai_api_key")
+            .await
+            .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?,
+    };
+
+    let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
+        Some(u) => u,
+        None => get_provider_setting(&state.db, "ai_api_url")
+            .await
+            .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string()),
+    };
+
+    let explicit_protocol = match req.protocol.as_deref().filter(|p| !p.is_empty()) {
+        Some(p) => Some(p.to_string()),
+        None => get_provider_setting(&state.db, "ai_protocol").await,
+    };
+    let protocol = resolve_api_protocol(&api_url, explicit_protocol.as_deref());
+    let resolved_chat_url = resolve_custom_url(&api_url, &protocol);
+
+    let models_url = req
+        .models_url
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(|| derive_models_url(&resolved_chat_url));
+
+    let fallback_model = match req.fallback_model.filter(|m| !m.trim().is_empty()) {
+        Some(m) => m,
+        None => get_provider_setting(&state.db, "ai_model")
+            .await
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
+    };
+
+    let protocol_label = match protocol {
+        ExplanationApiProtocol::AnthropicCompatible => "anthropic",
+        ExplanationApiProtocol::OpenAiCompatible => "openai",
+        ExplanationApiProtocol::Unknown => "unknown",
+    };
+    let cache_key = format!("{}|{}", models_url, protocol_label);
+    if let Ok(cache) = MODELS_CACHE.lock() {
+        if let Some(entry) = cache.get(&cache_key) {
+            if entry.fetched_at.elapsed() < MODELS_CACHE_TTL && !entry.models.is_empty() {
+                return Ok(ListAiModelsResult {
+                    models: entry.models.clone(),
+                    source: "cache".to_string(),
+                    error: None,
+                });
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("skills-manage/0.9.1")
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut req_builder = client.get(&models_url);
+    match protocol {
+        ExplanationApiProtocol::AnthropicCompatible | ExplanationApiProtocol::Unknown => {
+            req_builder = req_builder
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01");
+        }
+        ExplanationApiProtocol::OpenAiCompatible => {
+            req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
+        }
+    }
+
+    let resp = match req_builder.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return Ok(ListAiModelsResult {
+                models: vec![fallback_model],
+                source: "fallback".to_string(),
+                error: Some(format!("模型列表请求失败: {}", format_reqwest_error(&e))),
+            });
+        }
+    };
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Ok(ListAiModelsResult {
+            models: vec![fallback_model],
+            source: "fallback".to_string(),
+            error: Some(format!("模型列表返回错误 {}: {}", status, &body[..body.len().min(200)])),
+        });
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取模型列表失败: {}", e))?;
+    let mut models = parse_models_response(&body);
+    if models.is_empty() {
+        return Ok(ListAiModelsResult {
+            models: vec![fallback_model],
+            source: "fallback".to_string(),
+            error: Some("无法解析模型列表响应".to_string()),
+        });
+    }
+
+    if !fallback_model.is_empty() && !models.iter().any(|m| m == &fallback_model) {
+        models.insert(0, fallback_model);
+    }
+
+    if let Ok(mut cache) = MODELS_CACHE.lock() {
+        cache.insert(
+            cache_key,
+            ModelsCacheEntry {
+                models: models.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+
+    Ok(ListAiModelsResult {
+        models,
+        source: "live".to_string(),
+        error: None,
+    })
 }
 
 // ─── Streaming AI Explanation ────────────────────────────────────────────────
@@ -1460,8 +1715,8 @@ pub async fn refresh_skill_explanation(
 mod tests {
     use super::{
         add_registry_impl, cache_skill_explanation, classify_reqwest_error,
-        detect_explanation_api_protocol, format_reqwest_error, get_fallback_endpoint,
-        load_cached_skill_explanation, marketplace_skills_from_candidates,
+        derive_models_url, detect_explanation_api_protocol, format_reqwest_error,
+        get_fallback_endpoint, load_cached_skill_explanation, marketplace_skills_from_candidates,
         registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
         search_marketplace_skills_impl, sync_registry_impl, ExplanationApiProtocol,
         ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
@@ -2065,6 +2320,22 @@ mod tests {
                 &ExplanationApiProtocol::AnthropicCompatible
             ),
             "https://api.anthropic.com/v1/messages"
+        );
+    }
+
+    #[test]
+    fn derive_models_url_from_openai_and_anthropic_chat_urls() {
+        assert_eq!(
+            derive_models_url("https://api.openai.com/v1/chat/completions"),
+            "https://api.openai.com/v1/models"
+        );
+        assert_eq!(
+            derive_models_url("https://api.anthropic.com/v1/messages"),
+            "https://api.anthropic.com/v1/models"
+        );
+        assert_eq!(
+            derive_models_url("https://opencode.ai/zen/go/v1"),
+            "https://opencode.ai/zen/go/v1/models"
         );
     }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Eye, EyeOff, Check } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Eye, EyeOff, Check, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -22,7 +22,7 @@ import { AddDirectoryDialog } from "@/components/settings/AddDirectoryDialog";
 import { PlatformDialog } from "@/components/settings/PlatformDialog";
 import { Input } from "@/components/ui/input";
 import { AgentWithStatus, ScanDirectory } from "@/types";
-import { AI_PROVIDERS, RegionId, ApiProtocol, API_PROTOCOLS } from "@/data/aiProviders";
+import { AI_PROVIDERS, PROVIDER_GROUPS, RegionId, ApiProtocol, API_PROTOCOLS } from "@/data/aiProviders";
 import { deriveHomeDir, formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
 
 // ─── App constants ────────────────────────────────────────────────────────────
@@ -236,6 +236,26 @@ export function SettingsView() {
   const [aiLoaded, setAiLoaded] = useState(false);
   const [hasUserInteracted, setHasUserInteracted] = useState(false);
   const [providerLoading, setProviderLoading] = useState(false);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsSource, setModelsSource] = useState<"live" | "cache" | "fallback" | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  // 프리셋 제공자: 레지스트리 URL/프로토콜을 DB에 맞춤 (구버전 OpenRouter 등 마이그레이션)
+  async function syncPresetEndpoint(providerId: string, region: RegionId) {
+    if (providerId === "custom") return;
+    const p = AI_PROVIDERS.find((x) => x.id === providerId);
+    if (!p) return;
+    const useRegion = p.regions.includes(region) ? region : p.regions[0];
+    const registryUrl = p.endpoints[useRegion] ?? "";
+    if (!registryUrl) return;
+    const savedUrl = await invoke<string | null>("get_setting", { key: `ai_api_url__${providerId}` });
+    const savedProtocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${providerId}` });
+    if (savedUrl !== registryUrl || savedProtocol !== p.protocol) {
+      await invoke("set_setting", { key: `ai_api_url__${providerId}`, value: registryUrl });
+      await invoke("set_setting", { key: `ai_protocol__${providerId}`, value: p.protocol });
+    }
+  }
 
   // Load AI settings on mount
   useEffect(() => {
@@ -243,6 +263,7 @@ export function SettingsView() {
       try {
         const provider = await invoke<string | null>("get_setting", { key: "ai_provider" });
         const region = await invoke<string | null>("get_setting", { key: "ai_region" });
+        const nextRegion = (region as RegionId) || "intl";
         if (provider) setAiProvider(provider);
         if (region) setAiRegion(region as RegionId);
         if (provider) {
@@ -257,7 +278,13 @@ export function SettingsView() {
             if (p) setAiModel(p.defaultModel);
           }
           if (baseUrl) setAiCustomUrl(baseUrl);
-          if (protocol) setAiProtocol(protocol as ApiProtocol);
+          if (provider !== "custom") {
+            const p = AI_PROVIDERS.find((x) => x.id === provider);
+            if (p) setAiProtocol(p.protocol);
+            await syncPresetEndpoint(provider, nextRegion);
+          } else if (protocol) {
+            setAiProtocol(protocol as ApiProtocol);
+          }
         }
       } catch { /* first run, no settings yet */ }
       setAiLoaded(true);
@@ -275,9 +302,11 @@ export function SettingsView() {
         await invoke("set_setting", { key: `ai_model__${aiProvider}`, value: aiModel });
         const p = AI_PROVIDERS.find((x) => x.id === aiProvider);
         const url = aiProvider === "custom" ? resolveCustomUrl(aiCustomUrl, aiProtocol) : (p?.endpoints[aiRegion] ?? "");
+        const protocolToSave =
+          aiProvider === "custom" ? aiProtocol : (p?.protocol ?? "");
         await invoke("set_setting", { key: `ai_api_url__${aiProvider}`, value: url });
         await invoke("set_setting", { key: `ai_custom_base_url__${aiProvider}`, value: aiCustomUrl });
-        await invoke("set_setting", { key: `ai_protocol__${aiProvider}`, value: aiProtocol });
+        await invoke("set_setting", { key: `ai_protocol__${aiProvider}`, value: protocolToSave });
       } catch { /* ignore */ }
     };
     save();
@@ -291,9 +320,11 @@ export function SettingsView() {
     setAiProvider(id);
     setAiTestResult(null);
     const p = AI_PROVIDERS.find((x) => x.id === id);
+    let nextRegion = aiRegion;
     if (p) {
       if (!p.regions.includes(aiRegion)) {
-        setAiRegion(p.regions[0]);
+        nextRegion = p.regions[0];
+        setAiRegion(nextRegion);
       }
     }
     try {
@@ -303,8 +334,16 @@ export function SettingsView() {
       const baseUrl = await invoke<string | null>("get_setting", { key: `ai_custom_base_url__${id}` });
       setAiApiKey(key ?? "");
       setAiModel(model ?? p?.defaultModel ?? "");
-      setAiProtocol(protocol ? (protocol as ApiProtocol) : "");
+      if (id === "custom") {
+        setAiProtocol(protocol ? (protocol as ApiProtocol) : "");
+      } else {
+        setAiProtocol(p?.protocol ?? "");
+        await syncPresetEndpoint(id, nextRegion);
+      }
       setAiCustomUrl(baseUrl ?? "");
+      setModelOptions([]);
+      setModelsSource(null);
+      setModelsError(null);
     } catch {
       setAiApiKey("");
       setAiModel(p?.defaultModel ?? "");
@@ -320,6 +359,12 @@ export function SettingsView() {
   const resolvedUrl = aiProvider === "custom"
     ? resolveCustomUrl(aiCustomUrl, aiProtocol)
     : (currentProvider?.endpoints[aiRegion] ?? "");
+  const resolvedProtocol: ApiProtocol | "" =
+    aiProvider === "custom" ? aiProtocol : (currentProvider?.protocol ?? "");
+  const resolvedModelsUrl =
+    currentProvider?.modelsUrls?.[aiRegion] ??
+    currentProvider?.modelsUrls?.intl ??
+    undefined;
 
   const [aiTesting, setAiTesting] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; msg: string; details?: string } | null>(null);
@@ -329,6 +374,69 @@ export function SettingsView() {
   useEffect(() => {
     setAiTestResult(null);
   }, [aiApiKey, aiCustomUrl, aiProtocol, aiRegion, aiModel]);
+
+  async function loadAiModels(showToast = false) {
+    if (!aiApiKey.trim() || !resolvedUrl) {
+      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+      setModelsSource("fallback");
+      return;
+    }
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const result = await invoke<{
+        models: string[];
+        source: string;
+        error?: string | null;
+      }>("list_ai_models", {
+        request: {
+          apiKey: aiApiKey,
+          apiUrl: resolvedUrl,
+          protocol: resolvedProtocol || null,
+          modelsUrl: resolvedModelsUrl ?? null,
+          fallbackModel: aiModel || currentProvider?.defaultModel || null,
+        },
+      });
+      setModelOptions(result.models);
+      setModelsSource(
+        result.source === "live" || result.source === "cache" || result.source === "fallback"
+          ? result.source
+          : "fallback"
+      );
+      if (result.error) {
+        setModelsError(result.error);
+        if (showToast) toast.error(result.error);
+      } else if (showToast) {
+        toast.success(t("settings.aiModelLive", { count: result.models.length }));
+      }
+      if (result.models.length > 0 && !result.models.includes(aiModel)) {
+        // keep typed model; do not force overwrite
+      }
+    } catch (err) {
+      const msg = String(err);
+      setModelsError(msg);
+      setModelsSource("fallback");
+      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+      if (showToast) toast.error(msg);
+    } finally {
+      setModelsLoading(false);
+    }
+  }
+
+  // Auto-load models when provider config is ready (API 키 입력은 500ms debounce)
+  useEffect(() => {
+    if (!aiLoaded || providerLoading) return;
+    if (!aiApiKey.trim() || !resolvedUrl) {
+      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+      setModelsSource(currentProvider?.defaultModel ? "fallback" : null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void loadAiModels(false);
+    }, 500);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [aiLoaded, providerLoading, aiProvider, aiRegion, aiApiKey, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
 
   const [isAddDirOpen, setIsAddDirOpen] = useState(false);
   const [showBuiltinDirs, setShowBuiltinDirs] = useState(false);
@@ -642,16 +750,32 @@ export function SettingsView() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
-              <div>
+              <div className="space-y-3">
                 <label className="text-xs text-muted-foreground mb-2 block">{t("settings.aiProviderLabel")}</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {AI_PROVIDERS.map((p) => (
-                    <button key={p.id} disabled={providerLoading} onClick={() => { setHasUserInteracted(true); handleProviderChange(p.id); }} className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiProvider === p.id ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"} ${providerLoading ? "opacity-50 cursor-not-allowed" : ""}`}>
-                      {providerLoading && aiProvider === p.id ? <Loader2 className="size-3 animate-spin inline mr-1" /> : null}
-                      {t(`settings.aiProvider.${p.id}`)}
-                    </button>
-                  ))}
-                </div>
+                {PROVIDER_GROUPS.map((group) => {
+                  const providers = AI_PROVIDERS.filter((p) => p.group === group);
+                  if (providers.length === 0) return null;
+                  return (
+                    <div key={group} className="space-y-1.5">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground/80">
+                        {t(`settings.aiProviderGroup.${group}`)}
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {providers.map((p) => (
+                          <button
+                            key={p.id}
+                            disabled={providerLoading}
+                            onClick={() => { setHasUserInteracted(true); handleProviderChange(p.id); }}
+                            className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiProvider === p.id ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"} ${providerLoading ? "opacity-50 cursor-not-allowed" : ""}`}
+                          >
+                            {providerLoading && aiProvider === p.id ? <Loader2 className="size-3 animate-spin inline mr-1" /> : null}
+                            {t(`settings.aiProvider.${p.id}`)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
               {currentProvider && currentProvider.regions.length > 1 && (
                 <div>
@@ -675,8 +799,41 @@ export function SettingsView() {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiModelLabel")}</label>
-                <Input placeholder={t("settings.aiModelPlaceholder")} value={aiModel} onChange={(e) => { setHasUserInteracted(true); setAiModel(e.target.value); }} />
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className="text-xs text-muted-foreground">{t("settings.aiModelLabel")}</label>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    disabled={modelsLoading || !aiApiKey || !resolvedUrl}
+                    onClick={() => { void loadAiModels(true); }}
+                  >
+                    {modelsLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                    <span>{modelsLoading ? t("settings.aiModelLoading") : t("settings.aiModelRefresh")}</span>
+                  </Button>
+                </div>
+                <Input
+                  list="ai-model-options"
+                  placeholder={t("settings.aiModelPlaceholder")}
+                  value={aiModel}
+                  onChange={(e) => { setHasUserInteracted(true); setAiModel(e.target.value); }}
+                />
+                <datalist id="ai-model-options">
+                  {modelOptions.map((m) => (
+                    <option key={m} value={m} />
+                  ))}
+                </datalist>
+                {modelsSource === "live" || modelsSource === "cache" ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {t("settings.aiModelLive", { count: modelOptions.length })}
+                  </p>
+                ) : null}
+                {modelsSource === "fallback" && modelsError ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    {t("settings.aiModelFallback")}: {modelsError}
+                  </p>
+                ) : null}
               </div>
               {aiProvider === "custom" && (
                 <div>
@@ -717,7 +874,15 @@ export function SettingsView() {
                   onClick={async () => {
                     setAiTesting(true); setAiTestResult(null); setShowAiTestDetails(false);
                     try {
-                      await invoke<string>("test_ai_connection");
+                      // 화면의 현재 URL/키/프로토콜로 테스트 (DB 저장 전에도 일치)
+                      await invoke<string>("test_ai_connection", {
+                        request: {
+                          apiKey: aiApiKey,
+                          apiUrl: resolvedUrl,
+                          protocol: resolvedProtocol || null,
+                          model: aiModel || null,
+                        },
+                      });
                       setAiTestResult({ ok: true, msg: t("settings.aiTestSuccess") });
                     } catch (err) {
                       const raw = String(err);
