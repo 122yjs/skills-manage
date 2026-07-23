@@ -411,6 +411,7 @@
     "aiModelLive": "Loaded {{count}} models",
     "aiModelFallback": "Using fallback model list",
     "aiApiFormatLabel": "API Format",
+    "aiApiFormatDefaultHint": "Preloaded default: {{format}} (you can change it)",
     "aiProtocol": {
       "auto": "Auto",
       "anthropic": "Anthropic",

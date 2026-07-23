@@ -241,20 +241,41 @@ export function SettingsView() {
   const [modelsSource, setModelsSource] = useState<"live" | "cache" | "fallback" | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
 
-  // 프리셋 제공자: 레지스트리 URL/프로토콜을 DB에 맞춤 (구버전 OpenRouter 등 마이그레이션)
-  async function syncPresetEndpoint(providerId: string, region: RegionId) {
-    if (providerId === "custom") return;
+  /**
+   * 프리셋 제공자 URL을 레지스트리와 맞춘다.
+   * - URL이 바뀌면(구버전 OpenRouter 등) 프로토콜도 레지스트리 기본값으로 마이그레이션
+   * - URL이 같으면 사용자가 저장한 프로토콜을 유지 (없으면 기본값)
+   * @returns 화면에 표시할 프로토콜
+   */
+  async function syncPresetEndpoint(
+    providerId: string,
+    region: RegionId,
+    savedProtocol: string | null
+  ): Promise<ApiProtocol | ""> {
     const p = AI_PROVIDERS.find((x) => x.id === providerId);
-    if (!p) return;
+    if (!p || providerId === "custom") {
+      return (savedProtocol as ApiProtocol | "") || "";
+    }
     const useRegion = p.regions.includes(region) ? region : p.regions[0];
     const registryUrl = p.endpoints[useRegion] ?? "";
-    if (!registryUrl) return;
+    if (!registryUrl) return (savedProtocol as ApiProtocol | "") || p.protocol;
+
     const savedUrl = await invoke<string | null>("get_setting", { key: `ai_api_url__${providerId}` });
-    const savedProtocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${providerId}` });
-    if (savedUrl !== registryUrl || savedProtocol !== p.protocol) {
+    const urlChanged = savedUrl !== registryUrl;
+    if (urlChanged) {
       await invoke("set_setting", { key: `ai_api_url__${providerId}`, value: registryUrl });
-      await invoke("set_setting", { key: `ai_protocol__${providerId}`, value: p.protocol });
     }
+
+    const nextProtocol: ApiProtocol | "" = urlChanged
+      ? p.protocol
+      : savedProtocol
+        ? (savedProtocol as ApiProtocol | "")
+        : p.protocol;
+
+    if (urlChanged || !savedProtocol) {
+      await invoke("set_setting", { key: `ai_protocol__${providerId}`, value: nextProtocol });
+    }
+    return nextProtocol;
   }
 
   // Load AI settings on mount
@@ -278,12 +299,11 @@ export function SettingsView() {
             if (p) setAiModel(p.defaultModel);
           }
           if (baseUrl) setAiCustomUrl(baseUrl);
-          if (provider !== "custom") {
-            const p = AI_PROVIDERS.find((x) => x.id === provider);
-            if (p) setAiProtocol(p.protocol);
-            await syncPresetEndpoint(provider, nextRegion);
-          } else if (protocol) {
-            setAiProtocol(protocol as ApiProtocol);
+          if (provider === "custom") {
+            setAiProtocol(protocol ? (protocol as ApiProtocol | "") : "");
+          } else {
+            const nextProtocol = await syncPresetEndpoint(provider, nextRegion, protocol);
+            setAiProtocol(nextProtocol);
           }
         }
       } catch { /* first run, no settings yet */ }
@@ -302,11 +322,10 @@ export function SettingsView() {
         await invoke("set_setting", { key: `ai_model__${aiProvider}`, value: aiModel });
         const p = AI_PROVIDERS.find((x) => x.id === aiProvider);
         const url = aiProvider === "custom" ? resolveCustomUrl(aiCustomUrl, aiProtocol) : (p?.endpoints[aiRegion] ?? "");
-        const protocolToSave =
-          aiProvider === "custom" ? aiProtocol : (p?.protocol ?? "");
+        // Global/Regional도 사용자가 고른 API Format을 저장 (초기값은 레지스트리 기본)
         await invoke("set_setting", { key: `ai_api_url__${aiProvider}`, value: url });
         await invoke("set_setting", { key: `ai_custom_base_url__${aiProvider}`, value: aiCustomUrl });
-        await invoke("set_setting", { key: `ai_protocol__${aiProvider}`, value: protocolToSave });
+        await invoke("set_setting", { key: `ai_protocol__${aiProvider}`, value: aiProtocol });
       } catch { /* ignore */ }
     };
     save();
@@ -335,10 +354,11 @@ export function SettingsView() {
       setAiApiKey(key ?? "");
       setAiModel(model ?? p?.defaultModel ?? "");
       if (id === "custom") {
-        setAiProtocol(protocol ? (protocol as ApiProtocol) : "");
+        setAiProtocol(protocol ? (protocol as ApiProtocol | "") : "");
       } else {
-        setAiProtocol(p?.protocol ?? "");
-        await syncPresetEndpoint(id, nextRegion);
+        // 저장된 값이 있으면 그걸, 없으면 제공자 기본 프로토콜을 초깃값으로 표시
+        const nextProtocol = await syncPresetEndpoint(id, nextRegion, protocol);
+        setAiProtocol(nextProtocol);
       }
       setAiCustomUrl(baseUrl ?? "");
       setModelOptions([]);
@@ -348,7 +368,7 @@ export function SettingsView() {
       setAiApiKey("");
       setAiModel(p?.defaultModel ?? "");
       setAiCustomUrl("");
-      setAiProtocol("");
+      setAiProtocol(p?.protocol ?? "");
     } finally {
       setAiLoaded(true);
       setProviderLoading(false);
@@ -359,8 +379,8 @@ export function SettingsView() {
   const resolvedUrl = aiProvider === "custom"
     ? resolveCustomUrl(aiCustomUrl, aiProtocol)
     : (currentProvider?.endpoints[aiRegion] ?? "");
-  const resolvedProtocol: ApiProtocol | "" =
-    aiProvider === "custom" ? aiProtocol : (currentProvider?.protocol ?? "");
+  // 화면에서 고른 프로토콜을 Test/모델목록에도 그대로 사용
+  const resolvedProtocol: ApiProtocol | "" = aiProtocol;
   const resolvedModelsUrl =
     currentProvider?.modelsUrls?.[aiRegion] ??
     currentProvider?.modelsUrls?.intl ??
@@ -835,18 +855,29 @@ export function SettingsView() {
                   </p>
                 ) : null}
               </div>
-              {aiProvider === "custom" && (
-                <div>
-                  <label className="text-xs text-muted-foreground mb-2 block">{t("settings.aiApiFormatLabel")}</label>
-                  <div className="flex flex-wrap gap-1.5">
-                    {API_PROTOCOLS.map((proto) => (
-                      <button key={proto.id} onClick={() => { setHasUserInteracted(true); setAiProtocol(proto.id as ApiProtocol | ""); }} className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiProtocol === proto.id ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"}`}>
-                        {t(`settings.aiProtocol.${proto.id || "auto"}`)}
-                      </button>
-                    ))}
-                  </div>
+              {/* Global/Regional도 기본 프로토콜을 보여주고, 이후 수정 가능 */}
+              <div>
+                <label className="text-xs text-muted-foreground mb-2 block">{t("settings.aiApiFormatLabel")}</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {API_PROTOCOLS.map((proto) => (
+                    <button
+                      key={proto.id || "auto"}
+                      type="button"
+                      onClick={() => { setHasUserInteracted(true); setAiProtocol(proto.id as ApiProtocol | ""); }}
+                      className={`px-3 py-1.5 rounded-md text-xs transition-colors cursor-pointer border ${aiProtocol === proto.id ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border bg-background text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"}`}
+                    >
+                      {t(`settings.aiProtocol.${proto.id || "auto"}`)}
+                    </button>
+                  ))}
                 </div>
-              )}
+                {aiProvider !== "custom" && currentProvider ? (
+                  <p className="mt-1.5 text-[11px] text-muted-foreground">
+                    {t("settings.aiApiFormatDefaultHint", {
+                      format: t(`settings.aiProtocol.${currentProvider.protocol}`),
+                    })}
+                  </p>
+                ) : null}
+              </div>
               {aiProvider === "custom" && (
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiApiUrlLabel")}</label>

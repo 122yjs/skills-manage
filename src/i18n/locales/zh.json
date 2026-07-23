@@ -411,6 +411,7 @@
     "aiModelLive": "已加载 {{count}} 个模型",
     "aiModelFallback": "使用备用模型列表",
     "aiApiFormatLabel": "API 格式",
+    "aiApiFormatDefaultHint": "预载默认：{{format}}（可修改）",
     "aiProtocol": {
       "auto": "自动",
       "anthropic": "Anthropic",
