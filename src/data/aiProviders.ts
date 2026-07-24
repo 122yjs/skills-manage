@@ -106,6 +106,10 @@ export const AI_PROVIDERS: AiProvider[] = [
       cn: "https://open.bigmodel.cn/api/anthropic/v1/messages",
       intl: "https://api.z.ai/api/anthropic/v1/messages",
     },
+    modelsUrls: {
+      cn: "https://open.bigmodel.cn/api/paas/v4/models",
+      intl: "https://api.z.ai/api/paas/v4/models",
+    },
     defaultModel: "glm-5",
     protocol: "anthropic",
     group: "regional",
@@ -118,6 +122,10 @@ export const AI_PROVIDERS: AiProvider[] = [
       cn: "https://api.minimaxi.com/anthropic/v1/messages",
       intl: "https://api.minimax.io/anthropic/v1/messages",
     },
+    modelsUrls: {
+      cn: "https://api.minimaxi.com/v1/models",
+      intl: "https://api.minimax.io/v1/models",
+    },
     defaultModel: "MiniMax-M2.7",
     protocol: "anthropic",
     group: "regional",
@@ -129,6 +137,9 @@ export const AI_PROVIDERS: AiProvider[] = [
     endpoints: {
       cn: "https://api.moonshot.cn/anthropic/v1/messages",
     },
+    modelsUrls: {
+      cn: "https://api.moonshot.cn/v1/models",
+    },
     defaultModel: "kimi-k2.5",
     protocol: "anthropic",
     group: "regional",
@@ -139,6 +150,9 @@ export const AI_PROVIDERS: AiProvider[] = [
     regions: ["cn"],
     endpoints: {
       cn: "https://api.deepseek.com/anthropic/v1/messages",
+    },
+    modelsUrls: {
+      cn: "https://api.deepseek.com/models",
     },
     defaultModel: "deepseek-v4-flash",
     protocol: "anthropic",

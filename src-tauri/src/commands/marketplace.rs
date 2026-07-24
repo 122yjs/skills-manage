@@ -614,10 +614,22 @@ fn resolve_custom_url(raw_url: &str, protocol: &ExplanationApiProtocol) -> Strin
 /// Derive a models-list URL from a chat/messages endpoint.
 fn derive_models_url(api_url: &str) -> String {
     let trimmed = api_url.trim().trim_end_matches('/');
+
+    // Many Anthropic-compatible gateways expose the catalog at host `/models`
+    // (OpenAI style), while chat lives under `/anthropic/v1/messages`.
+    if let Some(idx) = trimmed.find("/anthropic/") {
+        let base = trimmed[..idx].trim_end_matches('/');
+        if !base.is_empty() {
+            return format!("{}/models", base);
+        }
+    }
+
     if trimmed.ends_with("/chat/completions") {
         return format!(
             "{}/models",
-            trimmed.trim_end_matches("/chat/completions").trim_end_matches('/')
+            trimmed
+                .trim_end_matches("/chat/completions")
+                .trim_end_matches('/')
         );
     }
     if trimmed.ends_with("/v1/messages") {
@@ -638,6 +650,55 @@ fn derive_models_url(api_url: &str) -> String {
     format!("{}/models", trimmed)
 }
 
+/// Models list auth should follow the *models* URL, not the chat protocol.
+/// Chat may be Anthropic-compatible while `/models` is OpenAI-compatible (DeepSeek, etc.).
+fn models_url_uses_anthropic_auth(models_url: &str) -> bool {
+    let u = models_url.to_ascii_lowercase();
+    u.contains("api.anthropic.com") || u.contains("/anthropic/")
+}
+
+fn parse_models_response(body: &str) -> Vec<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    let mut push = |raw: &str| {
+        let id = raw
+            .trim()
+            .strip_prefix("models/")
+            .unwrap_or(raw.trim())
+            .to_string();
+        if !id.is_empty() && !ids.iter().any(|x| x == &id) {
+            ids.push(id);
+        }
+    };
+
+    if let Some(arr) = val.get("data").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                push(id);
+            } else if let Some(id) = item.as_str() {
+                push(id);
+            }
+        }
+    } else if let Some(arr) = val.get("models").and_then(|d| d.as_array()) {
+        for item in arr {
+            if let Some(id) = item
+                .get("id")
+                .or_else(|| item.get("name"))
+                .and_then(|v| v.as_str())
+            {
+                push(id);
+            } else if let Some(id) = item.as_str() {
+                push(id);
+            }
+        }
+    }
+
+    // Keep provider order (Anthropic returns newest first) — do not sort.
+    ids
+}
+
 const MODELS_CACHE_TTL: Duration = Duration::from_secs(300);
 
 struct ModelsCacheEntry {
@@ -656,6 +717,8 @@ pub struct ListAiModelsRequest {
     pub protocol: Option<String>,
     pub models_url: Option<String>,
     pub fallback_model: Option<String>,
+    /// When true, bypass the in-memory TTL cache (Refresh button).
+    pub force_refresh: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -664,37 +727,6 @@ pub struct ListAiModelsResult {
     pub models: Vec<String>,
     pub source: String,
     pub error: Option<String>,
-}
-
-fn parse_models_response(body: &str) -> Vec<String> {
-    let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
-        return Vec::new();
-    };
-    let mut ids = Vec::new();
-    if let Some(arr) = val.get("data").and_then(|d| d.as_array()) {
-        for item in arr {
-            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
-                if !id.is_empty() {
-                    ids.push(id.to_string());
-                }
-            }
-        }
-    } else if let Some(arr) = val.get("models").and_then(|d| d.as_array()) {
-        for item in arr {
-            if let Some(id) = item
-                .get("id")
-                .or_else(|| item.get("name"))
-                .and_then(|v| v.as_str())
-            {
-                if !id.is_empty() {
-                    ids.push(id.to_string());
-                }
-            }
-        }
-    }
-    ids.sort();
-    ids.dedup();
-    ids
 }
 
 /// Error kind for AI explanation network failures, used by the frontend
@@ -1034,6 +1066,7 @@ pub async fn list_ai_models(
         protocol: None,
         models_url: None,
         fallback_model: None,
+        force_refresh: None,
     });
 
     let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
@@ -1069,41 +1102,68 @@ pub async fn list_ai_models(
             .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
     };
 
-    let protocol_label = match protocol {
-        ExplanationApiProtocol::AnthropicCompatible => "anthropic",
-        ExplanationApiProtocol::OpenAiCompatible => "openai",
-        ExplanationApiProtocol::Unknown => "unknown",
+    // OpenRouter catalog is huge — skip live fetch; user types model id manually.
+    if models_url.to_ascii_lowercase().contains("openrouter.ai")
+        || resolved_chat_url.to_ascii_lowercase().contains("openrouter.ai")
+    {
+        return Ok(ListAiModelsResult {
+            models: if fallback_model.is_empty() {
+                Vec::new()
+            } else {
+                vec![fallback_model]
+            },
+            source: "fallback".to_string(),
+            error: Some(
+                "OpenRouter model catalog is too large; enter a model id manually.".to_string(),
+            ),
+        });
+    }
+
+    let force_refresh = req.force_refresh.unwrap_or(false);
+    let use_anthropic_auth = models_url_uses_anthropic_auth(&models_url);
+    let protocol_label = if use_anthropic_auth {
+        "anthropic"
+    } else {
+        "openai"
     };
     let cache_key = format!("{}|{}", models_url, protocol_label);
-    if let Ok(cache) = MODELS_CACHE.lock() {
-        if let Some(entry) = cache.get(&cache_key) {
-            if entry.fetched_at.elapsed() < MODELS_CACHE_TTL && !entry.models.is_empty() {
-                return Ok(ListAiModelsResult {
-                    models: entry.models.clone(),
-                    source: "cache".to_string(),
-                    error: None,
-                });
+    if !force_refresh {
+        if let Ok(cache) = MODELS_CACHE.lock() {
+            if let Some(entry) = cache.get(&cache_key) {
+                if entry.fetched_at.elapsed() < MODELS_CACHE_TTL && !entry.models.is_empty() {
+                    return Ok(ListAiModelsResult {
+                        models: entry.models.clone(),
+                        source: "cache".to_string(),
+                        error: None,
+                    });
+                }
             }
         }
     }
 
     let client = reqwest::Client::builder()
         .user_agent("skills-manage/0.9.1")
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(8))
+        .timeout(Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
 
-    let mut req_builder = client.get(&models_url);
-    match protocol {
-        ExplanationApiProtocol::AnthropicCompatible | ExplanationApiProtocol::Unknown => {
-            req_builder = req_builder
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01");
-        }
-        ExplanationApiProtocol::OpenAiCompatible => {
-            req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
-        }
+    // Anthropic models API supports limit; harmless elsewhere if ignored.
+    let fetch_url = if models_url.contains('?') {
+        format!("{}&limit=100", models_url)
+    } else {
+        format!("{}?limit=100", models_url)
+    };
+
+    let mut req_builder = client.get(&fetch_url);
+    if use_anthropic_auth {
+        req_builder = req_builder
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            // Some gateways only accept Bearer even on Anthropic-shaped paths.
+            .header("authorization", format!("Bearer {}", api_key));
+    } else {
+        req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
     }
 
     let resp = match req_builder.send().await {
@@ -1123,7 +1183,11 @@ pub async fn list_ai_models(
         return Ok(ListAiModelsResult {
             models: vec![fallback_model],
             source: "fallback".to_string(),
-            error: Some(format!("模型列表返回错误 {}: {}", status, &body[..body.len().min(200)])),
+            error: Some(format!(
+                "模型列表返回错误 {}: {}",
+                status,
+                &body[..body.len().min(200)]
+            )),
         });
     }
 
@@ -1136,7 +1200,10 @@ pub async fn list_ai_models(
         return Ok(ListAiModelsResult {
             models: vec![fallback_model],
             source: "fallback".to_string(),
-            error: Some("无法解析模型列表响应".to_string()),
+            error: Some(format!(
+                "无法解析模型列表响应: {}",
+                &body[..body.len().min(200)]
+            )),
         });
     }
 
@@ -1717,7 +1784,7 @@ mod tests {
         add_registry_impl, cache_skill_explanation, classify_reqwest_error,
         derive_models_url, detect_explanation_api_protocol, format_reqwest_error,
         get_fallback_endpoint, load_cached_skill_explanation, marketplace_skills_from_candidates,
-        registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
+        parse_models_response, registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
         search_marketplace_skills_impl, sync_registry_impl, ExplanationApiProtocol,
         ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
@@ -2336,6 +2403,29 @@ mod tests {
         assert_eq!(
             derive_models_url("https://opencode.ai/zen/go/v1"),
             "https://opencode.ai/zen/go/v1/models"
+        );
+        // Anthropic-compatible chat path → OpenAI-style host /models catalog
+        assert_eq!(
+            derive_models_url("https://api.deepseek.com/anthropic/v1/messages"),
+            "https://api.deepseek.com/models"
+        );
+        assert_eq!(
+            derive_models_url("https://open.bigmodel.cn/api/anthropic/v1/messages"),
+            "https://open.bigmodel.cn/api/models"
+        );
+    }
+
+    #[test]
+    fn parse_models_response_openai_and_google_shapes() {
+        let openai = r#"{"object":"list","data":[{"id":"gpt-4.1-mini"},{"id":"gpt-4o"}]}"#;
+        assert_eq!(
+            parse_models_response(openai),
+            vec!["gpt-4.1-mini".to_string(), "gpt-4o".to_string()]
+        );
+        let google = r#"{"models":[{"name":"models/gemini-2.5-flash"},{"name":"models/gemini-2.0-flash"}]}"#;
+        assert_eq!(
+            parse_models_response(google),
+            vec!["gemini-2.5-flash".to_string(), "gemini-2.0-flash".to_string()]
         );
     }
 }

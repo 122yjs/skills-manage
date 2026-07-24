@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Eye, EyeOff, Check, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
@@ -240,6 +240,11 @@ export function SettingsView() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsSource, setModelsSource] = useState<"live" | "cache" | "fallback" | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; msg: string; details?: string } | null>(null);
+  const [showAiTestDetails, setShowAiTestDetails] = useState(false);
+  // 진행 중인 모델 목록 요청 세대 (오래된 응답 무시)
+  const modelsRequestIdRef = useRef(0);
 
   /**
    * 프리셋 URL/프로토콜 초깃값 결정.
@@ -405,42 +410,71 @@ export function SettingsView() {
   const resolvedUrl = resolveCustomUrl(aiCustomUrl.trim() || registryUrl, aiProtocol);
   // 화면에서 고른 프로토콜을 Test/모델목록에도 그대로 사용
   const resolvedProtocol: ApiProtocol | "" = aiProtocol;
-  const resolvedModelsUrl =
-    currentProvider?.modelsUrls?.[aiRegion] ??
-    currentProvider?.modelsUrls?.intl ??
-    undefined;
-
-  const [aiTesting, setAiTesting] = useState(false);
-  const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; msg: string; details?: string } | null>(null);
-  const [showAiTestDetails, setShowAiTestDetails] = useState(false);
+  // URL을 레지스트리 기본값으로 쓰는 경우에만 전용 models URL 사용 (아니면 백엔드가 chat URL에서 유추)
+  const urlMatchesRegistry =
+    aiProvider !== "custom" &&
+    (!aiCustomUrl.trim() ||
+      aiCustomUrl.trim() === registryUrl ||
+      resolveCustomUrl(aiCustomUrl, aiProtocol) === registryUrl);
+  const resolvedModelsUrl = urlMatchesRegistry
+    ? (currentProvider?.modelsUrls?.[aiRegion] ?? currentProvider?.modelsUrls?.intl ?? undefined)
+    : undefined;
 
   // Clear stale test result when config changes
   useEffect(() => {
     setAiTestResult(null);
   }, [aiApiKey, aiCustomUrl, aiProtocol, aiRegion, aiModel]);
 
-  async function loadAiModels(showToast = false) {
-    if (!aiApiKey.trim() || !resolvedUrl) {
-      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+  async function loadAiModels(showToast = false, forceRefresh = false) {
+    // OpenRouter: 카탈로그가 너무 커서 라이브 목록을 가져오지 않음
+    if (aiProvider === "openrouter") {
+      const fallback = aiModel || currentProvider?.defaultModel || "";
+      setModelOptions(fallback ? [fallback] : []);
       setModelsSource("fallback");
+      setModelsError(t("settings.aiModelOpenRouterSkip"));
+      if (showToast) toast.message(t("settings.aiModelOpenRouterSkip"));
       return;
     }
+    if (!aiApiKey.trim()) {
+      setModelsError(t("settings.aiModelNeedKey"));
+      if (showToast) toast.error(t("settings.aiModelNeedKey"));
+      return;
+    }
+    if (!resolvedUrl.trim()) {
+      setModelsError(t("settings.aiTestEnterUrl"));
+      if (showToast) toast.error(t("settings.aiTestEnterUrl"));
+      return;
+    }
+
+    const requestId = ++modelsRequestIdRef.current;
     setModelsLoading(true);
     setModelsError(null);
+    if (showToast) toast.message(t("settings.aiModelLoading"));
+
     try {
-      const result = await invoke<{
-        models: string[];
-        source: string;
-        error?: string | null;
-      }>("list_ai_models", {
-        request: {
-          apiKey: aiApiKey,
-          apiUrl: resolvedUrl,
-          protocol: resolvedProtocol || null,
-          modelsUrl: resolvedModelsUrl ?? null,
-          fallbackModel: aiModel || currentProvider?.defaultModel || null,
-        },
-      });
+      // IPC/네트워크가 멈추면 버튼이 영구 잠기지 않도록 프론트 타임아웃
+      const result = await Promise.race([
+        invoke<{
+          models: string[];
+          source: string;
+          error?: string | null;
+        }>("list_ai_models", {
+          request: {
+            apiKey: aiApiKey,
+            apiUrl: resolvedUrl,
+            protocol: resolvedProtocol || null,
+            modelsUrl: resolvedModelsUrl ?? null,
+            fallbackModel: aiModel || currentProvider?.defaultModel || null,
+            forceRefresh,
+          },
+        }),
+        new Promise<never>((_, reject) => {
+          window.setTimeout(() => reject(new Error(t("settings.aiModelTimeout"))), 25000);
+        }),
+      ]);
+
+      if (requestId !== modelsRequestIdRef.current) return;
+
       setModelOptions(result.models);
       setModelsSource(
         result.source === "live" || result.source === "cache" || result.source === "fallback"
@@ -453,34 +487,45 @@ export function SettingsView() {
       } else if (showToast) {
         toast.success(t("settings.aiModelLive", { count: result.models.length }));
       }
-      if (result.models.length > 0 && !result.models.includes(aiModel)) {
-        // keep typed model; do not force overwrite
-      }
     } catch (err) {
+      if (requestId !== modelsRequestIdRef.current) return;
       const msg = String(err);
       setModelsError(msg);
       setModelsSource("fallback");
       setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
       if (showToast) toast.error(msg);
     } finally {
-      setModelsLoading(false);
+      if (requestId === modelsRequestIdRef.current) {
+        setModelsLoading(false);
+      }
     }
   }
 
-  // Auto-load models when provider config is ready (API 키 입력은 500ms debounce)
+  // 제공자/지역/URL/프로토콜이 준비되면 한 번 자동 로드 (API 키 타이핑마다 재호출하지 않음)
   useEffect(() => {
     if (!aiLoaded || providerLoading) return;
-    if (!aiApiKey.trim() || !resolvedUrl) {
+    if (aiProvider === "openrouter") {
+      const fallback = aiModel || currentProvider?.defaultModel || "";
+      setModelOptions(fallback ? [fallback] : []);
+      setModelsSource("fallback");
+      setModelsError(t("settings.aiModelOpenRouterSkip"));
+      return;
+    }
+    if (!aiApiKey.trim() || !resolvedUrl.trim()) {
       setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
       setModelsSource(currentProvider?.defaultModel ? "fallback" : null);
       return;
     }
     const timer = window.setTimeout(() => {
-      void loadAiModels(false);
-    }, 500);
+      void loadAiModels(false, false);
+    }, 400);
     return () => window.clearTimeout(timer);
+    // apiKey는 deps에서 제외 — 입력 중 연속 요청으로 버튼이 잠기는 것 방지
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiLoaded, providerLoading, aiProvider, aiRegion, aiApiKey, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
+  }, [aiLoaded, providerLoading, aiProvider, aiRegion, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
+
+  const canRefreshModels =
+    !!aiApiKey.trim() && !!resolvedUrl.trim() && aiProvider !== "openrouter";
 
   const [isAddDirOpen, setIsAddDirOpen] = useState(false);
   const [showBuiltinDirs, setShowBuiltinDirs] = useState(false);
@@ -836,7 +881,19 @@ export function SettingsView() {
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiApiKeyLabel")}</label>
                 <div className="relative">
-                  <Input type={showKey ? "text" : "password"} placeholder="sk-..." value={aiApiKey} onChange={(e) => { setHasUserInteracted(true); setAiApiKey(e.target.value); }} className="pr-9" />
+                  <Input
+                    type={showKey ? "text" : "password"}
+                    placeholder="sk-..."
+                    value={aiApiKey}
+                    onChange={(e) => { setHasUserInteracted(true); setAiApiKey(e.target.value); }}
+                    onBlur={() => {
+                      // 키 입력이 끝나면 그때 모델 목록 로드
+                      if (aiApiKey.trim() && resolvedUrl.trim() && aiProvider !== "openrouter") {
+                        void loadAiModels(false, false);
+                      }
+                    }}
+                    className="pr-9"
+                  />
                   <button type="button" onClick={() => setShowKey(!showKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                     {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -845,17 +902,27 @@ export function SettingsView() {
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1">
                   <label className="text-xs text-muted-foreground">{t("settings.aiModelLabel")}</label>
-                  <Button
+                  {/* Base UI Button 대신 native — loading 중 pointer-events-none으로 클릭이 먹통 되는 문제 방지 */}
+                  <button
                     type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 px-2 text-xs"
-                    disabled={modelsLoading || !aiApiKey || !resolvedUrl}
-                    onClick={() => { void loadAiModels(true); }}
+                    className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+                    disabled={!canRefreshModels}
+                    title={
+                      aiProvider === "openrouter"
+                        ? t("settings.aiModelOpenRouterSkip")
+                        : !aiApiKey.trim()
+                          ? t("settings.aiModelNeedKey")
+                          : !resolvedUrl.trim()
+                            ? t("settings.aiTestEnterUrl")
+                            : t("settings.aiModelRefresh")
+                    }
+                    onClick={() => {
+                      void loadAiModels(true, true);
+                    }}
                   >
                     {modelsLoading ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
                     <span>{modelsLoading ? t("settings.aiModelLoading") : t("settings.aiModelRefresh")}</span>
-                  </Button>
+                  </button>
                 </div>
                 <Input
                   list="ai-model-options"
@@ -868,14 +935,42 @@ export function SettingsView() {
                     <option key={m} value={m} />
                   ))}
                 </datalist>
+                {/* WebView에서 datalist가 안 보일 수 있어, 클릭 가능한 목록도 표시 */}
+                {modelOptions.length > 0 && modelsSource !== null ? (
+                  <div className="mt-2 max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1.5">
+                    <div className="flex flex-wrap gap-1">
+                      {modelOptions.slice(0, 80).map((m) => (
+                        <button
+                          key={m}
+                          type="button"
+                          onClick={() => { setHasUserInteracted(true); setAiModel(m); }}
+                          className={`px-2 py-1 rounded text-[11px] border transition-colors cursor-pointer ${aiModel === m ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"}`}
+                          title={m}
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                    {modelOptions.length > 80 ? (
+                      <p className="mt-1 px-1 text-[10px] text-muted-foreground">
+                        {t("settings.aiModelTruncated", { shown: 80, total: modelOptions.length })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 {modelsSource === "live" || modelsSource === "cache" ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     {t("settings.aiModelLive", { count: modelOptions.length })}
                   </p>
                 ) : null}
-                {modelsSource === "fallback" && modelsError ? (
+                {modelsError ? (
+                  <p className="mt-1 text-[11px] text-destructive/90">
+                    {modelsError}
+                  </p>
+                ) : null}
+                {!canRefreshModels && aiProvider !== "openrouter" ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {t("settings.aiModelFallback")}: {modelsError}
+                    {!aiApiKey.trim() ? t("settings.aiModelNeedKey") : t("settings.aiTestEnterUrl")}
                   </p>
                 ) : null}
               </div>
