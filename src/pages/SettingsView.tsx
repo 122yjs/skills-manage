@@ -29,6 +29,7 @@ import { deriveHomeDir, formatPathForDisplay, joinPathForDisplay } from "@/lib/p
 
 const APP_VERSION = "0.9.1";
 const DB_PATH_FALLBACK = "~/.skillsmanage/db.sqlite";
+const CUSTOM_MODEL_VALUE = "__custom_model__";
 
 /** Catppuccin Lavender hex per flavor — used for visual preview dots on flavor buttons (default accent). */
 const FLAVOR_COLORS: Record<CatppuccinFlavor, string> = {
@@ -238,7 +239,7 @@ export function SettingsView() {
   const [providerLoading, setProviderLoading] = useState(false);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
-  const [modelsSource, setModelsSource] = useState<"live" | "cache" | "fallback" | null>(null);
+  const [modelsSource, setModelsSource] = useState<"live" | "cache" | "catalog" | "fallback" | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<{ ok: boolean; msg: string; details?: string } | null>(null);
@@ -420,6 +421,17 @@ export function SettingsView() {
     ? (currentProvider?.modelsUrls?.[aiRegion] ?? currentProvider?.modelsUrls?.intl ?? undefined)
     : undefined;
   const modelsRequireApiKey = currentProvider?.modelsRequireApiKey ?? true;
+  const catalogProviderId =
+    aiProvider === "custom"
+      ? undefined
+      : (currentProvider?.catalogIds?.[aiRegion] ?? currentProvider?.catalogIds?.intl ?? undefined);
+  // 공개 models.dev 카탈로그가 있으면 API 키 없이도 대표 모델 목록을 조회할 수 있다.
+  const canUsePublicCatalog = !!catalogProviderId;
+  const providerModelOptions =
+    currentProvider?.models ?? (currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+  const selectableModelOptions = modelOptions.length > 0 ? modelOptions : providerModelOptions;
+  const modelSelectValue = selectableModelOptions.includes(aiModel) ? aiModel : CUSTOM_MODEL_VALUE;
+  const isCustomModelSelected = modelSelectValue === CUSTOM_MODEL_VALUE;
 
   // Clear stale test result when config changes
   useEffect(() => {
@@ -429,17 +441,18 @@ export function SettingsView() {
   async function loadAiModels(showToast = false, forceRefresh = false) {
     // OpenRouter: 카탈로그가 너무 커서 라이브 목록을 가져오지 않음
     if (aiProvider === "openrouter") {
-      const fallback = aiModel || currentProvider?.defaultModel || "";
-      setModelOptions(fallback ? [fallback] : []);
+      setModelOptions(providerModelOptions);
       setModelsSource("fallback");
       setModelsError(t("settings.aiModelOpenRouterSkip"));
       if (showToast) toast.message(t("settings.aiModelOpenRouterSkip"));
       return;
     }
     if (modelsRequireApiKey && !aiApiKey.trim()) {
-      setModelsError(t("settings.aiModelNeedKey"));
-      if (showToast) toast.error(t("settings.aiModelNeedKey"));
-      return;
+      if (!canUsePublicCatalog) {
+        setModelsError(t("settings.aiModelNeedKey"));
+        if (showToast) toast.error(t("settings.aiModelNeedKey"));
+        return;
+      }
     }
     if (!resolvedUrl.trim()) {
       setModelsError(t("settings.aiTestEnterUrl"));
@@ -467,6 +480,7 @@ export function SettingsView() {
             modelsUrl: resolvedModelsUrl ?? null,
             fallbackModel: aiModel || currentProvider?.defaultModel || null,
             forceRefresh,
+            catalogProviderId: catalogProviderId ?? null,
           },
         }),
         new Promise<never>((_, reject) => {
@@ -476,9 +490,9 @@ export function SettingsView() {
 
       if (requestId !== modelsRequestIdRef.current) return;
 
-      setModelOptions(result.models);
+      setModelOptions([...new Set([...result.models, ...providerModelOptions])]);
       setModelsSource(
-        result.source === "live" || result.source === "cache" || result.source === "fallback"
+        result.source === "live" || result.source === "cache" || result.source === "catalog" || result.source === "fallback"
           ? result.source
           : "fallback"
       );
@@ -493,7 +507,7 @@ export function SettingsView() {
       const msg = String(err);
       setModelsError(msg);
       setModelsSource("fallback");
-      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
+      setModelOptions(providerModelOptions);
       if (showToast) toast.error(msg);
     } finally {
       if (requestId === modelsRequestIdRef.current) {
@@ -506,15 +520,19 @@ export function SettingsView() {
   useEffect(() => {
     if (!aiLoaded || providerLoading) return;
     if (aiProvider === "openrouter") {
-      const fallback = aiModel || currentProvider?.defaultModel || "";
-      setModelOptions(fallback ? [fallback] : []);
+      setModelOptions(providerModelOptions);
       setModelsSource("fallback");
       setModelsError(t("settings.aiModelOpenRouterSkip"));
       return;
     }
-    if ((modelsRequireApiKey && !aiApiKey.trim()) || !resolvedUrl.trim()) {
-      setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
-      setModelsSource(currentProvider?.defaultModel ? "fallback" : null);
+    if (!resolvedUrl.trim()) {
+      setModelOptions(providerModelOptions);
+      setModelsSource(providerModelOptions.length > 0 ? "fallback" : null);
+      return;
+    }
+    if (modelsRequireApiKey && !aiApiKey.trim() && !canUsePublicCatalog) {
+      setModelOptions(providerModelOptions);
+      setModelsSource(providerModelOptions.length > 0 ? "fallback" : null);
       return;
     }
     const timer = window.setTimeout(() => {
@@ -526,7 +544,7 @@ export function SettingsView() {
   }, [aiLoaded, providerLoading, aiProvider, aiRegion, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
 
   const canRefreshModels =
-    (!modelsRequireApiKey || !!aiApiKey.trim()) &&
+    (!modelsRequireApiKey || !!aiApiKey.trim() || canUsePublicCatalog) &&
     !!resolvedUrl.trim() &&
     aiProvider !== "openrouter";
 
@@ -892,7 +910,7 @@ export function SettingsView() {
                     onBlur={() => {
                       // 키 입력이 끝나면 그때 모델 목록 로드
                       if (
-                        (!modelsRequireApiKey || aiApiKey.trim()) &&
+                        (!modelsRequireApiKey || aiApiKey.trim() || canUsePublicCatalog) &&
                         resolvedUrl.trim() &&
                         aiProvider !== "openrouter"
                       ) {
@@ -908,7 +926,7 @@ export function SettingsView() {
               </div>
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1">
-                  <label className="text-xs text-muted-foreground">{t("settings.aiModelLabel")}</label>
+                  <label htmlFor="ai-model-select" className="text-xs text-muted-foreground">{t("settings.aiModelLabel")}</label>
                   {/* Base UI Button 대신 native — loading 중 pointer-events-none으로 클릭이 먹통 되는 문제 방지 */}
                   <button
                     type="button"
@@ -917,7 +935,7 @@ export function SettingsView() {
                     title={
                       aiProvider === "openrouter"
                         ? t("settings.aiModelOpenRouterSkip")
-                        : modelsRequireApiKey && !aiApiKey.trim()
+                        : modelsRequireApiKey && !aiApiKey.trim() && !canUsePublicCatalog
                           ? t("settings.aiModelNeedKey")
                           : !resolvedUrl.trim()
                             ? t("settings.aiTestEnterUrl")
@@ -931,43 +949,35 @@ export function SettingsView() {
                     <span>{modelsLoading ? t("settings.aiModelLoading") : t("settings.aiModelRefresh")}</span>
                   </button>
                 </div>
-                <Input
-                  list="ai-model-options"
-                  placeholder={t("settings.aiModelPlaceholder")}
-                  value={aiModel}
-                  onChange={(e) => { setHasUserInteracted(true); setAiModel(e.target.value); }}
-                />
-                <datalist id="ai-model-options">
-                  {modelOptions.map((m) => (
-                    <option key={m} value={m} />
+                <select
+                  id="ai-model-select"
+                  value={modelSelectValue}
+                  onChange={(e) => {
+                    setHasUserInteracted(true);
+                    setAiModel(e.target.value === CUSTOM_MODEL_VALUE ? "" : e.target.value);
+                  }}
+                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm text-foreground shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {selectableModelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
                   ))}
-                </datalist>
-                {/* WebView에서 datalist가 안 보일 수 있어, 클릭 가능한 목록도 표시 */}
-                {modelOptions.length > 0 && modelsSource !== null ? (
-                  <div className="mt-2 max-h-36 overflow-y-auto rounded-md border border-border bg-background p-1.5">
-                    <div className="flex flex-wrap gap-1">
-                      {modelOptions.slice(0, 80).map((m) => (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => { setHasUserInteracted(true); setAiModel(m); }}
-                          className={`px-2 py-1 rounded text-[11px] border transition-colors cursor-pointer ${aiModel === m ? "bg-primary/15 border-primary text-foreground font-medium" : "border-border text-muted-foreground hover:border-primary/40 hover:bg-hover-bg/10"}`}
-                          title={m}
-                        >
-                          {m}
-                        </button>
-                      ))}
-                    </div>
-                    {modelOptions.length > 80 ? (
-                      <p className="mt-1 px-1 text-[10px] text-muted-foreground">
-                        {t("settings.aiModelTruncated", { shown: 80, total: modelOptions.length })}
-                      </p>
-                    ) : null}
-                  </div>
+                  <option value={CUSTOM_MODEL_VALUE}>{t("settings.aiModelCustom")}</option>
+                </select>
+                {isCustomModelSelected ? (
+                  <Input
+                    id="ai-custom-model-input"
+                    className="mt-2"
+                    aria-label={t("settings.aiModelCustomLabel")}
+                    placeholder={t("settings.aiModelCustomPlaceholder")}
+                    value={aiModel}
+                    onChange={(e) => { setHasUserInteracted(true); setAiModel(e.target.value); }}
+                  />
                 ) : null}
-                {modelsSource === "live" || modelsSource === "cache" ? (
+                {modelsSource === "live" || modelsSource === "cache" || modelsSource === "catalog" ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {t("settings.aiModelLive", { count: modelOptions.length })}
+                    {modelsSource === "catalog"
+                      ? t("settings.aiModelCatalog", { count: modelOptions.length })
+                      : t("settings.aiModelLive", { count: modelOptions.length })}
                   </p>
                 ) : null}
                 {modelsError ? (

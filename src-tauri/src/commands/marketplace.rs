@@ -679,6 +679,113 @@ fn fallback_models(fallback_model: &str) -> Vec<String> {
     }
 }
 
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
+const MODELS_DEV_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+static MODELS_DEV_CACHE: LazyLock<Mutex<Option<(Instant, String)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// Keep only models that can plausibly be used for chat/skill explanation.
+/// models.dev includes image, embedding, realtime, and TTS models that the
+/// OpenAI/Anthropic chat request path cannot call.
+fn is_chat_catalog_model(model: &serde_json::Value) -> bool {
+    let output = model
+        .get("modalities")
+        .and_then(|m| m.get("output"))
+        .and_then(|v| v.as_array());
+    if let Some(output) = output {
+        let has_text = output
+            .iter()
+            .any(|m| m.as_str().map(|s| s == "text").unwrap_or(false));
+        if !has_text {
+            return false;
+        }
+    }
+
+    let id = model
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if id.contains("embedding")
+        || id.contains("tts")
+        || id.contains("realtime")
+        || id.contains("image")
+        || id.contains("whisper")
+    {
+        return false;
+    }
+
+    let family = model
+        .get("family")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !family.contains("embedding")
+        && !family.contains("tts")
+        && !family.contains("image")
+        && !family.contains("realtime")
+        && !family.contains("whisper")
+}
+
+fn parse_models_dev_provider(body: &str, provider_id: &str) -> Vec<String> {
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let Some(provider) = val.get(provider_id) else {
+        return Vec::new();
+    };
+    let Some(models) = provider.get("models").and_then(|m| m.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut ids: Vec<String> = models
+        .values()
+        .filter(|model| is_chat_catalog_model(model))
+        .filter_map(|model| model.get("id").and_then(|v| v.as_str()))
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+async fn fetch_models_dev_provider_models(
+    client: &reqwest::Client,
+    provider_id: &str,
+    force_refresh: bool,
+) -> Result<Vec<String>, String> {
+    if !force_refresh {
+        if let Ok(cache) = MODELS_DEV_CACHE.lock() {
+            if let Some((fetched_at, body)) = cache.as_ref() {
+                if fetched_at.elapsed() < MODELS_DEV_CACHE_TTL {
+                    return Ok(parse_models_dev_provider(body, provider_id));
+                }
+            }
+        }
+    }
+
+    let resp = client
+        .get(MODELS_DEV_API_URL)
+        .send()
+        .await
+        .map_err(|e| format!("models.dev 请求失败: {}", format_reqwest_error(&e)))?;
+    if !resp.status().is_success() {
+        return Err(format!("models.dev 返回错误 {}", resp.status()));
+    }
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("读取 models.dev 失败: {}", e))?;
+
+    if let Ok(mut cache) = MODELS_DEV_CACHE.lock() {
+        *cache = Some((Instant::now(), body.clone()));
+    }
+
+    Ok(parse_models_dev_provider(&body, provider_id))
+}
+
 fn parse_models_response(body: &str) -> Vec<String> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
@@ -743,6 +850,8 @@ pub struct ListAiModelsRequest {
     pub fallback_model: Option<String>,
     /// When true, bypass the in-memory TTL cache (Refresh button).
     pub force_refresh: Option<bool>,
+    /// Optional models.dev provider id (per region) used as a public catalog fallback.
+    pub catalog_provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1091,6 +1200,7 @@ pub async fn list_ai_models(
         models_url: None,
         fallback_model: None,
         force_refresh: None,
+        catalog_provider_id: None,
     });
 
     // Some catalogs (for example OpenCode Go) are public even though chat requests
@@ -1126,6 +1236,10 @@ pub async fn list_ai_models(
             .await
             .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string()),
     };
+
+    let catalog_provider_id = req
+        .catalog_provider_id
+        .filter(|id| !id.trim().is_empty());
 
     // OpenRouter catalog is huge — skip live fetch; user types model id manually.
     if models_url.to_ascii_lowercase().contains("openrouter.ai")
@@ -1169,6 +1283,38 @@ pub async fn list_ai_models(
         .build()
         .map_err(|e| e.to_string())?;
 
+    // Public models.dev catalog is the first fallback when the provider's own
+    // /models endpoint is unavailable (missing key, 401, network failure).
+    let catalog_fallback = |live_error: String| async {
+        if let Some(provider_id) = catalog_provider_id.as_deref() {
+            match fetch_models_dev_provider_models(&client, provider_id, force_refresh).await {
+                Ok(mut models) if !models.is_empty() => {
+                    if !fallback_model.is_empty() && !models.iter().any(|m| m == &fallback_model) {
+                        models.insert(0, fallback_model.clone());
+                    }
+                    return Ok(ListAiModelsResult {
+                        models,
+                        source: "catalog".to_string(),
+                        error: Some(live_error),
+                    });
+                }
+                Ok(_) => {}
+                Err(catalog_error) => {
+                    return Ok(ListAiModelsResult {
+                        models: fallback_models(&fallback_model),
+                        source: "fallback".to_string(),
+                        error: Some(format!("{} | {}", live_error, catalog_error)),
+                    });
+                }
+            }
+        }
+        Ok(ListAiModelsResult {
+            models: fallback_models(&fallback_model),
+            source: "fallback".to_string(),
+            error: Some(live_error),
+        })
+    };
+
     let fetch_url = models_fetch_url(&models_url, use_anthropic_auth);
 
     let mut req_builder = client.get(&fetch_url);
@@ -1187,26 +1333,19 @@ pub async fn list_ai_models(
     let resp = match req_builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            return Ok(ListAiModelsResult {
-                models: fallback_models(&fallback_model),
-                source: "fallback".to_string(),
-                error: Some(format!("模型列表请求失败: {}", format_reqwest_error(&e))),
-            });
+            return catalog_fallback(format!("模型列表请求失败: {}", format_reqwest_error(&e))).await;
         }
     };
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Ok(ListAiModelsResult {
-            models: fallback_models(&fallback_model),
-            source: "fallback".to_string(),
-            error: Some(format!(
-                "模型列表返回错误 {}: {}",
-                status,
-                &body[..body.len().min(200)]
-            )),
-        });
+        return catalog_fallback(format!(
+            "模型列表返回错误 {}: {}",
+            status,
+            &body[..body.len().min(200)]
+        ))
+        .await;
     }
 
     let body = resp
@@ -1215,14 +1354,11 @@ pub async fn list_ai_models(
         .map_err(|e| format!("读取模型列表失败: {}", e))?;
     let mut models = parse_models_response(&body);
     if models.is_empty() {
-        return Ok(ListAiModelsResult {
-            models: fallback_models(&fallback_model),
-            source: "fallback".to_string(),
-            error: Some(format!(
-                "无法解析模型列表响应: {}",
-                &body[..body.len().min(200)]
-            )),
-        });
+        return catalog_fallback(format!(
+            "无法解析模型列表响应: {}",
+            &body[..body.len().min(200)]
+        ))
+        .await;
     }
 
     if !fallback_model.is_empty() && !models.iter().any(|m| m == &fallback_model) {
@@ -1803,6 +1939,7 @@ mod tests {
         derive_models_url, detect_explanation_api_protocol, fallback_models,
         format_reqwest_error, get_fallback_endpoint, load_cached_skill_explanation,
         marketplace_skills_from_candidates, models_fetch_url, parse_models_response,
+        parse_models_dev_provider,
         registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
         search_marketplace_skills_impl, sync_registry_impl, ExplanationApiProtocol,
         ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
@@ -2476,5 +2613,34 @@ mod tests {
     fn fallback_models_does_not_create_an_empty_model_option() {
         assert!(fallback_models("").is_empty());
         assert_eq!(fallback_models("glm-5"), vec!["glm-5".to_string()]);
+    }
+
+    #[test]
+    fn parse_models_dev_provider_filters_non_chat_models() {
+        let body = r#"{
+            "anthropic": {
+                "id": "anthropic",
+                "models": {
+                    "claude-sonnet-5": {
+                        "id": "claude-sonnet-5",
+                        "modalities": { "output": ["text"] }
+                    },
+                    "claude-image": {
+                        "id": "claude-image",
+                        "modalities": { "output": ["image"] }
+                    },
+                    "claude-tts": {
+                        "id": "claude-tts-preview",
+                        "family": "tts",
+                        "modalities": { "output": ["audio"] }
+                    }
+                }
+            }
+        }"#;
+        assert_eq!(
+            parse_models_dev_provider(body, "anthropic"),
+            vec!["claude-sonnet-5".to_string()]
+        );
+        assert!(parse_models_dev_provider(body, "missing").is_empty());
     }
 }

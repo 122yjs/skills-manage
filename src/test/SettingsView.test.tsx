@@ -239,7 +239,7 @@ describe("SettingsView", () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_ai_models") {
         return {
-          models: ["deepseek-v4-flash", "glm-5.2", "kimi-k3"],
+          models: ["deepseek-v4-flash"],
           source: "live",
           error: null,
         };
@@ -262,10 +262,69 @@ describe("SettingsView", () => {
           apiUrl: "https://opencode.ai/zen/go/v1/chat/completions",
           modelsUrl: "https://opencode.ai/zen/go/v1/models",
           protocol: "openai",
+          catalogProviderId: "opencode-go",
         }),
       });
     });
-    expect(await screen.findByRole("button", { name: "glm-5.2" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "glm-5.2" })).toBeTruthy();
+  });
+
+  it("shows preset ChatGPT models without an API key", async () => {
+    setupMocks();
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "ChatGPT" }));
+
+    expect(await screen.findByRole("option", { name: "gpt-5.1" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "gpt-4.1-mini" })).toBeTruthy();
+  });
+
+  it("loads Claude public catalog without an API key", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_ai_models") {
+        return {
+          models: ["claude-sonnet-5"],
+          source: "catalog",
+          error: null,
+        };
+      }
+      return null;
+    });
+    setupMocks();
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+
+    const refreshButton = await screen.findByRole("button", { name: "刷新模型列表" });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    fireEvent.click(refreshButton);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("list_ai_models", {
+        request: expect.objectContaining({
+          apiKey: "",
+          catalogProviderId: "anthropic",
+        }),
+      });
+    });
+    expect(await screen.findByRole("option", { name: "claude-sonnet-5" })).toBeTruthy();
+  });
+
+  it("allows entering a custom model from the last dropdown option", async () => {
+    setupMocks();
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "ChatGPT" }));
+
+    const modelSelect = await screen.findByRole("combobox", { name: "模型" });
+    const customOption = screen.getByRole("option", { name: "自定义" });
+    expect(customOption.parentElement?.lastElementChild).toBe(customOption);
+
+    fireEvent.change(modelSelect, { target: { value: "__custom_model__" } });
+
+    const customInput = await screen.findByRole("textbox", { name: "自定义模型 ID" });
+    fireEvent.change(customInput, { target: { value: "my-custom-model" } });
+    expect(customInput).toHaveValue("my-custom-model");
   });
 
   // ── Scan Directories section ──────────────────────────────────────────────
