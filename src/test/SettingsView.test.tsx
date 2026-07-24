@@ -235,6 +235,39 @@ describe("SettingsView", () => {
     expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
   });
 
+  it("loads the public OpenCode Go model catalog without an API key", async () => {
+    vi.mocked(invoke).mockImplementation(async (command) => {
+      if (command === "list_ai_models") {
+        return {
+          models: ["deepseek-v4-flash", "glm-5.2", "kimi-k3"],
+          source: "live",
+          error: null,
+        };
+      }
+      return null;
+    });
+    setupMocks();
+    renderSettingsView();
+
+    fireEvent.click(screen.getByRole("button", { name: "OpenCode Go" }));
+
+    const refreshButton = await screen.findByRole("button", { name: "刷新模型列表" });
+    await waitFor(() => expect(refreshButton).toBeEnabled());
+    fireEvent.click(refreshButton);
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith("list_ai_models", {
+        request: expect.objectContaining({
+          apiKey: "",
+          apiUrl: "https://opencode.ai/zen/go/v1/chat/completions",
+          modelsUrl: "https://opencode.ai/zen/go/v1/models",
+          protocol: "openai",
+        }),
+      });
+    });
+    expect(await screen.findByRole("button", { name: "glm-5.2" })).toBeTruthy();
+  });
+
   // ── Scan Directories section ──────────────────────────────────────────────
 
   it("shows loading state for scan directories", () => {

@@ -657,6 +657,28 @@ fn models_url_uses_anthropic_auth(models_url: &str) -> bool {
     u.contains("api.anthropic.com") || u.contains("/anthropic/")
 }
 
+/// Only Anthropic's catalog documents the `limit` parameter. Some OpenAI-compatible
+/// gateways reject unknown query parameters, so preserve their models URL verbatim.
+fn models_fetch_url(models_url: &str, use_anthropic_auth: bool) -> String {
+    if !use_anthropic_auth {
+        return models_url.to_string();
+    }
+
+    if models_url.contains('?') {
+        format!("{}&limit=100", models_url)
+    } else {
+        format!("{}?limit=100", models_url)
+    }
+}
+
+fn fallback_models(fallback_model: &str) -> Vec<String> {
+    if fallback_model.is_empty() {
+        Vec::new()
+    } else {
+        vec![fallback_model.to_string()]
+    }
+}
+
 fn parse_models_response(body: &str) -> Vec<String> {
     let Ok(val) = serde_json::from_str::<serde_json::Value>(body) else {
         return Vec::new();
@@ -712,6 +734,8 @@ static MODELS_CACHE: LazyLock<Mutex<HashMap<String, ModelsCacheEntry>>> =
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAiModelsRequest {
+    /// `None` loads the active provider key from settings; an explicit empty value
+    /// suppresses auth for public catalogs.
     pub api_key: Option<String>,
     pub api_url: Option<String>,
     pub protocol: Option<String>,
@@ -1069,11 +1093,12 @@ pub async fn list_ai_models(
         force_refresh: None,
     });
 
-    let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
-        Some(k) => k,
-        None => get_provider_setting(&state.db, "ai_api_key")
-            .await
-            .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?,
+    // Some catalogs (for example OpenCode Go) are public even though chat requests
+    // still require a key. Keep auth optional and let protected endpoints return 401.
+    let api_key = match req.api_key {
+        Some(k) if !k.trim().is_empty() => Some(k),
+        Some(_) => None,
+        None => get_provider_setting(&state.db, "ai_api_key").await,
     };
 
     let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
@@ -1107,11 +1132,7 @@ pub async fn list_ai_models(
         || resolved_chat_url.to_ascii_lowercase().contains("openrouter.ai")
     {
         return Ok(ListAiModelsResult {
-            models: if fallback_model.is_empty() {
-                Vec::new()
-            } else {
-                vec![fallback_model]
-            },
+            models: fallback_models(&fallback_model),
             source: "fallback".to_string(),
             error: Some(
                 "OpenRouter model catalog is too large; enter a model id manually.".to_string(),
@@ -1148,29 +1169,26 @@ pub async fn list_ai_models(
         .build()
         .map_err(|e| e.to_string())?;
 
-    // Anthropic models API supports limit; harmless elsewhere if ignored.
-    let fetch_url = if models_url.contains('?') {
-        format!("{}&limit=100", models_url)
-    } else {
-        format!("{}?limit=100", models_url)
-    };
+    let fetch_url = models_fetch_url(&models_url, use_anthropic_auth);
 
     let mut req_builder = client.get(&fetch_url);
-    if use_anthropic_auth {
-        req_builder = req_builder
-            .header("x-api-key", &api_key)
-            .header("anthropic-version", "2023-06-01")
-            // Some gateways only accept Bearer even on Anthropic-shaped paths.
-            .header("authorization", format!("Bearer {}", api_key));
-    } else {
-        req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
+    if let Some(api_key) = api_key.as_deref() {
+        if use_anthropic_auth {
+            req_builder = req_builder
+                .header("x-api-key", api_key)
+                .header("anthropic-version", "2023-06-01")
+                // Some gateways only accept Bearer even on Anthropic-shaped paths.
+                .header("authorization", format!("Bearer {}", api_key));
+        } else {
+            req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
+        }
     }
 
     let resp = match req_builder.send().await {
         Ok(r) => r,
         Err(e) => {
             return Ok(ListAiModelsResult {
-                models: vec![fallback_model],
+                models: fallback_models(&fallback_model),
                 source: "fallback".to_string(),
                 error: Some(format!("模型列表请求失败: {}", format_reqwest_error(&e))),
             });
@@ -1181,7 +1199,7 @@ pub async fn list_ai_models(
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
         return Ok(ListAiModelsResult {
-            models: vec![fallback_model],
+            models: fallback_models(&fallback_model),
             source: "fallback".to_string(),
             error: Some(format!(
                 "模型列表返回错误 {}: {}",
@@ -1198,7 +1216,7 @@ pub async fn list_ai_models(
     let mut models = parse_models_response(&body);
     if models.is_empty() {
         return Ok(ListAiModelsResult {
-            models: vec![fallback_model],
+            models: fallback_models(&fallback_model),
             source: "fallback".to_string(),
             error: Some(format!(
                 "无法解析模型列表响应: {}",
@@ -1782,9 +1800,10 @@ pub async fn refresh_skill_explanation(
 mod tests {
     use super::{
         add_registry_impl, cache_skill_explanation, classify_reqwest_error,
-        derive_models_url, detect_explanation_api_protocol, format_reqwest_error,
-        get_fallback_endpoint, load_cached_skill_explanation, marketplace_skills_from_candidates,
-        parse_models_response, registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
+        derive_models_url, detect_explanation_api_protocol, fallback_models,
+        format_reqwest_error, get_fallback_endpoint, load_cached_skill_explanation,
+        marketplace_skills_from_candidates, models_fetch_url, parse_models_response,
+        registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
         search_marketplace_skills_impl, sync_registry_impl, ExplanationApiProtocol,
         ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
@@ -2427,5 +2446,35 @@ mod tests {
             parse_models_response(google),
             vec!["gemini-2.5-flash".to_string(), "gemini-2.0-flash".to_string()]
         );
+    }
+
+    #[test]
+    fn models_fetch_url_preserves_openai_compatible_catalog_urls() {
+        assert_eq!(
+            models_fetch_url("https://opencode.ai/zen/go/v1/models", false),
+            "https://opencode.ai/zen/go/v1/models"
+        );
+        assert_eq!(
+            models_fetch_url("https://api.openai.com/v1/models?after=model-1", false),
+            "https://api.openai.com/v1/models?after=model-1"
+        );
+    }
+
+    #[test]
+    fn models_fetch_url_adds_limit_only_for_anthropic_catalogs() {
+        assert_eq!(
+            models_fetch_url("https://api.anthropic.com/v1/models", true),
+            "https://api.anthropic.com/v1/models?limit=100"
+        );
+        assert_eq!(
+            models_fetch_url("https://api.anthropic.com/v1/models?after=model-1", true),
+            "https://api.anthropic.com/v1/models?after=model-1&limit=100"
+        );
+    }
+
+    #[test]
+    fn fallback_models_does_not_create_an_empty_model_option() {
+        assert!(fallback_models("").is_empty());
+        assert_eq!(fallback_models("glm-5"), vec!["glm-5".to_string()]);
     }
 }

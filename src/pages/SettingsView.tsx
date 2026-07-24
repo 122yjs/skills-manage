@@ -419,6 +419,7 @@ export function SettingsView() {
   const resolvedModelsUrl = urlMatchesRegistry
     ? (currentProvider?.modelsUrls?.[aiRegion] ?? currentProvider?.modelsUrls?.intl ?? undefined)
     : undefined;
+  const modelsRequireApiKey = currentProvider?.modelsRequireApiKey ?? true;
 
   // Clear stale test result when config changes
   useEffect(() => {
@@ -435,7 +436,7 @@ export function SettingsView() {
       if (showToast) toast.message(t("settings.aiModelOpenRouterSkip"));
       return;
     }
-    if (!aiApiKey.trim()) {
+    if (modelsRequireApiKey && !aiApiKey.trim()) {
       setModelsError(t("settings.aiModelNeedKey"));
       if (showToast) toast.error(t("settings.aiModelNeedKey"));
       return;
@@ -511,7 +512,7 @@ export function SettingsView() {
       setModelsError(t("settings.aiModelOpenRouterSkip"));
       return;
     }
-    if (!aiApiKey.trim() || !resolvedUrl.trim()) {
+    if ((modelsRequireApiKey && !aiApiKey.trim()) || !resolvedUrl.trim()) {
       setModelOptions(currentProvider?.defaultModel ? [currentProvider.defaultModel] : []);
       setModelsSource(currentProvider?.defaultModel ? "fallback" : null);
       return;
@@ -525,7 +526,9 @@ export function SettingsView() {
   }, [aiLoaded, providerLoading, aiProvider, aiRegion, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
 
   const canRefreshModels =
-    !!aiApiKey.trim() && !!resolvedUrl.trim() && aiProvider !== "openrouter";
+    (!modelsRequireApiKey || !!aiApiKey.trim()) &&
+    !!resolvedUrl.trim() &&
+    aiProvider !== "openrouter";
 
   const [isAddDirOpen, setIsAddDirOpen] = useState(false);
   const [showBuiltinDirs, setShowBuiltinDirs] = useState(false);
@@ -888,7 +891,11 @@ export function SettingsView() {
                     onChange={(e) => { setHasUserInteracted(true); setAiApiKey(e.target.value); }}
                     onBlur={() => {
                       // 키 입력이 끝나면 그때 모델 목록 로드
-                      if (aiApiKey.trim() && resolvedUrl.trim() && aiProvider !== "openrouter") {
+                      if (
+                        (!modelsRequireApiKey || aiApiKey.trim()) &&
+                        resolvedUrl.trim() &&
+                        aiProvider !== "openrouter"
+                      ) {
                         void loadAiModels(false, false);
                       }
                     }}
@@ -910,7 +917,7 @@ export function SettingsView() {
                     title={
                       aiProvider === "openrouter"
                         ? t("settings.aiModelOpenRouterSkip")
-                        : !aiApiKey.trim()
+                        : modelsRequireApiKey && !aiApiKey.trim()
                           ? t("settings.aiModelNeedKey")
                           : !resolvedUrl.trim()
                             ? t("settings.aiTestEnterUrl")
@@ -970,7 +977,9 @@ export function SettingsView() {
                 ) : null}
                 {!canRefreshModels && aiProvider !== "openrouter" ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {!aiApiKey.trim() ? t("settings.aiModelNeedKey") : t("settings.aiTestEnterUrl")}
+                    {modelsRequireApiKey && !aiApiKey.trim()
+                      ? t("settings.aiModelNeedKey")
+                      : t("settings.aiTestEnterUrl")}
                   </p>
                 ) : null}
               </div>

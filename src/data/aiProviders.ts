@@ -12,6 +12,8 @@ export interface AiProvider {
   endpoints: Partial<Record<RegionId, string>>;
   /** Models list endpoint per region (optional; derived from chat URL if missing) */
   modelsUrls?: Partial<Record<RegionId, string>>;
+  /** Whether the models catalog itself requires the provider API key (default: true). */
+  modelsRequireApiKey?: boolean;
   defaultModel: string;
   /** Wire protocol for auth + request body */
   protocol: ApiProtocol;
@@ -71,6 +73,7 @@ export const AI_PROVIDERS: AiProvider[] = [
     modelsUrls: {
       intl: "https://opencode.ai/zen/go/v1/models",
     },
+    modelsRequireApiKey: false,
     defaultModel: "deepseek-v4-flash",
     protocol: "openai",
     group: "global",
