@@ -183,6 +183,15 @@ describe("SettingsView", () => {
     expect(screen.getByText("关于")).toBeTruthy();
   });
 
+  it("renders Korean, Chinese, and English language choices", () => {
+    setupMocks();
+    renderSettingsView();
+
+    expect(screen.getByRole("button", { name: "한국어" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "中文" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "English" })).toBeTruthy();
+  });
+
   it("calls loadScanDirectories on mount", () => {
     const loadScanDirectories = vi.fn();
     setupMocks({ loadScanDirectories });

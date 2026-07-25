@@ -178,6 +178,7 @@ function CustomPlatformRow({ agent, onEdit, onRemove, isRemoving }: CustomPlatfo
 
 export function SettingsView() {
   const { t } = useTranslation();
+  const activeLanguage = i18n.resolvedLanguage ?? i18n.language.split("-")[0];
 
   // ── Store State ────────────────────────────────────────────────────────────
 
@@ -1262,18 +1263,26 @@ export function SettingsView() {
                   <div className="text-xs text-muted-foreground mb-1.5">{t("settings.language")}</div>
                   <div className="flex gap-2">
                     <Button
-                      variant={i18n.language === "zh" ? "default" : "outline"}
+                      variant={activeLanguage === "ko" ? "default" : "outline"}
+                      size="sm"
+                      onClick={() => i18n.changeLanguage("ko")}
+                      aria-pressed={activeLanguage === "ko"}
+                    >
+                      {t("settings.korean")}
+                    </Button>
+                    <Button
+                      variant={activeLanguage === "zh" ? "default" : "outline"}
                       size="sm"
                       onClick={() => i18n.changeLanguage("zh")}
-                      aria-pressed={i18n.language === "zh"}
+                      aria-pressed={activeLanguage === "zh"}
                     >
                       {t("settings.chinese")}
                     </Button>
                     <Button
-                      variant={i18n.language === "en" ? "default" : "outline"}
+                      variant={activeLanguage === "en" ? "default" : "outline"}
                       size="sm"
                       onClick={() => i18n.changeLanguage("en")}
-                      aria-pressed={i18n.language === "en"}
+                      aria-pressed={activeLanguage === "en"}
                     >
                       {t("settings.english")}
                     </Button>
