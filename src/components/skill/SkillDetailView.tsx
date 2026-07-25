@@ -33,6 +33,7 @@ import {
   SkillInstallation,
 } from "@/types";
 import { cn } from "@/lib/utils";
+import { getAgentDisplayName } from "@/lib/agents";
 import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
@@ -125,6 +126,7 @@ function PlatformToggleIcon({
   onToggle,
 }: PlatformToggleIconProps) {
   const { t } = useTranslation();
+  const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
   return (
     <button
       className={cn(
@@ -135,8 +137,8 @@ function PlatformToggleIcon({
         isReadOnly && "cursor-default hover:bg-transparent",
         isLoading && "animate-pulse pointer-events-none"
       )}
-      title={`${agent.display_name}${isInstalled ? ` — ${t("central.linked")}` : ""}`}
-      aria-label={t("central.toggleInstallLabel", { platform: agent.display_name, skill: skillName })}
+      title={`${displayName}${isInstalled ? ` — ${t("central.linked")}` : ""}`}
+      aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
       aria-pressed={isInstalled}
       disabled={isLoading || isReadOnly}
       onClick={onToggle}

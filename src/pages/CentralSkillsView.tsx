@@ -37,6 +37,7 @@ import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImpor
 import { useMarketplaceStore } from "@/stores/marketplaceStore";
 import { useSkillListViewMode } from "@/hooks/useSkillListViewMode";
 import { formatPathForDisplay } from "@/lib/path";
+import { getAgentDisplayName } from "@/lib/agents";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { dirnameFromSkillFile, splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { isTauriRuntime } from "@/lib/tauri";
@@ -63,9 +64,9 @@ const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   },
   {
     id: "central",
-    display_name: "Central Skills",
+    display_name: "Skill Library",
     category: "central",
-    global_skills_dir: "/Users/browser/.agents/skills/",
+    global_skills_dir: "/Users/browser/.skillsmanage/skills/",
     is_detected: true,
     is_builtin: true,
     is_enabled: true,
@@ -77,8 +78,8 @@ const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     id: "fixture-central-skill",
     name: "fixture-central-skill",
     description: "Browser validation fixture for Central and drawer entry flows.",
-    file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
-    canonical_path: "~/.agents/skills/fixture-central-skill",
+    file_path: "~/.skillsmanage/skills/fixture-central-skill/SKILL.md",
+    canonical_path: "~/.skillsmanage/skills/fixture-central-skill",
     is_central: true,
     source: "browser-fixture",
     scanned_at: "2026-04-17T00:00:00.000Z",
@@ -194,7 +195,7 @@ function FirstVisitEmptyState() {
         <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/50 rounded-xl px-4 py-3 max-w-xs text-left border border-border">
           <FolderOpen className="size-4 shrink-0 text-primary/60" />
           <span>
-            {t("empty.createHint")} <code className="font-mono">~/.agents/skills/my-skill/SKILL.md</code>
+            {t("empty.createHint")} <code className="font-mono">~/.skillsmanage/skills/my-skill/SKILL.md</code>
           </span>
         </div>
         <Button
@@ -442,7 +443,9 @@ export function CentralSkillsView() {
   }
 
   function agentDisplayNames(agentIds: string[]): string[] {
-    const namesById = new Map(agents.map((agent) => [agent.id, agent.display_name]));
+    const namesById = new Map(
+      agents.map((agent) => [agent.id, getAgentDisplayName(agent, t("sidebar.universal"))])
+    );
     return Array.from(new Set(agentIds)).map((agentId) => namesById.get(agentId) ?? agentId);
   }
 
@@ -479,6 +482,7 @@ export function CentralSkillsView() {
     try {
       await togglePlatformLink(skillId, agentId);
       await refreshCounts();
+      await loadCentralSkills();
     } catch (err) {
       toast.error(t("central.installError", { error: String(err) }));
     }
@@ -489,6 +493,7 @@ export function CentralSkillsView() {
       const result = await installSkill(skillId, agentIds, method);
       // Refresh sidebar counts after install.
       await refreshCounts();
+      await loadCentralSkills();
       if (result.failed.length > 0) {
         const failedNames = result.failed.map((f) => f.agent_id).join(", ");
         toast.error(t("central.installPartialFail", { platforms: failedNames }));
@@ -575,7 +580,8 @@ export function CentralSkillsView() {
   ) {
     try {
       const result = await importGitHubRepoSkills(githubRepoUrl, selections);
-      await Promise.all([refreshCounts(), loadCentralSkills()]);
+      await refreshCounts();
+      await loadCentralSkills();
       toast.success(t("marketplace.githubImportCentralSuccess"));
       return result;
     } catch (err) {

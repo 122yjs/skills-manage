@@ -118,9 +118,9 @@ const mockAgents: AgentWithStatus[] = [
   },
   {
     id: "central",
-    display_name: "Central Skills",
+    display_name: "Skill Library",
     category: "central",
-    global_skills_dir: "/Users/test/.agents/skills/",
+    global_skills_dir: "/Users/test/.skillsmanage/skills/",
     is_detected: true,
     is_builtin: true,
     is_enabled: true,
@@ -132,8 +132,8 @@ const mockSkills: SkillWithLinks[] = [
     id: "frontend-design",
     name: "frontend-design",
     description: "Build distinctive, production-grade frontend interfaces",
-    file_path: "~/.agents/skills/frontend-design/SKILL.md",
-    canonical_path: "~/.agents/skills/frontend-design",
+    file_path: "~/.skillsmanage/skills/frontend-design/SKILL.md",
+    canonical_path: "~/.skillsmanage/skills/frontend-design",
     is_central: true,
     scanned_at: "2026-04-09T00:00:00Z",
     created_at: "2026-04-10T00:00:00Z",
@@ -144,8 +144,8 @@ const mockSkills: SkillWithLinks[] = [
     id: "code-reviewer",
     name: "code-reviewer",
     description: "Review code changes and identify high-confidence, actionable bugs",
-    file_path: "~/.agents/skills/code-reviewer/SKILL.md",
-    canonical_path: "~/.agents/skills/code-reviewer",
+    file_path: "~/.skillsmanage/skills/code-reviewer/SKILL.md",
+    canonical_path: "~/.skillsmanage/skills/code-reviewer",
     is_central: true,
     scanned_at: "2026-04-09T00:00:00Z",
     created_at: "2026-04-08T00:00:00Z",
@@ -158,7 +158,7 @@ const mockBundles: CentralSkillBundle[] = [
   {
     name: "Superpowers",
     relativePath: "Superpowers",
-    path: "/Users/test/.agents/skills/Superpowers",
+    path: "/Users/test/.skillsmanage/skills/Superpowers",
     isSymlink: false,
     skillCount: 2,
     linkedAgentCount: 1,
@@ -173,8 +173,8 @@ const mockBundleDetail: CentralSkillBundleDetail = {
       id: "using-superpowers",
       name: "using-superpowers",
       description: "Use Superpowers workflows",
-      file_path: "/Users/test/.agents/skills/Superpowers/using-superpowers/SKILL.md",
-      canonical_path: "/Users/test/.agents/skills/Superpowers/using-superpowers",
+      file_path: "/Users/test/.skillsmanage/skills/Superpowers/using-superpowers/SKILL.md",
+      canonical_path: "/Users/test/.skillsmanage/skills/Superpowers/using-superpowers",
       is_central: true,
       scanned_at: "2026-04-09T00:00:00Z",
       linked_agents: ["claude-code"],
@@ -184,8 +184,8 @@ const mockBundleDetail: CentralSkillBundleDetail = {
       id: "writing-plans",
       name: "writing-plans",
       description: "Write implementation plans",
-      file_path: "/Users/test/.agents/skills/Superpowers/writing-plans/SKILL.md",
-      canonical_path: "/Users/test/.agents/skills/Superpowers/writing-plans",
+      file_path: "/Users/test/.skillsmanage/skills/Superpowers/writing-plans/SKILL.md",
+      canonical_path: "/Users/test/.skillsmanage/skills/Superpowers/writing-plans",
       is_central: true,
       scanned_at: "2026-04-09T00:00:00Z",
       linked_agents: ["cursor"],
@@ -319,18 +319,18 @@ describe("CentralSkillsView", () => {
 
   it("shows page title in header", () => {
     renderCentralSkillsView();
-    expect(screen.getByText("中央技能库")).toBeInTheDocument();
+    expect(screen.getByText("技能仓库")).toBeInTheDocument();
   });
 
   it("shows the central skills directory path", () => {
     renderCentralSkillsView();
-    expect(screen.getByText("/Users/test/.agents/skills/")).toBeInTheDocument();
+    expect(screen.getByText("/Users/test/.skillsmanage/skills/")).toBeInTheDocument();
   });
 
   it("shows a refresh button", () => {
     renderCentralSkillsView();
     expect(
-      screen.getByRole("button", { name: /刷新中央技能库/i })
+      screen.getByRole("button", { name: /刷新技能仓库/i })
     ).toBeInTheDocument();
   });
 
@@ -342,7 +342,7 @@ describe("CentralSkillsView", () => {
   it("shows a search input", () => {
     renderCentralSkillsView();
     expect(
-      screen.getByPlaceholderText(/搜索中央技能库/i)
+      screen.getByPlaceholderText(/搜索技能仓库/i)
     ).toBeInTheDocument();
   });
 
@@ -449,7 +449,7 @@ describe("CentralSkillsView", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /从中央技能库删除 code-reviewer/i,
+        name: /从技能仓库删除 code-reviewer 原件/i,
       })
     );
     fireEvent.click(screen.getByRole("button", { name: /确认删除/i }));
@@ -474,7 +474,7 @@ describe("CentralSkillsView", () => {
 
     fireEvent.click(
       screen.getByRole("button", {
-        name: /从中央技能库删除 frontend-design/i,
+        name: /从技能仓库删除 frontend-design 原件/i,
       })
     );
 
@@ -700,7 +700,11 @@ describe("CentralSkillsView", () => {
     await waitFor(() => {
       expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor");
       expect(mockRescan).toHaveBeenCalledTimes(1);
+      expect(mockLoadCentralSkills).toHaveBeenCalledTimes(2);
     });
+    expect(mockRescan.mock.invocationCallOrder[0]).toBeLessThan(
+      mockLoadCentralSkills.mock.invocationCallOrder[1]
+    );
   });
 
   it("opens the platform manager drawer and toggles a platform", async () => {
@@ -751,7 +755,7 @@ describe("CentralSkillsView", () => {
     ).toBeInTheDocument();
     // Should show guidance about creating a skill
     expect(
-      screen.getAllByText(/agents\/skills/).length
+      screen.getAllByText(/skillsmanage\/skills/).length
     ).toBeGreaterThanOrEqual(1);
   });
 
@@ -775,7 +779,7 @@ describe("CentralSkillsView", () => {
 
   it("filters skills by name when searching", async () => {
     renderCentralSkillsView();
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "frontend" } });
 
     await waitFor(() => {
@@ -786,7 +790,7 @@ describe("CentralSkillsView", () => {
 
   it("keeps filtered search results in the central card grid", async () => {
     renderCentralSkillsView();
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "frontend" } });
 
     const resultButton = await screen.findByText("frontend-design");
@@ -811,7 +815,7 @@ describe("CentralSkillsView", () => {
 
   it("filters skills by description when searching", async () => {
     renderCentralSkillsView();
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "actionable" } });
 
     await waitFor(() => {
@@ -822,7 +826,7 @@ describe("CentralSkillsView", () => {
 
   it("shows empty state when search has no results", async () => {
     renderCentralSkillsView();
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "zzz-nonexistent" } });
 
     await waitFor(() => {
@@ -832,7 +836,7 @@ describe("CentralSkillsView", () => {
 
   it("restores all skills when search is cleared", async () => {
     renderCentralSkillsView();
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "frontend" } });
     fireEvent.change(searchInput, { target: { value: "" } });
 
@@ -854,7 +858,7 @@ describe("CentralSkillsView", () => {
   it("calls rescan then loadCentralSkills when refresh button is clicked", async () => {
     renderCentralSkillsView();
     const refreshBtn = screen.getByRole("button", {
-      name: /刷新中央技能库/i,
+      name: /刷新技能仓库/i,
     });
     fireEvent.click(refreshBtn);
 
@@ -1003,7 +1007,7 @@ describe("CentralSkillsView", () => {
   it("preserves search and scroll state when closing the drawer and restores focus", async () => {
     renderCentralSkillsView();
 
-    const searchInput = screen.getByPlaceholderText(/搜索中央技能库/i);
+    const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "frontend" } });
 
     const scroller = searchInput.closest(".flex.flex-col.h-full")?.querySelector(".flex-1.overflow-auto.p-6");

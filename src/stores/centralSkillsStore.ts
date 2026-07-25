@@ -34,8 +34,17 @@ export const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   },
   {
     id: "central",
-    display_name: "Central Skills",
+    display_name: "Skill Library",
     category: "central",
+    global_skills_dir: "~/.skillsmanage/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "universal",
+    display_name: "Shared Install (.agents)",
+    category: "shared",
     global_skills_dir: "~/.agents/skills/",
     is_detected: true,
     is_builtin: true,
@@ -48,8 +57,8 @@ export const BROWSER_FIXTURE_SKILLS: SkillWithLinks[] = [
     id: "fixture-central-skill",
     name: "fixture-central-skill",
     description: "Browser validation fixture for Central and drawer entry flows.",
-    file_path: "~/.agents/skills/fixture-central-skill/SKILL.md",
-    canonical_path: "~/.agents/skills/fixture-central-skill",
+    file_path: "~/.skillsmanage/skills/fixture-central-skill/SKILL.md",
+    canonical_path: "~/.skillsmanage/skills/fixture-central-skill",
     is_central: true,
     source: "browser-fixture",
     scanned_at: "2026-04-17T00:00:00.000Z",
@@ -169,7 +178,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
         get().bundles.find((candidate) => candidate.relativePath === relativePath) ?? {
           name: relativePath,
           relativePath,
-          path: `~/.agents/skills/${relativePath}`,
+          path: `~/.skillsmanage/skills/${relativePath}`,
           isSymlink: false,
           skillCount: 0,
           linkedAgentCount: 0,
@@ -233,7 +242,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     if (!isTauriRuntime()) {
       const result: DeleteCentralSkillResult = {
         skillId,
-        removedCanonicalPath: `~/.agents/skills/${skillId}`,
+        removedCanonicalPath: `~/.skillsmanage/skills/${skillId}`,
         uninstalledAgents: [],
         skippedReadOnlyAgents: [],
       };
@@ -266,7 +275,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
         get().bundles.find((candidate) => candidate.relativePath === relativePath) ?? {
           name: relativePath,
           relativePath,
-          path: `~/.agents/skills/${relativePath}`,
+          path: `~/.skillsmanage/skills/${relativePath}`,
           isSymlink: false,
           skillCount: 0,
           linkedAgentCount: 0,
@@ -299,7 +308,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     if (!isTauriRuntime()) {
       const result: DeleteCentralSkillBundleResult = {
         relativePath,
-        removedBundlePath: `~/.agents/skills/${relativePath}`,
+        removedBundlePath: `~/.skillsmanage/skills/${relativePath}`,
         removedKind: "directory",
         removedSkillIds: [],
         uninstalledAgents: [],

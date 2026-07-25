@@ -10,9 +10,12 @@ use std::{
 };
 use uuid::Uuid;
 
-use crate::path_utils::{path_to_string, resolve_home_dir};
+use crate::path_utils::{default_central_skills_dir, path_to_string, resolve_home_dir};
 
 pub type DbPool = SqlitePool;
+
+pub const CENTRAL_SKILLS_PATH_SETTING: &str = "central_skills_path";
+pub const CENTRAL_MIGRATION_STATE_SETTING: &str = "central_vault_migration_state";
 
 // ─── Data Types ──────────────────────────────────────────────────────────────
 
@@ -412,7 +415,8 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     )
     .await?;
 
-    // Seed built-in agents (INSERT OR IGNORE so repeated init is safe)
+    // 사용자가 설정한 보관함 경로는 유지하면서 내장 플랫폼을 등록한다.
+    ensure_central_path_setting(pool).await?;
     seed_builtin_agents(pool).await?;
 
     // Seed built-in scan directories from the built-in agent registry.
@@ -424,8 +428,37 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     Ok(())
 }
 
+async fn ensure_central_path_setting(pool: &DbPool) -> Result<(), String> {
+    if get_setting(pool, CENTRAL_SKILLS_PATH_SETTING)
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+
+    let existing_path = sqlx::query("SELECT global_skills_dir FROM agents WHERE id = 'central'")
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|row| row.get::<String, _>("global_skills_dir"));
+    let path = existing_path.unwrap_or_else(|| path_to_string(&default_central_skills_dir()));
+    set_setting(pool, CENTRAL_SKILLS_PATH_SETTING, &path).await
+}
+
+async fn configured_builtin_agents(pool: &DbPool) -> Result<Vec<Agent>, String> {
+    let central_path = get_setting(pool, CENTRAL_SKILLS_PATH_SETTING)
+        .await?
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_central_skills_dir);
+    let mut agents = builtin_agents();
+    if let Some(central) = agents.iter_mut().find(|agent| agent.id == "central") {
+        central.global_skills_dir = path_to_string(&central_path);
+    }
+    Ok(agents)
+}
+
 async fn seed_builtin_agents(pool: &DbPool) -> Result<(), String> {
-    let agents = builtin_agents();
+    let agents = configured_builtin_agents(pool).await?;
     let builtin_ids: Vec<&str> = agents.iter().map(|a| a.id.as_str()).collect();
 
     for agent in &agents {
@@ -439,7 +472,8 @@ async fn seed_builtin_agents(pool: &DbPool) -> Result<(), String> {
               category = excluded.category,
               global_skills_dir = excluded.global_skills_dir,
               project_skills_dir = excluded.project_skills_dir,
-              icon_name = excluded.icon_name",
+              icon_name = excluded.icon_name,
+              is_builtin = 1",
         )
         .bind(&agent.id)
         .bind(&agent.display_name)
@@ -472,14 +506,12 @@ async fn seed_builtin_agents(pool: &DbPool) -> Result<(), String> {
     Ok(())
 }
 
-/// Seed `scan_directories` with one row per unique `global_skills_dir` path
-/// across all built-in agents.  Rows are marked `is_builtin = 1` and cannot
-/// be removed by the user.  `INSERT OR IGNORE` keeps the operation idempotent:
-/// if two built-in agents share the same path (codex and central both use
-/// `~/.agents/skills`) only the first insert takes effect.
+/// 내장 플랫폼의 고유한 전역 스킬 경로를 스캔 경로로 등록한다.
+/// 같은 `~/.agents/skills`를 공유하는 플랫폼은 한 번만 등록된다.
 async fn seed_builtin_scan_directories(pool: &DbPool) -> Result<(), String> {
     let now = Utc::now().to_rfc3339();
-    for agent in builtin_agents() {
+    let agents = configured_builtin_agents(pool).await?;
+    for agent in &agents {
         sqlx::query(
             "INSERT OR IGNORE INTO scan_directories
              (path, label, is_active, is_builtin, added_at)
@@ -494,10 +526,8 @@ async fn seed_builtin_scan_directories(pool: &DbPool) -> Result<(), String> {
     }
 
     // Remove builtin scan directories that no longer exist in code
-    let builtin_paths: std::collections::HashSet<String> = builtin_agents()
-        .into_iter()
-        .map(|a| a.global_skills_dir)
-        .collect();
+    let builtin_paths: std::collections::HashSet<String> =
+        agents.into_iter().map(|a| a.global_skills_dir).collect();
     let all_db_dirs: Vec<(String,)> =
         sqlx::query_as("SELECT path FROM scan_directories WHERE is_builtin = 1")
             .fetch_all(pool)
@@ -1054,10 +1084,18 @@ pub fn builtin_agents() -> Vec<Agent> {
         ),
         // ── Central Skills ────────────────────────────────────────────────────
         agent(
-            "central",
-            "Central Skills",
-            "central",
+            "universal",
+            "Universal (.agents)",
+            "shared",
             ".agents/skills",
+            None,
+            "universal",
+        ),
+        agent(
+            "central",
+            "Skill Vault",
+            "central",
+            ".skillsmanage/skills",
             None,
             "central",
         ),
@@ -2071,15 +2109,37 @@ pub async fn get_setting(pool: &DbPool, key: &str) -> Result<Option<String>, Str
     Ok(row.map(|r| r.get::<String, _>("value")))
 }
 
+/// 설정된 보관함 경로를 구한다.
+/// 실행 시 설정과 내장 플랫폼 행을 맞추되, 격리 테스트에서는 임시 경로를 우선 사용할 수 있다.
+pub async fn get_central_skills_dir(pool: &DbPool) -> Result<std::path::PathBuf, String> {
+    let agent_path = sqlx::query("SELECT global_skills_dir FROM agents WHERE id = 'central'")
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|row| row.get::<String, _>("global_skills_dir"));
+    Ok(agent_path
+        .or(get_setting(pool, CENTRAL_SKILLS_PATH_SETTING).await?)
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(default_central_skills_dir))
+}
+
 /// Set (upsert) a setting value.
 pub async fn set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), String> {
+    let mut transaction = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
         .bind(key)
         .bind(value)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    if key == CENTRAL_SKILLS_PATH_SETTING {
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(value)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    transaction.commit().await.map_err(|e| e.to_string())
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -2385,6 +2445,81 @@ mod tests {
             builtin_agents().len(),
             "Reinit must not duplicate agents"
         );
+    }
+
+    #[tokio::test]
+    async fn test_configured_central_path_survives_reinit() {
+        let pool = setup_test_db().await;
+        let configured = "/tmp/skills-manage-configured-vault";
+        set_setting(&pool, CENTRAL_SKILLS_PATH_SETTING, configured)
+            .await
+            .unwrap();
+
+        init_database(&pool).await.unwrap();
+
+        assert_eq!(
+            get_setting(&pool, CENTRAL_SKILLS_PATH_SETTING)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(configured)
+        );
+        assert_eq!(
+            get_agent_by_id(&pool, "central")
+                .await
+                .unwrap()
+                .unwrap()
+                .global_skills_dir,
+            configured
+        );
+    }
+
+    #[tokio::test]
+    async fn test_existing_central_path_is_promoted_to_setting() {
+        let pool = setup_test_db().await;
+        let legacy = "/tmp/skills-manage-legacy-vault";
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(CENTRAL_SKILLS_PATH_SETTING)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(legacy)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        init_database(&pool).await.unwrap();
+
+        assert_eq!(
+            get_setting(&pool, CENTRAL_SKILLS_PATH_SETTING)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(legacy)
+        );
+        assert_eq!(
+            get_agent_by_id(&pool, "central")
+                .await
+                .unwrap()
+                .unwrap()
+                .global_skills_dir,
+            legacy
+        );
+    }
+
+    #[tokio::test]
+    async fn test_universal_agent_is_separate_shared_install_target() {
+        let pool = setup_test_db().await;
+        let universal = get_agent_by_id(&pool, "universal").await.unwrap().unwrap();
+        let central = get_agent_by_id(&pool, "central").await.unwrap().unwrap();
+
+        assert_eq!(universal.category, "shared");
+        assert_eq!(
+            universal.global_skills_dir,
+            path_to_string(&crate::path_utils::universal_skills_dir())
+        );
+        assert_ne!(universal.global_skills_dir, central.global_skills_dir);
     }
 
     // ── Skills ────────────────────────────────────────────────────────────────

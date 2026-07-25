@@ -46,7 +46,24 @@ type PreviewSkill = {
   name: string;
   description?: string;
   downloadUrl: string;
+  marketplaceSkillId?: string;
+  repoUrl?: string;
+  sourcePath?: string;
+  hasConflict?: boolean;
 };
+
+type DetailSkill = MarketplaceSkillDetail & {
+  installRequest?: PreviewSkill;
+};
+
+function sourcePathFromRawUrl(downloadUrl: string): string | undefined {
+  try {
+    const parts = new URL(downloadUrl).pathname.split("/").filter(Boolean);
+    return parts.length > 3 ? parts.slice(3).join("/") : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // ─── Publisher Card ──────────────────────────────────────────────────────────
 
@@ -119,7 +136,7 @@ export function MarketplaceView() {
   const [previewCache, setPreviewCache] = useState<Record<string, PreviewSkill[]>>({});
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [previewInstallingIds, setPreviewInstallingIds] = useState<Set<string>>(new Set());
-  const [detailSkill, setDetailSkill] = useState<MarketplaceSkillDetail | null>(null);
+  const [detailSkill, setDetailSkill] = useState<DetailSkill | null>(null);
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ kind: "idle" });
   const [isGitHubImportOpen, setIsGitHubImportOpen] = useState(false);
   const [githubRepoUrl, setGitHubRepoUrl] = useState("");
@@ -242,6 +259,7 @@ export function MarketplaceView() {
             name: skill.name,
             description: skill.description ?? undefined,
             downloadUrl: skill.download_url,
+            marketplaceSkillId: skill.id,
           }));
           setPreviewSkills(nextPreviewSkills);
           setPreviewCache((current) => ({ ...current, [repoUrl]: nextPreviewSkills }));
@@ -257,6 +275,9 @@ export function MarketplaceView() {
         name: skill.skillName,
         description: skill.description ?? undefined,
         downloadUrl: skill.downloadUrl,
+        repoUrl,
+        sourcePath: skill.sourcePath,
+        hasConflict: Boolean(skill.conflict),
       }));
       setPreviewSkills(nextPreviewSkills);
       setPreviewCache((current) => ({ ...current, [repoUrl]: nextPreviewSkills }));
@@ -275,18 +296,37 @@ export function MarketplaceView() {
   async function handleInstallPreviewSkill(skill: PreviewSkill) {
     setPreviewInstallingIds((prev) => new Set(prev).add(skill.name));
     try {
-      // Download SKILL.md and write to central dir via Tauri FS plugin
-      const resp = await fetch(skill.downloadUrl);
-      if (!resp.ok) throw new Error(`Download failed: ${resp.status}`);
-      const content = await resp.text();
+      if (skill.marketplaceSkillId) {
+        await installSkill(skill.marketplaceSkillId);
+      } else if (skill.repoUrl && skill.sourcePath) {
+        let hasConflict = skill.hasConflict;
+        if (hasConflict === undefined) {
+          const preview = await invoke<GitHubRepoPreview>("preview_github_repo_import", {
+            repoUrl: skill.repoUrl,
+          });
+          const candidate = preview.skills.find(
+            (previewSkill) => previewSkill.sourcePath === skill.sourcePath
+          );
+          if (!candidate) throw new Error(t("marketplace.previewInstallUnavailable"));
+          hasConflict = Boolean(candidate.conflict);
+        }
+        if (hasConflict) {
+          setGitHubRepoUrl(skill.repoUrl);
+          setIsGitHubImportOpen(true);
+          toast.error(t("marketplace.previewConflictOpenWizard"));
+          return;
+        }
+        await importGitHubRepoSkills(skill.repoUrl, [
+          {
+            sourcePath: skill.sourcePath,
+            resolution: "overwrite",
+          },
+        ]);
+      } else {
+        throw new Error(t("marketplace.previewInstallUnavailable"));
+      }
 
-      // Write via the Tauri FS plugin
-      const { writeTextFile, mkdir, BaseDirectory } = await import("@tauri-apps/plugin-fs");
-      const skillDir = `.agents/skills/${skill.name}`;
-      await mkdir(skillDir, { baseDir: BaseDirectory.Home, recursive: true });
-      await writeTextFile(`${skillDir}/SKILL.md`, content, { baseDir: BaseDirectory.Home });
-
-      await rescan();
+      await Promise.all([rescan(), loadCentralSkills()]);
       toast.success(t("marketplace.installSuccess"));
     } catch (err) {
       toast.error(String(err));
@@ -299,7 +339,7 @@ export function MarketplaceView() {
     }
   }
 
-  function openDetailSkill(skill: MarketplaceSkillDetail, trigger?: EventTarget | null) {
+  function openDetailSkill(skill: DetailSkill, trigger?: EventTarget | null) {
     if (trigger instanceof HTMLElement) {
       detailTriggerRef.current = trigger;
     }
@@ -320,9 +360,7 @@ export function MarketplaceView() {
     try {
       const result = await importGitHubRepoSkills(githubRepoUrl, selections);
       await Promise.all([rescan(), loadRegistries(), loadCentralSkills()]);
-      toast.success(
-        lang === "zh" ? "GitHub 仓库技能已导入中央技能库" : "GitHub repo skills imported to Central"
-      );
+      toast.success(t("marketplace.githubImportCentralSuccess"));
       return result;
     } catch (err) {
       toast.error(String(err));
@@ -348,8 +386,16 @@ export function MarketplaceView() {
     agentIds: string[],
     method: "symlink" | "copy"
   ) {
-    await installCentralSkill(skillId, agentIds, method);
-    await Promise.all([rescan(), loadCentralSkills(), ...agentIds.map((agentId) => getSkillsByAgent(agentId))]);
+    const result = await installCentralSkill(skillId, agentIds, method);
+    await rescan();
+    await Promise.all([loadCentralSkills(), ...agentIds.map((agentId) => getSkillsByAgent(agentId))]);
+    if (result.failed.length > 0) {
+      throw new Error(
+        t("central.installPartialFail", {
+          platforms: result.failed.map((failure) => failure.agent_id).join(", "),
+        })
+      );
+    }
   }
 
   async function handleAfterImportSuccess() {
@@ -450,7 +496,15 @@ export function MarketplaceView() {
             ) : (
               <div className="grid grid-cols-2 gap-3">
                 {filteredRecommended.map((skill) => {
-                  const downloadUrl = `https://raw.githubusercontent.com/${skill.repoFullName}/main/${skill.name}/SKILL.md`;
+                  const downloadUrl = skill.downloadUrl;
+                  const installRequest: PreviewSkill = {
+                    id: skill.name,
+                    name: skill.name,
+                    description: skill.description,
+                    downloadUrl,
+                    repoUrl: `https://github.com/${skill.repoFullName}`,
+                    sourcePath: sourcePathFromRawUrl(downloadUrl),
+                  };
                   return (
                     <UnifiedSkillCard
                       key={skill.name}
@@ -472,6 +526,7 @@ export function MarketplaceView() {
                             sourceLabel: skill.publisher,
                             sourceUrl: `https://github.com/${skill.repoFullName}`,
                             installed: false,
+                            installRequest,
                           },
                           event?.currentTarget ?? null
                         )
@@ -633,6 +688,7 @@ export function MarketplaceView() {
                                           sourceLabel: selectedPublisher.name,
                                           sourceUrl: repo.url,
                                           installed: false,
+                                          installRequest: skill,
                                         },
                                         e.currentTarget
                                       );
@@ -821,7 +877,13 @@ export function MarketplaceView() {
               const parts = detailSkill.id.split(":");
               void handleInstallSkillsSh(parts[1], parts.slice(2).join(":"));
             } else {
-              handleInstallPreviewSkill({ id: detailSkill.id, name: detailSkill.name, downloadUrl: detailSkill.downloadUrl });
+              handleInstallPreviewSkill(
+                detailSkill.installRequest ?? {
+                  id: detailSkill.id,
+                  name: detailSkill.name,
+                  downloadUrl: detailSkill.downloadUrl,
+                }
+              );
             }
           }}
           isInstalling={(() => {

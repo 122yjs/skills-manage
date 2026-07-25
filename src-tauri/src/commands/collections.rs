@@ -4,7 +4,10 @@ use tauri::State;
 use crate::db::{self, Collection, DbPool, Skill};
 use crate::AppState;
 
-use super::linker::{install_skill_to_agent_impl, BatchInstallResult, FailedInstall};
+use super::linker::{
+    install_skill_to_agent_impl, preflight_universal_install, validate_batch_install_targets,
+    BatchInstallResult, FailedInstall,
+};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -149,6 +152,13 @@ pub async fn batch_install_collection_impl(
         .ok_or_else(|| format!("Collection '{}' not found", collection_id))?;
 
     let skills = db::get_collection_skills(pool, collection_id).await?;
+
+    let uses_universal = validate_batch_install_targets(pool, agent_ids).await?;
+    if uses_universal {
+        for skill in &skills {
+            preflight_universal_install(pool, &skill.id).await?;
+        }
+    }
 
     let mut succeeded = Vec::new();
     let mut failed = Vec::new();
@@ -966,6 +976,80 @@ mod tests {
 
         assert_eq!(result.succeeded.len(), 1, "good skill should succeed");
         assert_eq!(result.failed.len(), 1, "missing skill should fail");
+    }
+
+    #[tokio::test]
+    async fn universal_collection_conflict_stops_before_any_install() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let universal_dir = tmp.path().join("universal");
+        fs::create_dir_all(&central_dir).unwrap();
+
+        let pool = setup_test_db().await;
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(universal_dir.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for skill_id in ["first-skill", "blocked-skill"] {
+            let skill_dir = central_dir.join(skill_id);
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {skill_id}\ndescription: Test\n---\n"),
+            )
+            .unwrap();
+            db::upsert_skill(
+                &pool,
+                &Skill {
+                    id: skill_id.to_string(),
+                    name: skill_id.to_string(),
+                    description: None,
+                    file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                    canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+                    is_central: true,
+                    source: Some("native".to_string()),
+                    content: None,
+                    scanned_at: Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let blocked_path = universal_dir.join("blocked-skill");
+        fs::create_dir_all(&blocked_path).unwrap();
+        fs::write(blocked_path.join("keep.txt"), "keep").unwrap();
+
+        let collection = create_collection_impl(&pool, "Universal preflight", None)
+            .await
+            .unwrap();
+        add_skill_to_collection_impl(&pool, &collection.id, "first-skill")
+            .await
+            .unwrap();
+        add_skill_to_collection_impl(&pool, &collection.id, "blocked-skill")
+            .await
+            .unwrap();
+
+        let result =
+            batch_install_collection_impl(&pool, &collection.id, &["universal".to_string()]).await;
+
+        assert!(result.is_err());
+        assert!(!universal_dir.join("first-skill").exists());
+        assert_eq!(
+            fs::read_to_string(blocked_path.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(db::get_skill_installations(&pool, "first-skill")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

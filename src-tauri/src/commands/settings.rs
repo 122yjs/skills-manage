@@ -51,6 +51,9 @@ pub async fn set_setting_impl(pool: &DbPool, key: &str, value: &str) -> Result<(
     if key.trim().is_empty() {
         return Err("Settings key cannot be empty".to_string());
     }
+    if key == db::CENTRAL_SKILLS_PATH_SETTING {
+        return Err("Use change_central_path to move the Central vault safely".to_string());
+    }
     db::set_setting(pool, key, value).await
 }
 
@@ -364,6 +367,18 @@ mod tests {
         let pool = setup_test_db().await;
         let result = set_setting_impl(&pool, "  ", "some-value").await;
         assert!(result.is_err(), "Empty key should fail validation");
+    }
+
+    #[tokio::test]
+    async fn test_central_path_requires_safe_move_command() {
+        let pool = setup_test_db().await;
+        let result = set_setting_impl(
+            &pool,
+            db::CENTRAL_SKILLS_PATH_SETTING,
+            "/tmp/unsafe-direct-change",
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

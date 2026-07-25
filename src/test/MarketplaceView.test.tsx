@@ -443,7 +443,7 @@ describe("MarketplaceView", () => {
     const resultHub = await screen.findByTestId("github-import-result-hub");
     expect(resultHub).toBeInTheDocument();
     expect(within(resultHub).getByRole("button", { name: /Continue platform setup|继续配置平台安装/i })).toBeInTheDocument();
-    expect(within(resultHub).getByRole("button", { name: /Open Central|打开中央技能库/i })).toBeInTheDocument();
+    expect(within(resultHub).getByRole("button", { name: /Open Skill Library|打开技能仓库/i })).toBeInTheDocument();
     expect(within(resultHub).getByRole("button", { name: /Start another import|开始新的导入/i })).toBeInTheDocument();
     expect(within(resultHub).getByText("legacy-skill")).toBeInTheDocument();
   });

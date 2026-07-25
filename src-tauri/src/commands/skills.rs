@@ -621,21 +621,13 @@ fn installation_details(installations: Vec<db::SkillInstallation>) -> Vec<SkillI
 async fn read_only_agent_ids_for_skill(
     pool: &DbPool,
     skill_id: &str,
-    is_central: bool,
+    _is_central: bool,
 ) -> Result<Vec<String>, String> {
     let mut agent_ids: BTreeSet<String> =
         db::get_read_only_observed_agent_ids_for_skill(pool, skill_id)
             .await?
             .into_iter()
             .collect();
-
-    if is_central {
-        for agent in db::get_all_agents(pool).await? {
-            if agent.is_enabled && db::agent_supports_universal_agents_skills(&agent.id) {
-                agent_ids.insert(agent.id);
-            }
-        }
-    }
 
     for installation in db::get_skill_installations(pool, skill_id).await? {
         agent_ids.remove(&installation.agent_id);
@@ -789,7 +781,52 @@ pub async fn get_skills_by_agent_impl(
     pool: &DbPool,
     agent_id: &str,
 ) -> Result<Vec<SkillForAgent>, String> {
-    db::get_skills_for_agent(pool, agent_id).await
+    let mut skills = db::get_skills_for_agent(pool, agent_id).await?;
+    if matches!(agent_id, "central" | "universal") {
+        return Ok(skills);
+    }
+
+    let Some(agent) = db::get_agent_by_id(pool, agent_id).await? else {
+        return Ok(skills);
+    };
+    let Some(universal) = db::get_agent_by_id(pool, "universal").await? else {
+        return Ok(skills);
+    };
+    let same_universal_root = {
+        let agent_root = Path::new(&agent.global_skills_dir);
+        let universal_root = Path::new(&universal.global_skills_dir);
+        agent_root == universal_root
+            || agent_root
+                .canonicalize()
+                .ok()
+                .zip(universal_root.canonicalize().ok())
+                .is_some_and(|(agent_root, universal_root)| agent_root == universal_root)
+    };
+    if agent.id != "factory-droid"
+        && !db::agent_supports_universal_agents_skills(&agent.id)
+        && !same_universal_root
+    {
+        return Ok(skills);
+    }
+
+    let existing_ids: BTreeSet<String> = skills.iter().map(|skill| skill.id.clone()).collect();
+    for mut universal_skill in db::get_skills_for_agent(pool, "universal").await? {
+        if existing_ids.contains(&universal_skill.id) {
+            continue;
+        }
+        universal_skill.row_id = format!("{}::{}", agent.id, universal_skill.dir_path);
+        universal_skill.source_kind = Some("compatibility".to_string());
+        universal_skill.source_root = Some(universal.global_skills_dir.clone());
+        universal_skill.is_read_only = true;
+        skills.push(universal_skill);
+    }
+    skills.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.dir_path.cmp(&right.dir_path))
+    });
+    Ok(skills)
 }
 
 /// Tauri command: return all skills installed for a given agent, including
@@ -1276,15 +1313,6 @@ mod tests {
         pool
     }
 
-    fn expected_universal_read_only_agents(extra: &[&str]) -> Vec<String> {
-        let agent_ids = db::UNIVERSAL_AGENTS_SKILLS_AGENT_IDS
-            .iter()
-            .chain(extra.iter())
-            .map(|agent_id| (*agent_id).to_string())
-            .collect::<std::collections::BTreeSet<_>>();
-        agent_ids.into_iter().collect()
-    }
-
     fn make_skill(id: &str, name: &str, is_central: bool) -> Skill {
         Skill {
             id: id.to_string(),
@@ -1512,6 +1540,10 @@ mod tests {
             skills_with_links[0].linked_agents.is_empty(),
             "no links when no installations"
         );
+        assert!(
+            skills_with_links[0].read_only_agents.is_empty(),
+            "Central ownership alone must not synthesize Universal availability"
+        );
     }
 
     #[tokio::test]
@@ -1572,7 +1604,7 @@ mod tests {
         );
         assert_eq!(
             skills_with_links[0].read_only_agents,
-            expected_universal_read_only_agents(&["factory-droid"])
+            vec!["factory-droid".to_string()]
         );
     }
 
@@ -2491,6 +2523,83 @@ mod tests {
             skills[0].source_root.as_deref(),
             Some("/tmp/.agents/skills")
         );
+    }
+
+    #[tokio::test]
+    async fn test_get_skills_by_compatible_agent_merges_actual_universal_install_only() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let universal_root = tmp.path().join(".agents/skills");
+        let cursor_root = tmp.path().join(".cursor/skills");
+        for (agent_id, root) in [("universal", &universal_root), ("cursor", &cursor_root)] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let installed = make_skill("shared-installed", "Shared Installed", true);
+        let vault_only = make_skill("vault-only", "Vault Only", true);
+        db::upsert_skill(&pool, &installed).await.unwrap();
+        db::upsert_skill(&pool, &vault_only).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: installed.id.clone(),
+                agent_id: "universal".to_string(),
+                installed_path: universal_root
+                    .join(&installed.id)
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: installed.canonical_path.clone(),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let platform_skills = get_skills_by_agent_impl(&pool, "cursor").await.unwrap();
+
+        assert_eq!(platform_skills.len(), 1);
+        assert_eq!(platform_skills[0].id, "shared-installed");
+        assert!(platform_skills[0].is_read_only);
+        assert_eq!(
+            platform_skills[0].source_kind.as_deref(),
+            Some("compatibility")
+        );
+        assert_eq!(
+            platform_skills[0].source_root.as_deref(),
+            Some(universal_root.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_skills_by_universal_keeps_install_manageable() {
+        let pool = setup_test_db().await;
+        let skill = make_skill("managed-shared", "Managed Shared", true);
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: skill.id.clone(),
+                agent_id: "universal".to_string(),
+                installed_path: "/tmp/.agents/skills/managed-shared".to_string(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let skills = get_skills_by_agent_impl(&pool, "universal").await.unwrap();
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "managed-shared");
+        assert!(!skills[0].is_read_only);
+        assert!(skills[0].source_kind.is_none());
     }
 
     #[tokio::test]

@@ -32,7 +32,10 @@ pub fn run() {
             tauri::async_runtime::block_on(async {
                 db::init_database(&pool)
                     .await
-                    .expect("Failed to initialize database schema")
+                    .expect("Failed to initialize database schema");
+                commands::storage::initialize_storage(&pool)
+                    .await
+                    .expect("Failed to initialize Central vault storage")
             });
 
             app.manage(AppState { db: pool });
@@ -82,6 +85,12 @@ pub fn run() {
             commands::settings::set_scan_directory_active,
             commands::settings::get_setting,
             commands::settings::set_setting,
+            commands::storage::get_central_vault_status,
+            commands::storage::preview_legacy_migration,
+            commands::storage::defer_legacy_migration,
+            commands::storage::migrate_legacy_central,
+            commands::storage::preview_central_path_change,
+            commands::storage::change_central_path,
             // Discover
             commands::discover::discover_scan_roots,
             commands::discover::get_scan_roots,

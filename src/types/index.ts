@@ -33,7 +33,7 @@ export interface ScanResult {
   skills_by_agent: Record<string, number>;
 }
 
-export type ClaudeSourceKind = "user" | "plugin" | "compatibility";
+export type ClaudeSourceKind = "user" | "plugin" | "compatibility" | "unmanaged";
 
 export interface ScannedSkill {
   id: string;
@@ -211,6 +211,31 @@ export interface ScanDirectory {
   is_active: boolean;
   is_builtin: boolean;
   added_at: string;
+}
+
+export type MigrationState = "pending" | "deferred" | "completed";
+
+export interface CentralVaultStatus {
+  central_path: string;
+  default_central_path: string;
+  legacy_path: string;
+  universal_path: string;
+  migration_state: MigrationState;
+  migration_required: boolean;
+  legacy_skill_count: number;
+}
+
+export interface StoragePreview {
+  current_path: string;
+  new_path: string;
+  skill_count: number;
+  conflicts: string[];
+  can_proceed: boolean;
+}
+
+export interface StorageChangeResult {
+  central_path: string;
+  skill_count: number;
 }
 
 // ─── Discover Types ───────────────────────────────────────────────────────────

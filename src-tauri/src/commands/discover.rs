@@ -8,7 +8,7 @@ use serde_json;
 use tauri::{Emitter, State};
 
 use crate::db::{self, DbPool};
-use crate::path_utils::{central_skills_dir, path_to_string, resolve_home_dir};
+use crate::path_utils::{path_to_string, resolve_home_dir};
 use crate::AppState;
 
 const OBSIDIAN_PLATFORM_ID: &str = "obsidian";
@@ -1265,14 +1265,15 @@ fn obsidian_vaults_from_allowed_paths(
     vaults
 }
 
-async fn get_obsidian_vaults_impl(_pool: &DbPool) -> Result<Vec<ObsidianVault>, String> {
+async fn get_obsidian_vaults_impl(pool: &DbPool) -> Result<Vec<ObsidianVault>, String> {
     let allowed_vault_paths: HashSet<String> = obsidian_source_vault_paths()
         .into_iter()
         .map(|path| normalized_scan_root_key(&path.to_string_lossy()))
         .collect();
+    let central_dir = db::get_central_skills_dir(pool).await?;
     Ok(obsidian_vaults_from_allowed_paths(
         &allowed_vault_paths,
-        &central_skills_dir(),
+        &central_dir,
     ))
 }
 
@@ -1291,7 +1292,8 @@ async fn get_obsidian_vault_skills_impl(
         .cloned()
         .ok_or_else(|| format!("Obsidian vault '{}' not found", vault_id))?;
 
-    let skills = scan_obsidian_vault(&PathBuf::from(&vault_path), &central_skills_dir())
+    let central_dir = db::get_central_skills_dir(pool).await?;
+    let skills = scan_obsidian_vault(&PathBuf::from(&vault_path), &central_dir)
         .map(|project| project.skills)
         .unwrap_or_default();
 
@@ -1393,7 +1395,7 @@ pub async fn start_project_scan(
     SCAN_CANCEL.store(false, Ordering::Relaxed);
 
     let pool = &state.db;
-    let central_dir = central_skills_dir();
+    let central_dir = db::get_central_skills_dir(pool).await?;
     start_project_scan_impl(pool, roots, &central_dir, |event| match event {
         DiscoverEvent::Found(payload) => {
             let _ = app.emit("discover:found", payload);
@@ -1420,7 +1422,7 @@ pub async fn stop_project_scan() -> Result<(), String> {
 pub async fn get_discovered_skills(
     state: State<'_, AppState>,
 ) -> Result<Vec<DiscoveredProject>, String> {
-    let central_dir = central_skills_dir();
+    let central_dir = db::get_central_skills_dir(&state.db).await?;
     get_discovered_skills_impl(&state.db, &central_dir).await
 }
 
@@ -1489,8 +1491,7 @@ async fn get_discovered_skills_impl(
 
 /// Import a discovered skill to the central skills directory.
 ///
-/// Copies the skill directory from its project location to `~/.agents/skills/<skill_dir_name>`,
-/// then records it in the skills table.
+/// 프로젝트에 있는 스킬 디렉터리를 설정된 보관함으로 복사한 뒤 DB에 기록한다.
 #[tauri::command]
 pub async fn import_discovered_skill_to_central(
     state: State<'_, AppState>,
@@ -1504,7 +1505,7 @@ pub async fn import_discovered_skill_to_central(
         .ok_or_else(|| format!("Discovered skill '{}' not found", discovered_skill_id))?;
 
     // Determine central dir.
-    let central_dir = central_skills_dir();
+    let central_dir = db::get_central_skills_dir(pool).await?;
 
     // Extract the original skill directory name (last component of dir_path).
     let skill_dir_name = Path::new(&skill.dir_path)

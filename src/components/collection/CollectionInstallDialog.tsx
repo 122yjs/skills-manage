@@ -15,7 +15,12 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { AgentWithStatus, CollectionBatchInstallResult } from "@/types";
-import { isInstallTargetAgent } from "@/lib/agents";
+import {
+  getAgentDisplayName,
+  getDistinctInstallTargetAgents,
+  UNIVERSAL_AGENT_ID,
+  updateInstallTargetSelection,
+} from "@/lib/agents";
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -39,7 +44,7 @@ export function CollectionInstallDialog({
   onInstall,
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
-  const targetAgents = agents.filter(isInstallTargetAgent);
+  const targetAgents = getDistinctInstallTargetAgents(agents);
 
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
@@ -53,7 +58,11 @@ export function CollectionInstallDialog({
       const initial = new Set<string>(
         targetAgents.filter((a) => a.is_detected).map((a) => a.id)
       );
-      setSelectedAgentIds(initial);
+      setSelectedAgentIds(
+        initial.has(UNIVERSAL_AGENT_ID)
+          ? updateInstallTargetSelection(initial, UNIVERSAL_AGENT_ID, true)
+          : initial
+      );
       setError(null);
       setResult(null);
     }
@@ -61,12 +70,9 @@ export function CollectionInstallDialog({
   }, [open]);
 
   function handleToggle(agentId: string, checked: boolean) {
-    setSelectedAgentIds((prev) => {
-      const next = new Set(prev);
-      if (checked) next.add(agentId);
-      else next.delete(agentId);
-      return next;
-    });
+    setSelectedAgentIds((prev) =>
+      updateInstallTargetSelection(prev, agentId, checked)
+    );
   }
 
   async function handleInstall() {
@@ -113,22 +119,25 @@ export function CollectionInstallDialog({
               </p>
             ) : (
               targetAgents.map((agent) => {
+                const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
                 const isChecked = selectedAgentIds.has(agent.id);
+                const checkboxId = `collection-install-target-${agent.id}`;
                 return (
                   <div key={agent.id} className="flex items-center gap-2">
                     <Checkbox
+                      id={checkboxId}
                       checked={isChecked}
                       onCheckedChange={(checked) =>
                         handleToggle(agent.id, !!checked)
                       }
-                      aria-label={agent.display_name}
+                      aria-label={displayName}
                     />
-                    <span
-                      className="text-sm text-foreground flex-1 cursor-pointer select-none truncate"
-                      onClick={() => handleToggle(agent.id, !isChecked)}
+                    <label
+                      htmlFor={checkboxId}
+                      className="flex-1 cursor-pointer select-none truncate text-sm text-foreground"
                     >
-                      {agent.display_name}
-                    </span>
+                      {displayName}
+                    </label>
                     {!agent.is_detected && (
                       <span className="text-xs text-muted-foreground shrink-0">
                         {t("batchInstall.notDetected")}

@@ -8,17 +8,19 @@ import { MarketplaceView } from "@/pages/MarketplaceView";
 import { SettingsView } from "@/pages/SettingsView";
 import { DiscoverView } from "@/pages/DiscoverView";
 import { ObsidianVaultView } from "@/pages/ObsidianVaultView";
+import { UniversalInstallView } from "@/pages/UniversalInstallView";
 
 function App() {
   return (
     <Routes>
       <Route path="/" element={<AppShell />}>
-        {/* Default redirect to Central Skills */}
+        {/* Default redirect to the Skill Library */}
         <Route index element={<Navigate to="/central" replace />} />
         {/* Platform view: lists skills for a specific agent */}
         <Route path="platform/:agentId" element={<PlatformView />} />
-        {/* Central Skills: canonical ~/.agents/skills/ view */}
+        {/* Skill Library: canonical vault view */}
         <Route path="central" element={<CentralSkillsView />} />
+        <Route path="universal" element={<UniversalInstallView />} />
         {/* Skill detail page */}
         <Route path="skill/:skillId" element={<SkillDetailPage />} />
         {/* Collections */}

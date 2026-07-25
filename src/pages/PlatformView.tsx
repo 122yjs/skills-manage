@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { Search, Blocks, FolderOpen } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -37,11 +37,17 @@ function EmptyState({ message }: { message: string }) {
 }
 
 type ClaudeSourceFilter = "all" | "user" | "plugin";
+type InstallSourceFilter = "all" | "platform" | "universal";
+
+function isUniversalSource(skill: ScannedSkill): boolean {
+  return Boolean(skill.is_read_only && skill.source_kind === "compatibility");
+}
 
 // ─── PlatformView ─────────────────────────────────────────────────────────────
 
 export function PlatformView() {
   const { agentId } = useParams<{ agentId: string }>();
+  const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const agents = usePlatformStore((state) => state.agents);
   const scanGeneration = usePlatformStore((state) => state.scanGeneration ?? 0);
@@ -60,6 +66,7 @@ export function PlatformView() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
+  const [installSourceFilter, setInstallSourceFilter] = useState<InstallSourceFilter>("all");
   const [viewMode, setViewMode] = useSkillListViewMode("platform");
   const [installTargetSkill, setInstallTargetSkill] = useState<SkillWithLinks | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -92,6 +99,7 @@ export function PlatformView() {
 
   useEffect(() => {
     setSourceFilter("all");
+    setInstallSourceFilter("all");
   }, [agentId]);
 
   // Ensure central skills are loaded so we can resolve SkillWithLinks for InstallDialog.
@@ -115,6 +123,7 @@ export function PlatformView() {
     try {
       const result = await installSkill(skillId, agentIds, method);
       await refreshCounts();
+      await loadCentralSkills();
       if (agentId) {
         await getSkillsByAgent(agentId);
       }
@@ -146,11 +155,23 @@ export function PlatformView() {
   );
 
   const sourceFilteredSkills = useMemo(() => {
-    if (!isClaudePage || sourceFilter === "all") {
-      return skills;
+    const claudeFiltered = !isClaudePage || sourceFilter === "all"
+      ? skills
+      : skills.filter((skill) => skill.source_kind === sourceFilter);
+
+    if (installSourceFilter === "universal") {
+      return claudeFiltered.filter(isUniversalSource);
     }
-    return skills.filter((skill) => skill.source_kind === sourceFilter);
-  }, [isClaudePage, skills, sourceFilter]);
+    if (installSourceFilter === "platform") {
+      return claudeFiltered.filter((skill) => !isUniversalSource(skill));
+    }
+    return claudeFiltered;
+  }, [installSourceFilter, isClaudePage, skills, sourceFilter]);
+
+  const universalCount = useMemo(
+    () => skills.filter(isUniversalSource).length,
+    [skills]
+  );
 
   const platformFolderSplit = useMemo(
     () =>
@@ -276,7 +297,9 @@ export function PlatformView() {
             ? t("platform.originUser")
             : skill.source_kind === "plugin"
               ? t("platform.originPlugin")
-              : skill.link_type,
+              : isUniversalSource(skill)
+                ? t("platform.universalSource")
+                : skill.link_type,
         isReadOnly: skill.is_read_only ?? false,
       })),
     [agentId, folderDrawerGroup, t]
@@ -314,6 +337,7 @@ export function PlatformView() {
     },
   ];
   const activeSourceLabel = sourceTabs.find((tab) => tab.id === sourceFilter)?.label ?? sourceTabs[0].label;
+  const activeInstallSourceLabel = t(`platform.installSourceFilter.${installSourceFilter}`);
 
   return (
     <div className="flex flex-col h-full">
@@ -357,6 +381,40 @@ export function PlatformView() {
         </div>
       )}
 
+      {universalCount > 0 && (
+        <div
+          role="tablist"
+          aria-label={t("platform.installSourceFilterLabel")}
+          className="flex items-center gap-1 border-b border-border px-6 py-3"
+        >
+          {(["all", "platform", "universal"] as const).map((filter) => {
+            const count = filter === "all"
+              ? skills.length
+              : filter === "universal"
+                ? universalCount
+                : skills.length - universalCount;
+            return (
+              <button
+                key={filter}
+                type="button"
+                role="tab"
+                aria-selected={installSourceFilter === filter}
+                onClick={() => setInstallSourceFilter(filter)}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-md px-4 py-1.5 text-sm transition-colors",
+                  installSourceFilter === filter
+                    ? "bg-primary/15 font-medium text-foreground"
+                    : "text-muted-foreground hover:bg-muted/40"
+                )}
+              >
+                {t(`platform.installSourceFilter.${filter}`)}
+                <span className="text-xs opacity-75">({count})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {/* Search bar */}
       <div className="px-6 py-3 border-b border-border">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
@@ -385,7 +443,7 @@ export function PlatformView() {
           <EmptyState
             message={t("platform.noSourceSkills", {
               name: agent.display_name,
-              source: activeSourceLabel,
+              source: installSourceFilter === "all" ? activeSourceLabel : activeInstallSourceLabel,
               defaultValue: i18n.language.startsWith("zh")
                 ? `${agent.display_name} 下暂无${activeSourceLabel}技能`
                 : `No ${activeSourceLabel} skills installed for ${agent.display_name}`,
@@ -435,6 +493,7 @@ export function PlatformView() {
                       sourceType={skill.link_type as "symlink" | "copy" | "native"}
                       originKind={skill.source_kind ?? null}
                       isReadOnly={skill.is_read_only ?? false}
+                      isUniversalSource={isUniversalSource(skill)}
                       isLoading={
                         agentId
                           ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
@@ -450,6 +509,9 @@ export function PlatformView() {
                         skill.is_read_only
                           ? undefined
                           : () => handleUninstall(skill.id)
+                      }
+                      onManageUniversal={
+                        isUniversalSource(skill) ? () => navigate("/universal") : undefined
                       }
                       uninstallFromLabel={t("platform.uninstallFromLabel", {
                         skill: skill.name,

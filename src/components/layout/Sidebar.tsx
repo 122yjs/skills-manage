@@ -10,6 +10,7 @@ import {
   EyeOff,
   ChevronLeft,
   ChevronRight,
+  Share2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
@@ -18,7 +19,7 @@ import { useCollectionStore } from "@/stores/collectionStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useObsidianStore } from "@/stores/obsidianStore";
 import { cn } from "@/lib/utils";
-import { isEnabledInstallTargetAgent } from "@/lib/agents";
+import { isEnabledInstallTargetAgent, UNIVERSAL_AGENT_ID } from "@/lib/agents";
 
 const OBSIDIAN_PLATFORM_ID = "obsidian";
 
@@ -149,6 +150,8 @@ export function Sidebar() {
   const platformAgents = agents.filter(
     (a) =>
       isEnabledInstallTargetAgent(a) &&
+      a.id !== UNIVERSAL_AGENT_ID &&
+      a.category !== "shared" &&
       (showAllPlatforms || (skillsByAgent[a.id] ?? 0) > 0)
   );
   const lobsterAgents = platformAgents.filter((a) => a.category === "lobster");
@@ -201,6 +204,11 @@ export function Sidebar() {
 
       {/* Scrollable nav items */}
       <div className="flex-1 overflow-y-auto py-2 px-1.5 space-y-0.5">
+        {expanded && (
+          <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            {t("sidebar.librarySection")}
+          </div>
+        )}
         {/* Central Skills */}
         <NavItem
           label={t("sidebar.centralSkills")}
@@ -242,6 +250,21 @@ export function Sidebar() {
 
         {/* Divider */}
         <div className="border-t border-sidebar-border/70 my-2" />
+
+        {expanded && (
+          <div className="px-2.5 pb-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+            {t("sidebar.installTargetsSection")}
+          </div>
+        )}
+
+        <NavItem
+          label={t("sidebar.universal")}
+          isActive={pathname === "/universal"}
+          onClick={() => navigate("/universal")}
+          icon={<Share2 className="size-4" />}
+          expanded={expanded}
+          count={skillsByAgent[UNIVERSAL_AGENT_ID]}
+        />
 
         {/* Platform icons */}
         {isLoading ? (

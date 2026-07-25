@@ -19,6 +19,7 @@ import type { AgentWithStatus } from "@/types";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { formatPathForDisplay } from "@/lib/path";
 import { cn } from "@/lib/utils";
+import { getAgentDisplayName } from "@/lib/agents";
 
 export interface SkillFolderDrawerSkill {
   key: string;
@@ -86,7 +87,9 @@ export function SkillFolderDrawer({
   }, [normalizedQuery, skills]);
   const selectedSkill =
     skills.find((skill) => skill.key === selectedKey) ?? filteredSkills[0] ?? skills[0] ?? null;
-  const linkedAgentNamesById = new Map(agents.map((agent) => [agent.id, agent.display_name]));
+  const linkedAgentNamesById = new Map(
+    agents.map((agent) => [agent.id, getAgentDisplayName(agent, t("sidebar.universal"))])
+  );
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

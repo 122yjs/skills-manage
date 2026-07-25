@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { AgentWithStatus, ScanDirectory } from "@/types";
 import { AI_PROVIDERS, PROVIDER_GROUPS, RegionId, ApiProtocol, API_PROTOCOLS } from "@/data/aiProviders";
 import { deriveHomeDir, formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
+import { CentralVaultSettings } from "@/components/settings/CentralVaultSettings";
 
 // ─── App constants ────────────────────────────────────────────────────────────
 
@@ -730,6 +731,8 @@ export function SettingsView() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6 space-y-6">
+
+        <CentralVaultSettings />
 
         {/* ── Section 1: Custom Platforms ───────────────────────────────────── */}
         <Card>

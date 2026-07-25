@@ -20,7 +20,7 @@ import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, ClaudeSourceKind } from "@/types";
 import { cn } from "@/lib/utils";
-import { isInstallTargetAgent } from "@/lib/agents";
+import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 
 const FEATURED_CODING_AGENT_IDS = [
   "cursor",
@@ -49,6 +49,7 @@ function PlatformToggleIcon({
   onToggle: () => void;
 }) {
   const { t } = useTranslation();
+  const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
   return (
     <button
       type="button"
@@ -60,8 +61,8 @@ function PlatformToggleIcon({
         isReadOnly && "cursor-default hover:bg-transparent",
         isToggling && "animate-pulse pointer-events-none"
       )}
-      title={agent.display_name}
-      aria-label={t("central.toggleInstallLabel", { platform: agent.display_name, skill: skillName })}
+      title={displayName}
+      aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
       aria-pressed={isLinked}
       disabled={isToggling || isReadOnly}
       onClick={onToggle}
@@ -110,6 +111,8 @@ export interface UnifiedSkillCardProps {
   sourceType?: "symlink" | "copy" | "native";
   originKind?: ClaudeSourceKind | null;
   isReadOnly?: boolean;
+  isUniversalSource?: boolean;
+  isExternallyManaged?: boolean;
 
   // ── marketplace variant ──
   isInstalled?: boolean;
@@ -122,6 +125,7 @@ export interface UnifiedSkillCardProps {
   onInstallToCentral?: () => void;
   onInstallToPlatform?: () => void;
   onUninstallFromPlatform?: () => void;
+  onManageUniversal?: () => void;
   uninstallFromLabel?: string;
   onDeleteFromCentral?: () => void;
   deleteFromCentralLabel?: string;
@@ -149,6 +153,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     sourceType,
     originKind,
     isReadOnly,
+    isUniversalSource,
+    isExternallyManaged,
     isInstalled,
     tags,
     publisher,
@@ -157,6 +163,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallToCentral,
     onInstallToPlatform,
     onUninstallFromPlatform,
+    onManageUniversal,
     uninstallFromLabel,
     onDeleteFromCentral,
     deleteFromCentralLabel,
@@ -176,13 +183,16 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallToCentral ||
     onInstallToPlatform ||
     onUninstallFromPlatform ||
+    onManageUniversal ||
     onDeleteFromCentral ||
     onInstall ||
     onRemove
   );
 
   // Show all Lobster platforms, but only the highest-frequency Coding platforms.
-  const targetPlatformAgents = platformIcons?.agents.filter(isInstallTargetAgent) ?? [];
+  const targetPlatformAgents = platformIcons
+    ? getDistinctInstallTargetAgents(platformIcons.agents)
+    : [];
   const lobsterAgents = targetPlatformAgents.filter((agent) => agent.category === "lobster");
   const codingAgents = targetPlatformAgents.filter((agent) => agent.category !== "lobster");
   const linkedAgentIds = new Set(platformIcons?.linkedAgents ?? []);
@@ -314,6 +324,17 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   />
                 )}
 
+                {onManageUniversal && (
+                  <button
+                    type="button"
+                    onClick={onManageUniversal}
+                    className="rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
+                    aria-label={t("platform.manageUniversal")}
+                  >
+                    {t("platform.manageUniversal")}
+                  </button>
+                )}
+
                 {onDeleteFromCentral &&
                   (deleteFromCentralRequiresDialog ? (
                     <button
@@ -371,7 +392,13 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           {/* Row 3: Info badges */}
           <div className="flex flex-wrap items-center gap-1.5 empty:hidden">
             {originKind && <SourceOriginBadge originKind={originKind} />}
-            {isReadOnly && <ReadOnlyBadge />}
+            {isExternallyManaged
+              ? <ExternalManagedBadge />
+              : isUniversalSource
+                ? <UniversalSourceBadge onClick={onManageUniversal} />
+                : isReadOnly
+                  ? <ReadOnlyBadge />
+                  : null}
 
             {/* Source indicator (platform) */}
             {sourceType && <SourceIndicator sourceType={sourceType} />}
@@ -574,6 +601,37 @@ function ReadOnlyBadge() {
       {t("platform.readOnly", {
         defaultValue: i18n.language.startsWith("zh") ? "只读" : "Read-only",
       })}
+    </span>
+  );
+}
+
+function UniversalSourceBadge({ onClick }: { onClick?: () => void }) {
+  const { t } = useTranslation();
+  const className = "inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-medium text-primary ring-1 ring-primary/20";
+
+  if (onClick) {
+    return (
+      <button type="button" className={className} onClick={onClick}>
+        <Globe className="size-3 shrink-0" />
+        {t("platform.universalSource")}
+      </button>
+    );
+  }
+
+  return (
+    <span className={className}>
+      <Globe className="size-3 shrink-0" />
+      {t("platform.universalSource")}
+    </span>
+  );
+}
+
+function ExternalManagedBadge() {
+  const { t } = useTranslation();
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70">
+      <Lock className="size-3 shrink-0" />
+      {t("universal.externallyManaged")}
     </span>
   );
 }

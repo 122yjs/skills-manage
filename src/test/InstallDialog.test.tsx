@@ -7,6 +7,15 @@ import { AgentWithStatus, SkillWithLinks } from "../types";
 
 const mockAgents: AgentWithStatus[] = [
   {
+    id: "universal",
+    display_name: "Universal",
+    category: "shared",
+    global_skills_dir: "~/.agents/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
     id: "claude-code",
     display_name: "Claude Code",
     category: "coding",
@@ -108,9 +117,9 @@ describe("InstallDialog", () => {
 
   it("shows non-central agent checkboxes", () => {
     renderDialog();
-    expect(screen.getByLabelText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByLabelText("Cursor")).toBeInTheDocument();
-    expect(screen.getByLabelText("Gemini CLI")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Claude Code" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Cursor" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Gemini CLI" })).toBeInTheDocument();
   });
 
   it("does not show 'central' agent checkbox", () => {
@@ -138,10 +147,10 @@ describe("InstallDialog", () => {
       },
     });
 
-    const cursorCheckbox = screen.getByLabelText("Cursor");
+    const cursorCheckbox = screen.getByRole("checkbox", { name: "Cursor" });
     expect(cursorCheckbox).toBeChecked();
     expect(cursorCheckbox).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("始终包含")).toBeInTheDocument();
+    expect(screen.getByText("正通过共享安装使用")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /安装到 0 个平台/i })).toBeDisabled();
   });
 
@@ -279,13 +288,46 @@ describe("InstallDialog", () => {
     ).toBeInTheDocument();
 
     // Check Cursor (add 1 more)
-    const cursorCheckbox = screen.getByLabelText("Cursor");
+    const cursorCheckbox = screen.getByRole("checkbox", { name: "Cursor" });
     fireEvent.click(cursorCheckbox);
 
     await waitFor(() => {
       expect(
         screen.getByRole("button", { name: /安装到 2 个平台/i })
       ).toBeInTheDocument();
+    });
+  });
+
+  it("selecting shared install replaces a compatible native target", async () => {
+    mockOnInstall.mockResolvedValueOnce(undefined);
+    renderDialog({
+      skill: {
+        ...mockSkill,
+        linked_agents: ["cursor"],
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "共享安装 (.agents)" })
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: "Cursor" })).not.toBeChecked();
+      expect(screen.getByText(/切换到共享安装时/)).toHaveTextContent(
+        "切换到共享安装时，会先移除由本应用管理的现有平台链接（Cursor）。"
+      );
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /安装到 1 个平台/i })
+    );
+
+    await waitFor(() => {
+      expect(mockOnInstall).toHaveBeenCalledWith(
+        "frontend-design",
+        ["universal"],
+        "symlink"
+      );
     });
   });
 

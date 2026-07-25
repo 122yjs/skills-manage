@@ -121,8 +121,7 @@ describe("App", () => {
         </MemoryRouter>
       );
     });
-    // "中央技能库" appears as icon button tooltip in sidebar + possibly in main content header
-    expect(screen.getAllByText("中央技能库").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("技能仓库").length).toBeGreaterThanOrEqual(1);
     // Icon-only sidebar has no "By Tool" section header
     expect(screen.queryByText("按工具")).not.toBeInTheDocument();
   });

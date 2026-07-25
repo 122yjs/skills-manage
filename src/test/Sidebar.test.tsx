@@ -232,7 +232,7 @@ describe("Sidebar", () => {
 
   it("renders Central Skills icon button", () => {
     renderSidebar();
-    expect(screen.getByRole("button", { name: /中央技能库/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /技能仓库/ })).toBeInTheDocument();
   });
 
   it("renders Collections icon button", () => {
@@ -301,7 +301,7 @@ describe("Sidebar", () => {
 
   it("highlights Central Skills when on /central", () => {
     renderSidebar("/central");
-    const centralButton = screen.getByRole("button", { name: /中央技能库/ });
+    const centralButton = screen.getByRole("button", { name: /技能仓库/ });
     expect(centralButton.className).toContain("bg-hover-bg");
   });
 
@@ -383,7 +383,7 @@ describe("Sidebar", () => {
 
   it("Central Skills button is clickable", () => {
     renderSidebar();
-    const centralButton = screen.getByRole("button", { name: /中央技能库/ });
+    const centralButton = screen.getByRole("button", { name: /技能仓库/ });
     expect(centralButton).not.toBeDisabled();
     fireEvent.click(centralButton);
   });

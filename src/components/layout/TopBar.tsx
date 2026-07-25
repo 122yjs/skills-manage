@@ -34,6 +34,9 @@ export function TopBar({ onSearchClick }: TopBarProps) {
         count: skillsByAgent[agentId] ?? 0,
       };
     }
+    if (pathname === "/universal") {
+      return { label: t("sidebar.universal"), count: skillsByAgent.universal ?? 0 };
+    }
     if (pathname.startsWith("/discover")) {
       return { label: t("sidebar.discovered"), count: totalDiscovered };
     }

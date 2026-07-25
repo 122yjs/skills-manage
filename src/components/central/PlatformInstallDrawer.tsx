@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, SkillWithLinks } from "@/types";
-import { isInstallTargetAgent } from "@/lib/agents";
+import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { cn } from "@/lib/utils";
 
 type PlatformDrawerTab = "installed" | "coding" | "lobster" | "shared";
@@ -45,7 +45,7 @@ export function PlatformInstallDrawer({
   const titleId = "platform-install-drawer-title";
 
   const targetAgents = useMemo(
-    () => agents.filter(isInstallTargetAgent),
+    () => getDistinctInstallTargetAgents(agents),
     [agents]
   );
   const linkedAgentIds = useMemo(
@@ -68,15 +68,19 @@ export function PlatformInstallDrawer({
         if (activeTab === "lobster" && agent.category !== "lobster") return false;
         if (activeTab === "shared" && !isReadOnly) return false;
         if (!normalizedQuery) return true;
-        return `${agent.display_name} ${agent.id}`.toLowerCase().includes(normalizedQuery);
+        return `${getAgentDisplayName(agent, t("sidebar.universal"))} ${agent.id}`
+          .toLowerCase()
+          .includes(normalizedQuery);
       })
       .sort((a, b) => {
         const aInstalled = linkedAgentIds.has(a.id) || readOnlyAgentIds.has(a.id);
         const bInstalled = linkedAgentIds.has(b.id) || readOnlyAgentIds.has(b.id);
         if (aInstalled !== bInstalled) return aInstalled ? -1 : 1;
-        return a.display_name.localeCompare(b.display_name);
+        return getAgentDisplayName(a, t("sidebar.universal")).localeCompare(
+          getAgentDisplayName(b, t("sidebar.universal"))
+        );
       });
-  }, [activeTab, linkedAgentIds, query, readOnlyAgentIds, targetAgents]);
+  }, [activeTab, linkedAgentIds, query, readOnlyAgentIds, t, targetAgents]);
 
   if (!skill) return null;
 
@@ -176,6 +180,7 @@ export function PlatformInstallDrawer({
               ) : (
                 <div className="space-y-2">
                   {rows.map((agent) => {
+                    const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
                     const isLinked = linkedAgentIds.has(agent.id);
                     const isReadOnly = readOnlyAgentIds.has(agent.id);
                     const isToggling = togglingAgentId === agent.id;
@@ -193,7 +198,7 @@ export function PlatformInstallDrawer({
                         <PlatformIcon agentId={agent.id} className="size-5 text-muted-foreground" size={20} />
                         <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-medium text-foreground">
-                            {agent.display_name}
+                            {displayName}
                           </div>
                           <div className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
                             <span>{statusLabel}</span>
@@ -207,7 +212,7 @@ export function PlatformInstallDrawer({
                             size="sm"
                             disabled
                             aria-label={t("platformDrawer.sharedAria", {
-                              platform: agent.display_name,
+                              platform: displayName,
                             })}
                           >
                             {t("installDialog.alwaysIncluded")}
@@ -222,11 +227,11 @@ export function PlatformInstallDrawer({
                               isLinked
                                 ? t("platformDrawer.uninstallAria", {
                                     skill: skill.name,
-                                    platform: agent.display_name,
+                                    platform: displayName,
                                   })
                                 : t("platformDrawer.installAria", {
                                     skill: skill.name,
-                                    platform: agent.display_name,
+                                    platform: displayName,
                                   })
                             }
                             onClick={() => onToggle(skill.id, agent.id)}

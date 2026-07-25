@@ -211,124 +211,685 @@ async fn canonical_dir_for_skill(
     Ok(central_root.join(skill_id))
 }
 
-async fn existing_install_path_for_agent(
+async fn existing_installation_for_agent(
     pool: &DbPool,
     skill_id: &str,
     agent_id: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<SkillInstallation>, String> {
     Ok(db::get_skill_installations(pool, skill_id)
         .await?
         .into_iter()
-        .find(|installation| installation.agent_id == agent_id)
-        .map(|installation| installation.installed_path))
+        .find(|installation| installation.agent_id == agent_id))
 }
 
-async fn universal_available_install_result(
+fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+fn agent_observes_universal(agent: &db::Agent, universal_root: &Path) -> bool {
+    agent.id == "factory-droid"
+        || db::agent_supports_universal_agents_skills(&agent.id)
+        || paths_refer_to_same_location(Path::new(&agent.global_skills_dir), universal_root)
+}
+
+#[derive(Debug)]
+struct DuplicateUniversalInstallation {
+    installation: SkillInstallation,
+    remove_path: bool,
+    original_symlink_target: Option<PathBuf>,
+}
+
+fn resolved_symlink_target(link_path: &Path) -> Result<PathBuf, String> {
+    let target = std::fs::read_link(link_path).map_err(|e| {
+        format!(
+            "Failed to read tracked symlink '{}': {}",
+            link_path.display(),
+            e
+        )
+    })?;
+    if target.is_absolute() {
+        Ok(target)
+    } else {
+        Ok(link_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(target))
+    }
+}
+
+async fn preflight_universal_duplicates(
     pool: &DbPool,
     skill_id: &str,
-    agent_id: &str,
+    universal_root: &Path,
+    universal_target: &Path,
     canonical_dir: &Path,
-) -> Result<Option<InstallResult>, String> {
-    if !db::agent_supports_universal_agents_skills(agent_id) {
-        return Ok(None);
+) -> Result<Vec<DuplicateUniversalInstallation>, String> {
+    let agents = db::get_all_agents(pool).await?;
+    let mut duplicates = Vec::new();
+
+    for installation in db::get_skill_installations(pool, skill_id).await? {
+        if installation.agent_id == "universal" {
+            continue;
+        }
+
+        let agent = agents
+            .iter()
+            .find(|agent| agent.id == installation.agent_id);
+        let is_compatible = agent
+            .is_some_and(|agent| agent_observes_universal(agent, universal_root))
+            || db::agent_supports_universal_agents_skills(&installation.agent_id);
+        if !is_compatible {
+            continue;
+        }
+
+        if installation.link_type != "symlink" {
+            return Err(format!(
+                "Skill '{}' already has a non-symlink installation for '{}'. Remove it before installing to Universal.",
+                skill_id, installation.agent_id
+            ));
+        }
+
+        let installed_path = PathBuf::from(&installation.installed_path);
+        let original_symlink_target = match std::fs::symlink_metadata(&installed_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let original_target = std::fs::read_link(&installed_path).map_err(|e| {
+                    format!(
+                        "Failed to read tracked symlink '{}': {}",
+                        installed_path.display(),
+                        e
+                    )
+                })?;
+                let actual_target = resolved_symlink_target(&installed_path)?;
+                if !paths_refer_to_same_location(&actual_target, canonical_dir) {
+                    return Err(format!(
+                        "Tracked symlink '{}' no longer points to the Central skill. Refusing to remove it.",
+                        installed_path.display()
+                    ));
+                }
+                Some(original_target)
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "Path '{}' is not a symlink. Refusing to remove it while installing to Universal.",
+                    installed_path.display()
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(format!(
+                    "Failed to inspect existing installation '{}': {}",
+                    installed_path.display(),
+                    error
+                ));
+            }
+        };
+
+        duplicates.push(DuplicateUniversalInstallation {
+            remove_path: !paths_refer_to_same_location(&installed_path, universal_target),
+            installation,
+            original_symlink_target,
+        });
     }
 
-    let symlink_path = existing_install_path_for_agent(pool, skill_id, agent_id)
-        .await?
-        .unwrap_or_else(|| canonical_dir.to_string_lossy().into_owned());
-    Ok(Some(InstallResult { symlink_path }))
+    Ok(duplicates)
 }
 
-// ─── Core Logic ───────────────────────────────────────────────────────────────
-
-/// Core install logic, separated from the Tauri layer for testability.
-///
-/// Creates a relative symlink at `agent.global_skills_dir/<skill_id>` that
-/// points to the canonical skill directory `central.global_skills_dir/<skill_id>`.
-///
-/// Returns an error if:
-/// - The agent or central agent is not found in the database.
-/// - The canonical skill does not exist (no SKILL.md).
-/// - A real (non-symlink) directory already exists at the target path.
-/// - `agent_id` is "central" (would create a self-referencing symlink).
-pub async fn install_skill_to_agent_impl(
+/// 공용 설치와 같은 물리 경로 또는 공용 호환 대상을 한 배치에서 중복 선택하지 못하게 한다.
+/// 반환값은 선택 대상 중 실제 공용 설치로 처리될 대상이 있는지 뜻한다.
+pub(crate) async fn validate_batch_install_targets(
     pool: &DbPool,
-    skill_id: &str,
-    agent_id: &str,
-) -> Result<InstallResult, String> {
-    // Guard: cannot install to the central agent itself.
-    if agent_id == "central" {
-        return Err("Cannot install a skill to the central agent itself".to_string());
+    agent_ids: &[String],
+) -> Result<bool, String> {
+    let agents = db::get_all_agents(pool).await?;
+    let selected = agent_ids
+        .iter()
+        .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
+        .collect::<Vec<_>>();
+
+    for (index, left) in selected.iter().enumerate() {
+        for right in selected.iter().skip(index + 1) {
+            if paths_refer_to_same_location(
+                Path::new(&left.global_skills_dir),
+                Path::new(&right.global_skills_dir),
+            ) {
+                return Err(format!(
+                    "Agents '{}' and '{}' use the same install directory and cannot be selected together.",
+                    left.id, right.id
+                ));
+            }
+        }
     }
 
-    // 1. Look up the target agent.
-    let agent = db::get_agent_by_id(pool, agent_id)
-        .await?
-        .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+    let Some(universal) = agents.iter().find(|agent| agent.id == "universal") else {
+        return Ok(false);
+    };
+    let universal_root = Path::new(&universal.global_skills_dir);
+    let uses_universal = selected.iter().any(|agent| {
+        agent.id == "universal"
+            || paths_refer_to_same_location(Path::new(&agent.global_skills_dir), universal_root)
+    });
+    if !uses_universal {
+        return Ok(false);
+    }
 
-    // 2. Look up the central agent to determine the canonical root.
+    let conflicts = selected
+        .iter()
+        .filter(|agent| {
+            agent.id != "universal"
+                && !paths_refer_to_same_location(
+                    Path::new(&agent.global_skills_dir),
+                    universal_root,
+                )
+                && agent_observes_universal(agent, universal_root)
+        })
+        .map(|agent| agent.id.as_str())
+        .collect::<Vec<_>>();
+    if !conflicts.is_empty() {
+        return Err(format!(
+            "Universal and compatible platform targets cannot be selected together: {}",
+            conflicts.join(", ")
+        ));
+    }
+
+    Ok(true)
+}
+
+/// 배치 쓰기 전에 공용 대상의 관리되지 않은 파일과 기존 복사 설치 충돌을 확인한다.
+pub(crate) async fn preflight_universal_install(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<(), String> {
     let central = db::get_agent_by_id(pool, "central")
         .await?
         .ok_or_else(|| "Central agent not found in database".to_string())?;
-
-    let central_root = PathBuf::from(&central.global_skills_dir);
-    let canonical_dir = canonical_dir_for_skill(pool, skill_id, &central_root).await?;
-
-    // 3. Ensure the skill exists in central (auto-centralize if needed).
-    ensure_centralized(pool, skill_id, &canonical_dir).await?;
-
-    if let Some(result) =
-        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
-    {
-        return Ok(result);
+    let Some(universal) = db::get_agent_by_id(pool, "universal").await? else {
+        return Ok(());
+    };
+    let central_root = Path::new(&central.global_skills_dir);
+    let universal_root = Path::new(&universal.global_skills_dir);
+    if paths_refer_to_same_location(central_root, universal_root) {
+        return Ok(());
     }
 
-    // 4. Compute symlink location.
-    let agent_dir = PathBuf::from(&agent.global_skills_dir);
-    let symlink_path = agent_dir.join(skill_id);
+    let canonical_dir = canonical_dir_for_skill(pool, skill_id, central_root).await?;
+    let target_path = universal_root.join(skill_id);
+    let duplicates = preflight_universal_duplicates(
+        pool,
+        skill_id,
+        universal_root,
+        &target_path,
+        &canonical_dir,
+    )
+    .await?;
+    let previous_installation =
+        existing_installation_for_agent(pool, skill_id, "universal").await?;
 
-    // 5. Ensure the agent's skills directory exists.
-    std::fs::create_dir_all(&agent_dir)
-        .map_err(|e| format!("Failed to create agent skills directory: {}", e))?;
-
-    // 6. Handle any existing entry at the symlink path.
-    match std::fs::symlink_metadata(&symlink_path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            // Remove stale symlink so we can replace it.
-            std::fs::remove_file(&symlink_path)
-                .map_err(|e| format!("Failed to remove existing symlink: {}", e))?;
+    match std::fs::symlink_metadata(&target_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let tracked_alias = duplicates.iter().any(|duplicate| !duplicate.remove_path);
+            if previous_installation.is_none() && !tracked_alias {
+                return Err(format!(
+                    "An unmanaged symlink already exists at '{}'. Refusing to replace it.",
+                    target_path.display()
+                ));
+            }
         }
-        Ok(meta) if meta.is_dir() => {
+        Ok(metadata) if metadata.is_dir() => {
             return Err(format!(
                 "A real directory already exists at '{}'. Refusing to overwrite.",
-                symlink_path.display()
+                target_path.display()
             ));
         }
         Ok(_) => {
             return Err(format!(
                 "A file already exists at '{}'. Refusing to overwrite.",
-                symlink_path.display()
+                target_path.display()
             ));
         }
-        Err(_) => {} // Path does not exist — proceed normally.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect install path '{}': {}",
+                target_path.display(),
+                error
+            ));
+        }
     }
 
-    // 7. Compute the relative path from the agent directory to the canonical dir.
-    let relative_target = symlink_target_path(&agent_dir, &canonical_dir);
+    Ok(())
+}
 
-    // 8. Create the symlink.
-    create_symlink(&relative_target, &symlink_path)?;
+async fn remove_universal_duplicates(
+    pool: &DbPool,
+    duplicates: &[DuplicateUniversalInstallation],
+) -> Result<(), String> {
+    let mut changed = Vec::new();
 
-    // 9. Persist the installation record.
+    for duplicate in duplicates {
+        let installed_path = Path::new(&duplicate.installation.installed_path);
+        let remove_result = if duplicate.remove_path {
+            match std::fs::symlink_metadata(installed_path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    std::fs::remove_file(installed_path).map_err(|e| {
+                        format!(
+                            "Failed to remove duplicate symlink '{}': {}",
+                            installed_path.display(),
+                            e
+                        )
+                    })
+                }
+                Ok(_) => Err(format!(
+                    "Path '{}' changed during installation. Refusing to remove it.",
+                    installed_path.display()
+                )),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "Failed to inspect duplicate installation '{}': {}",
+                    installed_path.display(),
+                    error
+                )),
+            }
+        } else {
+            Ok(())
+        };
+        if let Err(error) = remove_result {
+            let rollback_error = restore_universal_duplicates(pool, &changed).await;
+            return Err(match rollback_error {
+                Ok(()) => error,
+                Err(rollback_error) => format!("{}; rollback failed: {}", error, rollback_error),
+            });
+        }
+        changed.push(duplicate);
+        if let Err(error) = db::delete_skill_installation(
+            pool,
+            &duplicate.installation.skill_id,
+            &duplicate.installation.agent_id,
+        )
+        .await
+        {
+            let rollback_error = restore_universal_duplicates(pool, &changed).await;
+            return Err(match rollback_error {
+                Ok(()) => error,
+                Err(rollback_error) => format!("{}; rollback failed: {}", error, rollback_error),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+async fn restore_universal_duplicates(
+    pool: &DbPool,
+    duplicates: &[&DuplicateUniversalInstallation],
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+
+    for duplicate in duplicates.iter().rev() {
+        let installed_path = Path::new(&duplicate.installation.installed_path);
+        if duplicate.remove_path {
+            if let Some(target) = duplicate.original_symlink_target.as_ref() {
+                if let Some(parent) = installed_path.parent() {
+                    if let Err(error) = std::fs::create_dir_all(parent) {
+                        errors.push(format!(
+                            "failed to restore directory '{}': {}",
+                            parent.display(),
+                            error
+                        ));
+                    }
+                }
+                if std::fs::symlink_metadata(installed_path).is_err() {
+                    if let Err(error) = create_symlink(target, installed_path) {
+                        errors.push(format!(
+                            "failed to restore symlink '{}': {}",
+                            installed_path.display(),
+                            error
+                        ));
+                    }
+                }
+            }
+        }
+        if let Err(error) = db::upsert_skill_installation(pool, &duplicate.installation).await {
+            errors.push(format!(
+                "failed to restore installation '{}': {}",
+                duplicate.installation.agent_id, error
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+async fn rollback_install_target(
+    pool: &DbPool,
+    skill_id: &str,
+    target_agent_id: &str,
+    target_path: &Path,
+    created_link_type: &str,
+    previous_symlink_target: Option<&Path>,
+    previous_installation: Option<&SkillInstallation>,
+) -> Result<(), String> {
+    let mut errors = Vec::new();
+
+    match std::fs::symlink_metadata(target_path) {
+        Ok(metadata) if created_link_type == "symlink" && metadata.file_type().is_symlink() => {
+            if let Err(error) = std::fs::remove_file(target_path) {
+                errors.push(format!(
+                    "failed to remove new symlink '{}': {}",
+                    target_path.display(),
+                    error
+                ));
+            }
+        }
+        Ok(metadata) if created_link_type == "copy" && metadata.is_dir() => {
+            if let Err(error) = std::fs::remove_dir_all(target_path) {
+                errors.push(format!(
+                    "failed to remove new copy '{}': {}",
+                    target_path.display(),
+                    error
+                ));
+            }
+        }
+        Ok(_) => errors.push(format!(
+            "new install path '{}' changed before rollback",
+            target_path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => errors.push(format!(
+            "failed to inspect new install path '{}': {}",
+            target_path.display(),
+            error
+        )),
+    }
+
+    if let Some(previous_target) = previous_symlink_target {
+        if std::fs::symlink_metadata(target_path).is_err() {
+            if let Err(error) = create_symlink(previous_target, target_path) {
+                errors.push(format!(
+                    "failed to restore previous symlink '{}': {}",
+                    target_path.display(),
+                    error
+                ));
+            }
+        }
+    }
+
+    let db_result = if let Some(previous_installation) = previous_installation {
+        db::upsert_skill_installation(pool, previous_installation).await
+    } else {
+        db::delete_skill_installation(pool, skill_id, target_agent_id).await
+    };
+    if let Err(error) = db_result {
+        errors.push(format!("failed to restore installation record: {}", error));
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+#[derive(Default)]
+struct InstallRollback {
+    previous_symlink_target: Option<PathBuf>,
+    previous_installation: Option<SkillInstallation>,
+}
+
+fn replaceable_target(
+    target_path: &Path,
+    is_universal: bool,
+    has_previous_installation: bool,
+    universal_duplicates: &[DuplicateUniversalInstallation],
+) -> Result<Option<PathBuf>, String> {
+    match std::fs::symlink_metadata(target_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let tracked_alias = universal_duplicates
+                .iter()
+                .any(|duplicate| !duplicate.remove_path);
+            if is_universal && !has_previous_installation && !tracked_alias {
+                return Err(format!(
+                    "An unmanaged symlink already exists at '{}'. Refusing to replace it.",
+                    target_path.display()
+                ));
+            }
+            let previous_target = std::fs::read_link(target_path).map_err(|e| {
+                format!(
+                    "Failed to read existing symlink '{}': {}",
+                    target_path.display(),
+                    e
+                )
+            })?;
+            std::fs::remove_file(target_path)
+                .map_err(|e| format!("Failed to remove existing symlink: {}", e))?;
+            Ok(Some(previous_target))
+        }
+        Ok(metadata) if metadata.is_dir() => Err(format!(
+            "A real directory already exists at '{}'. Refusing to overwrite.",
+            target_path.display()
+        )),
+        Ok(_) => Err(format!(
+            "A file already exists at '{}'. Refusing to overwrite.",
+            target_path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "Failed to inspect install path '{}': {}",
+            target_path.display(),
+            error
+        )),
+    }
+}
+
+async fn rollback_error(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+    rollback: &InstallRollback,
+    error: String,
+) -> String {
+    match rollback_install_target(
+        pool,
+        &installation.skill_id,
+        &installation.agent_id,
+        Path::new(&installation.installed_path),
+        &installation.link_type,
+        rollback.previous_symlink_target.as_deref(),
+        rollback.previous_installation.as_ref(),
+    )
+    .await
+    {
+        Ok(()) => error,
+        Err(rollback_error) => format!("{}; rollback failed: {}", error, rollback_error),
+    }
+}
+
+async fn persist_install(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+    duplicates: &[DuplicateUniversalInstallation],
+    rollback: &InstallRollback,
+) -> Result<(), String> {
+    if let Err(error) = db::upsert_skill_installation(pool, installation).await {
+        return Err(rollback_error(pool, installation, rollback, error).await);
+    }
+    if let Err(error) = remove_universal_duplicates(pool, duplicates).await {
+        return Err(rollback_error(pool, installation, rollback, error).await);
+    }
+    Ok(())
+}
+
+struct InstallPlan {
+    canonical_dir: PathBuf,
+    target_agent: db::Agent,
+    target_path: PathBuf,
+    legacy_noop: bool,
+    universal_duplicates: Vec<DuplicateUniversalInstallation>,
+}
+
+async fn prepare_install(
+    pool: &DbPool,
+    skill_id: &str,
+    requested_agent_id: &str,
+) -> Result<InstallPlan, String> {
+    if requested_agent_id == "central" {
+        return Err("Cannot install a skill to the central agent itself".to_string());
+    }
+
+    let requested_agent = db::get_agent_by_id(pool, requested_agent_id)
+        .await?
+        .ok_or_else(|| format!("Agent '{}' not found", requested_agent_id))?;
+    let central = db::get_agent_by_id(pool, "central")
+        .await?
+        .ok_or_else(|| "Central agent not found in database".to_string())?;
+    let central_root = PathBuf::from(&central.global_skills_dir);
+    let canonical_dir = canonical_dir_for_skill(pool, skill_id, &central_root).await?;
+    let universal = db::get_agent_by_id(pool, "universal").await?;
+
+    // 이전 DB는 ~/.agents/skills를 보관함과 플랫폼 로딩 경로로 함께 사용했다.
+    // 마이그레이션 전까지는 기존처럼 보관만 해도 사용할 수 있는 동작을 유지한다.
+    if universal.is_none() && db::agent_supports_universal_agents_skills(requested_agent_id) {
+        ensure_centralized(pool, skill_id, &canonical_dir).await?;
+        return Ok(InstallPlan {
+            canonical_dir: canonical_dir.clone(),
+            target_agent: requested_agent,
+            target_path: canonical_dir,
+            legacy_noop: true,
+            universal_duplicates: Vec::new(),
+        });
+    }
+
+    let Some(universal) = universal else {
+        ensure_centralized(pool, skill_id, &canonical_dir).await?;
+        let target_path = PathBuf::from(&requested_agent.global_skills_dir).join(skill_id);
+        return Ok(InstallPlan {
+            canonical_dir,
+            target_agent: requested_agent,
+            target_path,
+            legacy_noop: false,
+            universal_duplicates: Vec::new(),
+        });
+    };
+    let universal_root = PathBuf::from(&universal.global_skills_dir);
+    let requested_is_universal = requested_agent.id == "universal"
+        || paths_refer_to_same_location(
+            Path::new(&requested_agent.global_skills_dir),
+            &universal_root,
+        );
+    let legacy_noop = paths_refer_to_same_location(&central_root, &universal_root)
+        && agent_observes_universal(&requested_agent, &universal_root);
+
+    if legacy_noop {
+        ensure_centralized(pool, skill_id, &canonical_dir).await?;
+        return Ok(InstallPlan {
+            canonical_dir: canonical_dir.clone(),
+            target_agent: universal,
+            target_path: canonical_dir,
+            legacy_noop: true,
+            universal_duplicates: Vec::new(),
+        });
+    }
+
+    let target_agent = if requested_is_universal {
+        universal.clone()
+    } else {
+        requested_agent.clone()
+    };
+    let target_path = PathBuf::from(&target_agent.global_skills_dir).join(skill_id);
+
+    if !requested_is_universal && agent_observes_universal(&requested_agent, &universal_root) {
+        let has_universal_record = existing_installation_for_agent(pool, skill_id, "universal")
+            .await?
+            .is_some();
+        if has_universal_record || std::fs::symlink_metadata(universal_root.join(skill_id)).is_ok()
+        {
+            return Err(format!(
+                "Skill '{}' is already available through Universal. Remove the Universal installation before installing it specifically for '{}'.",
+                skill_id, requested_agent_id
+            ));
+        }
+    }
+
+    ensure_centralized(pool, skill_id, &canonical_dir).await?;
+    let universal_duplicates = if requested_is_universal {
+        preflight_universal_duplicates(
+            pool,
+            skill_id,
+            &universal_root,
+            &target_path,
+            &canonical_dir,
+        )
+        .await?
+    } else {
+        Vec::new()
+    };
+
+    Ok(InstallPlan {
+        canonical_dir,
+        target_agent,
+        target_path,
+        legacy_noop: false,
+        universal_duplicates,
+    })
+}
+
+// ─── Core Logic ───────────────────────────────────────────────────────────────
+
+/// Tauri 계층과 분리된 실제 설치 로직이다.
+/// 대상 플랫폼 경로에 보관함 원본을 가리키는 상대 심볼릭 링크를 만든다.
+/// 대상 경로 충돌, 원본 누락, 잘못된 플랫폼 요청은 오류로 중단한다.
+pub async fn install_skill_to_agent_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<InstallResult, String> {
+    let InstallPlan {
+        canonical_dir,
+        target_agent,
+        target_path: symlink_path,
+        legacy_noop,
+        universal_duplicates,
+    } = prepare_install(pool, skill_id, agent_id).await?;
+    if legacy_noop {
+        return Ok(InstallResult {
+            symlink_path: canonical_dir.to_string_lossy().into_owned(),
+        });
+    }
+
+    let agent_dir = PathBuf::from(&target_agent.global_skills_dir);
+    std::fs::create_dir_all(&agent_dir)
+        .map_err(|e| format!("Failed to create agent skills directory: {}", e))?;
+    let previous_installation =
+        existing_installation_for_agent(pool, skill_id, &target_agent.id).await?;
+    let rollback = InstallRollback {
+        previous_symlink_target: replaceable_target(
+            &symlink_path,
+            target_agent.id == "universal",
+            previous_installation.is_some(),
+            &universal_duplicates,
+        )?,
+        previous_installation,
+    };
     let installation = SkillInstallation {
         skill_id: skill_id.to_string(),
-        agent_id: agent_id.to_string(),
+        agent_id: target_agent.id,
         installed_path: symlink_path.to_string_lossy().into_owned(),
         link_type: "symlink".to_string(),
         symlink_target: Some(canonical_dir.to_string_lossy().into_owned()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    db::upsert_skill_installation(pool, &installation).await?;
+    let relative_target = symlink_target_path(&agent_dir, &canonical_dir);
+    if let Err(error) = create_symlink(&relative_target, &symlink_path) {
+        return Err(rollback_error(pool, &installation, &rollback, error).await);
+    }
+    persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
 
     Ok(InstallResult {
         symlink_path: symlink_path.to_string_lossy().into_owned(),
@@ -369,76 +930,45 @@ pub async fn install_skill_to_agent_copy_impl(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<InstallResult, String> {
-    // Guard: cannot install to the central agent itself.
-    if agent_id == "central" {
-        return Err("Cannot install a skill to the central agent itself".to_string());
+    let InstallPlan {
+        canonical_dir,
+        target_agent,
+        target_path,
+        legacy_noop,
+        universal_duplicates,
+    } = prepare_install(pool, skill_id, agent_id).await?;
+    if legacy_noop {
+        return Ok(InstallResult {
+            symlink_path: canonical_dir.to_string_lossy().into_owned(),
+        });
     }
 
-    // 1. Look up the target agent.
-    let agent = db::get_agent_by_id(pool, agent_id)
-        .await?
-        .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
-
-    // 2. Look up the central agent to determine the canonical root.
-    let central = db::get_agent_by_id(pool, "central")
-        .await?
-        .ok_or_else(|| "Central agent not found in database".to_string())?;
-
-    let central_root = PathBuf::from(&central.global_skills_dir);
-    let canonical_dir = canonical_dir_for_skill(pool, skill_id, &central_root).await?;
-
-    // 3. Ensure the skill exists in central (auto-centralize if needed).
-    ensure_centralized(pool, skill_id, &canonical_dir).await?;
-
-    if let Some(result) =
-        universal_available_install_result(pool, skill_id, agent_id, &canonical_dir).await?
-    {
-        return Ok(result);
-    }
-
-    // 4. Compute target location.
-    let agent_dir = PathBuf::from(&agent.global_skills_dir);
-    let target_path = agent_dir.join(skill_id);
-
-    // 5. Ensure the agent's skills directory exists.
+    let agent_dir = PathBuf::from(&target_agent.global_skills_dir);
     std::fs::create_dir_all(&agent_dir)
         .map_err(|e| format!("Failed to create agent skills directory: {}", e))?;
-
-    // 6. Handle any existing entry at the target path.
-    match std::fs::symlink_metadata(&target_path) {
-        Ok(meta) if meta.file_type().is_symlink() => {
-            // Remove stale symlink so we can replace it with a real copy.
-            std::fs::remove_file(&target_path)
-                .map_err(|e| format!("Failed to remove existing symlink: {}", e))?;
-        }
-        Ok(meta) if meta.is_dir() => {
-            return Err(format!(
-                "A real directory already exists at '{}'. Refusing to overwrite.",
-                target_path.display()
-            ));
-        }
-        Ok(_) => {
-            return Err(format!(
-                "A file already exists at '{}'. Refusing to overwrite.",
-                target_path.display()
-            ));
-        }
-        Err(_) => {} // Path does not exist — proceed normally.
-    }
-
-    // 7. Recursively copy the canonical skill directory.
-    copy_dir_all(&canonical_dir, &target_path)?;
-
-    // 8. Persist the installation record.
+    let previous_installation =
+        existing_installation_for_agent(pool, skill_id, &target_agent.id).await?;
+    let rollback = InstallRollback {
+        previous_symlink_target: replaceable_target(
+            &target_path,
+            target_agent.id == "universal",
+            previous_installation.is_some(),
+            &universal_duplicates,
+        )?,
+        previous_installation,
+    };
     let installation = SkillInstallation {
         skill_id: skill_id.to_string(),
-        agent_id: agent_id.to_string(),
+        agent_id: target_agent.id,
         installed_path: target_path.to_string_lossy().into_owned(),
         link_type: "copy".to_string(),
         symlink_target: None,
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    db::upsert_skill_installation(pool, &installation).await?;
+    if let Err(error) = copy_dir_all(&canonical_dir, &target_path) {
+        return Err(rollback_error(pool, &installation, &rollback, error).await);
+    }
+    persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
 
     Ok(InstallResult {
         symlink_path: target_path.to_string_lossy().into_owned(),
@@ -458,15 +988,54 @@ pub async fn uninstall_skill_from_agent_impl(
     skill_id: &str,
     agent_id: &str,
 ) -> Result<(), String> {
-    // 1. Look up the agent.
-    let agent = db::get_agent_by_id(pool, agent_id)
+    if agent_id == "central" {
+        return Err("Cannot uninstall a Central skill through the platform installer".to_string());
+    }
+
+    let requested_agent = db::get_agent_by_id(pool, agent_id)
         .await?
         .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+    let universal = db::get_agent_by_id(pool, "universal").await?;
+    let central = db::get_agent_by_id(pool, "central").await?;
 
-    // 2. Look up the installation record to determine where and how it was installed.
+    let agent = if let Some(universal) = universal.as_ref() {
+        if requested_agent.id == "universal"
+            || paths_refer_to_same_location(
+                Path::new(&requested_agent.global_skills_dir),
+                Path::new(&universal.global_skills_dir),
+            )
+        {
+            universal.clone()
+        } else {
+            requested_agent.clone()
+        }
+    } else {
+        requested_agent.clone()
+    };
+
     let installations = db::get_skill_installations(pool, skill_id).await?;
-    let record = installations.iter().find(|r| r.agent_id == agent_id);
-    if record.is_none() && db::agent_supports_universal_agents_skills(agent_id) {
+    let record = installations
+        .iter()
+        .find(|record| record.agent_id == agent.id);
+    let legacy_shared_availability =
+        universal
+            .as_ref()
+            .zip(central.as_ref())
+            .is_some_and(|(universal, central)| {
+                paths_refer_to_same_location(
+                    Path::new(&universal.global_skills_dir),
+                    Path::new(&central.global_skills_dir),
+                ) && agent_observes_universal(
+                    &requested_agent,
+                    Path::new(&universal.global_skills_dir),
+                )
+            });
+    if (legacy_shared_availability && agent.id == "universal")
+        || (record.is_none()
+            && (agent.id == "universal"
+                || legacy_shared_availability
+                || db::agent_supports_universal_agents_skills(agent_id)))
+    {
         return Ok(());
     }
     let install_path = record
@@ -505,7 +1074,7 @@ pub async fn uninstall_skill_from_agent_impl(
     }
 
     // 4. Remove the installation record from the database.
-    db::delete_skill_installation(pool, skill_id, agent_id).await?;
+    db::delete_skill_installation(pool, skill_id, &agent.id).await?;
 
     Ok(())
 }
@@ -537,28 +1106,25 @@ pub async fn uninstall_skill_from_agent(
     uninstall_skill_from_agent_impl(&state.db, &skill_id, &agent_id).await
 }
 
-/// Tauri command: install a skill to multiple agents in one call.
-///
-/// `method` must be either `"symlink"` (default, creates a relative symlink) or
-/// `"copy"` (copies the skill directory). Each agent install is attempted
-/// independently; failures are collected in the `failed` list rather than
-/// short-circuiting the entire batch.
-#[tauri::command]
-pub async fn batch_install_to_agents(
-    state: State<'_, AppState>,
-    skill_id: String,
-    agent_ids: Vec<String>,
-    method: Option<String>,
+pub async fn batch_install_to_agents_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_ids: &[String],
+    method: &str,
 ) -> Result<BatchInstallResult, String> {
-    let method = method.as_deref().unwrap_or("auto");
+    let uses_universal = validate_batch_install_targets(pool, agent_ids).await?;
+    if uses_universal {
+        preflight_universal_install(pool, skill_id).await?;
+    }
+
     let mut succeeded = Vec::new();
     let mut failed = Vec::new();
 
-    for agent_id in &agent_ids {
+    for agent_id in agent_ids {
         let install_result = match method {
-            "copy" => install_skill_to_agent_copy_impl(&state.db, &skill_id, agent_id).await,
-            "symlink" => install_skill_to_agent_impl(&state.db, &skill_id, agent_id).await,
-            _ => install_skill_to_agent_auto_impl(&state.db, &skill_id, agent_id).await,
+            "copy" => install_skill_to_agent_copy_impl(pool, skill_id, agent_id).await,
+            "symlink" => install_skill_to_agent_impl(pool, skill_id, agent_id).await,
+            _ => install_skill_to_agent_auto_impl(pool, skill_id, agent_id).await,
         };
         match install_result {
             Ok(_) => succeeded.push(agent_id.clone()),
@@ -570,6 +1136,24 @@ pub async fn batch_install_to_agents(
     }
 
     Ok(BatchInstallResult { succeeded, failed })
+}
+
+/// 여러 설치 대상에 같은 스킬을 설치한다.
+/// 공용 설치 관련 충돌은 쓰기 전에 중단하고, 그 밖의 독립적인 실패는 결과에 모은다.
+#[tauri::command]
+pub async fn batch_install_to_agents(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_ids: Vec<String>,
+    method: Option<String>,
+) -> Result<BatchInstallResult, String> {
+    batch_install_to_agents_impl(
+        &state.db,
+        &skill_id,
+        &agent_ids,
+        method.as_deref().unwrap_or("auto"),
+    )
+    .await
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -604,6 +1188,15 @@ mod tests {
             .unwrap();
 
         pool
+    }
+
+    async fn set_agent_dir(pool: &DbPool, agent_id: &str, path: &Path) {
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+            .bind(path.to_string_lossy().to_string())
+            .bind(agent_id)
+            .execute(pool)
+            .await
+            .unwrap();
     }
 
     /// Create a minimal skill directory containing a valid `SKILL.md`.
@@ -676,6 +1269,7 @@ mod tests {
         fs::create_dir_all(&central_dir).unwrap();
 
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &central_dir).await;
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'cursor'")
             .bind(cursor_dir.to_string_lossy().to_string())
             .execute(&pool)
@@ -706,6 +1300,286 @@ mod tests {
                 .all(|installation| installation.agent_id != "cursor"),
             "universal availability must not create removable installation rows"
         );
+    }
+
+    #[tokio::test]
+    async fn test_install_to_universal_creates_real_link_and_universal_record() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        let canonical = create_central_skill(&central_dir, "shared-skill");
+
+        let result = install_skill_to_agent_impl(&pool, "shared-skill", "universal")
+            .await
+            .unwrap();
+
+        let installed = universal_dir.join("shared-skill");
+        assert_eq!(result.symlink_path, installed.to_string_lossy());
+        assert!(fs::symlink_metadata(&installed)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            installed.canonicalize().unwrap(),
+            canonical.canonicalize().unwrap()
+        );
+        let installations = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "universal");
+    }
+
+    #[tokio::test]
+    async fn test_copy_install_and_uninstall_use_universal_target_record() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        create_central_skill(&central_dir, "shared-copy");
+
+        install_skill_to_agent_copy_impl(&pool, "shared-copy", "universal")
+            .await
+            .unwrap();
+
+        let installed = universal_dir.join("shared-copy");
+        assert!(installed.is_dir());
+        assert!(!fs::symlink_metadata(&installed)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let installations = db::get_skill_installations(&pool, "shared-copy")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "universal");
+        assert_eq!(installations[0].link_type, "copy");
+
+        uninstall_skill_from_agent_impl(&pool, "shared-copy", "universal")
+            .await
+            .unwrap();
+        assert!(!installed.exists());
+        assert!(central_dir.join("shared-copy/SKILL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn test_direct_shared_path_agent_is_recorded_as_universal() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "codex", &universal_dir).await;
+        create_central_skill(&central_dir, "codex-shared");
+
+        install_skill_to_agent_impl(&pool, "codex-shared", "codex")
+            .await
+            .unwrap();
+
+        let installations = db::get_skill_installations(&pool, "codex-shared")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "universal");
+        assert!(fs::symlink_metadata(universal_dir.join("codex-shared")).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_universal_install_replaces_tracked_compatible_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        let cursor_dir = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_central_skill(&central_dir, "move-to-shared");
+        install_skill_to_agent_impl(&pool, "move-to-shared", "cursor")
+            .await
+            .unwrap();
+
+        install_skill_to_agent_impl(&pool, "move-to-shared", "universal")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(cursor_dir.join("move-to-shared")).is_err());
+        assert!(fs::symlink_metadata(universal_dir.join("move-to-shared")).is_ok());
+        let installations = db::get_skill_installations(&pool, "move-to-shared")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "universal");
+    }
+
+    #[tokio::test]
+    async fn test_universal_install_refuses_compatible_copy_without_changes() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        let cursor_dir = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_central_skill(&central_dir, "copied-skill");
+        install_skill_to_agent_copy_impl(&pool, "copied-skill", "cursor")
+            .await
+            .unwrap();
+
+        let result = install_skill_to_agent_impl(&pool, "copied-skill", "universal").await;
+
+        assert!(result.is_err());
+        assert!(cursor_dir.join("copied-skill/SKILL.md").exists());
+        assert!(fs::symlink_metadata(universal_dir.join("copied-skill")).is_err());
+        let installations = db::get_skill_installations(&pool, "copied-skill")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "cursor");
+        assert_eq!(installations[0].link_type, "copy");
+    }
+
+    #[tokio::test]
+    async fn test_native_install_is_blocked_while_universal_exists() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        let cursor_dir = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_central_skill(&central_dir, "shared-first");
+        install_skill_to_agent_impl(&pool, "shared-first", "universal")
+            .await
+            .unwrap();
+
+        let result = install_skill_to_agent_impl(&pool, "shared-first", "cursor").await;
+
+        assert!(result.is_err());
+        assert!(fs::symlink_metadata(cursor_dir.join("shared-first")).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_universal_cleanup_failure_rolls_back_new_install_and_duplicate() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        let cursor_dir = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        let canonical = create_central_skill(&central_dir, "rollback-skill");
+        install_skill_to_agent_impl(&pool, "rollback-skill", "cursor")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_cursor_delete BEFORE DELETE ON skill_installations
+             WHEN OLD.agent_id = 'cursor'
+             BEGIN SELECT RAISE(ABORT, 'forced cleanup failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = install_skill_to_agent_impl(&pool, "rollback-skill", "universal").await;
+
+        assert!(result.is_err());
+        assert!(fs::symlink_metadata(universal_dir.join("rollback-skill")).is_err());
+        let cursor_link = cursor_dir.join("rollback-skill");
+        assert!(fs::symlink_metadata(&cursor_link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            cursor_link.canonicalize().unwrap(),
+            canonical.canonicalize().unwrap()
+        );
+        let installations = db::get_skill_installations(&pool, "rollback-skill")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "cursor");
+    }
+
+    #[tokio::test]
+    async fn test_db_failure_restores_replaced_universal_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&universal_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        let canonical = create_central_skill(&central_dir, "restore-link");
+        let target = universal_dir.join("restore-link");
+        create_symlink(&canonical, &target).unwrap();
+        let original_target = fs::read_link(&target).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "restore-link".to_string(),
+                agent_id: "universal".to_string(),
+                installed_path: target.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(canonical.to_string_lossy().into_owned()),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_universal_insert BEFORE INSERT ON skill_installations
+             WHEN NEW.agent_id = 'universal'
+             BEGIN SELECT RAISE(ABORT, 'forced insert failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let result = install_skill_to_agent_impl(&pool, "restore-link", "universal").await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read_link(&target).unwrap(), original_target);
+        let installations = db::get_skill_installations(&pool, "restore-link")
+            .await
+            .unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "universal");
+    }
+
+    #[tokio::test]
+    async fn test_universal_install_refuses_unmanaged_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&universal_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        let canonical = create_central_skill(&central_dir, "manual-link");
+        let target = universal_dir.join("manual-link");
+        create_symlink(&canonical, &target).unwrap();
+
+        let result = install_skill_to_agent_impl(&pool, "manual-link", "universal").await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            target.canonicalize().unwrap(),
+            canonical.canonicalize().unwrap()
+        );
+        assert!(db::get_skill_installations(&pool, "manual-link")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1065,6 +1939,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_uninstall_universal_removes_only_tracked_target() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        create_central_skill(&central_dir, "remove-shared");
+        install_skill_to_agent_impl(&pool, "remove-shared", "universal")
+            .await
+            .unwrap();
+
+        uninstall_skill_from_agent_impl(&pool, "remove-shared", "universal")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(universal_dir.join("remove-shared")).is_err());
+        assert!(central_dir.join("remove-shared/SKILL.md").exists());
+        assert!(db::get_skill_installations(&pool, "remove-shared")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_uninstall_universal_preserves_untracked_real_directory() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("vault");
+        let universal_dir = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        let manual_dir = create_central_skill(&universal_dir, "manual-skill");
+
+        uninstall_skill_from_agent_impl(&pool, "manual-skill", "universal")
+            .await
+            .unwrap();
+
+        assert!(manual_dir.join("SKILL.md").exists());
+        assert!(db::get_skill_installations(&pool, "manual-skill")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn test_uninstall_uses_recorded_installed_path_for_nested_skill() {
         let tmp = TempDir::new().unwrap();
         let central_dir = tmp.path().join("central");
@@ -1161,27 +2081,48 @@ mod tests {
         assert_eq!(result.failed[0].agent_id, "nonexistent-agent");
     }
 
-    /// Helper that mirrors `batch_install_to_agents` but works with a raw pool
-    /// (no Tauri State).
+    #[tokio::test]
+    async fn batch_rejects_universal_and_compatible_targets_before_writing() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let universal_dir = tmp.path().join("universal");
+        let cursor_dir = tmp.path().join("cursor");
+        fs::create_dir_all(&central_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &claude_dir).await;
+        set_agent_dir(&pool, "universal", &universal_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_central_skill(&central_dir, "conflicting-batch");
+
+        for (agent_ids, method) in [
+            (
+                vec!["cursor".to_string(), "universal".to_string()],
+                "symlink",
+            ),
+            (vec!["universal".to_string(), "cursor".to_string()], "copy"),
+        ] {
+            let result =
+                batch_install_to_agents_impl(&pool, "conflicting-batch", &agent_ids, method).await;
+
+            assert!(result.is_err());
+            assert!(!cursor_dir.join("conflicting-batch").exists());
+            assert!(!universal_dir.join("conflicting-batch").exists());
+            assert!(db::get_skill_installations(&pool, "conflicting-batch")
+                .await
+                .unwrap()
+                .is_empty());
+        }
+    }
+
     async fn batch_install_impl(
         pool: &DbPool,
         skill_id: &str,
         agent_ids: &[String],
     ) -> BatchInstallResult {
-        let mut succeeded = Vec::new();
-        let mut failed = Vec::new();
-
-        for agent_id in agent_ids {
-            match install_skill_to_agent_impl(pool, skill_id, agent_id).await {
-                Ok(_) => succeeded.push(agent_id.clone()),
-                Err(e) => failed.push(FailedInstall {
-                    agent_id: agent_id.clone(),
-                    error: e,
-                }),
-            }
-        }
-
-        BatchInstallResult { succeeded, failed }
+        batch_install_to_agents_impl(pool, skill_id, agent_ids, "symlink")
+            .await
+            .unwrap()
     }
 
     // ── install_skill_to_agent_copy_impl ──────────────────────────────────────

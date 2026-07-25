@@ -42,8 +42,16 @@ pub fn app_data_dir() -> PathBuf {
     resolve_home_dir().join(".skillsmanage")
 }
 
-pub fn central_skills_dir() -> PathBuf {
+pub fn default_central_skills_dir() -> PathBuf {
+    app_data_dir().join("skills")
+}
+
+pub fn universal_skills_dir() -> PathBuf {
     resolve_home_dir().join(".agents").join("skills")
+}
+
+pub fn legacy_central_skills_dir() -> PathBuf {
+    universal_skills_dir()
 }
 
 fn expand_home_path_with_home(path: &str, home_dir: &Path) -> PathBuf {
@@ -125,5 +133,15 @@ mod tests {
         let expanded =
             expand_home_path_with_home("/opt/skills/custom", Path::new("/tmp/ignored-home"));
         assert_eq!(expanded, PathBuf::from("/opt/skills/custom"));
+    }
+
+    #[test]
+    fn central_and_universal_paths_are_separate() {
+        assert_eq!(default_central_skills_dir(), app_data_dir().join("skills"));
+        assert_eq!(
+            universal_skills_dir(),
+            resolve_home_dir().join(".agents").join("skills")
+        );
+        assert_ne!(default_central_skills_dir(), universal_skills_dir());
     }
 }

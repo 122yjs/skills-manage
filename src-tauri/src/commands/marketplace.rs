@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use super::github_import;
-use crate::path_utils::central_skills_dir;
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -362,7 +361,7 @@ async fn sync_registry_impl(
     };
 
     // Check which skills are already installed locally
-    let central_dir = central_skills_dir();
+    let central_dir = crate::db::get_central_skills_dir(pool).await?;
 
     // Upsert skills into marketplace_skills
     for skill in &skills {
@@ -530,7 +529,9 @@ pub async fn install_marketplace_skill(
         .map_err(|e| format!("Failed to read response: {}", e))?;
 
     // Create directory and write SKILL.md
-    let skill_dir = central_skills_dir().join(&skill.name);
+    let skill_dir = crate::db::get_central_skills_dir(&state.db)
+        .await?
+        .join(&skill.name);
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
@@ -1003,7 +1004,9 @@ pub async fn install_from_skills_sh(
 
     // Collect all files from the skill directory and write them to central dir
     let source_files = github_import::collect_snapshot_source_files(&snapshot, &source_path)?;
-    let skill_dir = central_skills_dir().join(&skill_name);
+    let skill_dir = crate::db::get_central_skills_dir(&state.db)
+        .await?
+        .join(&skill_name);
     let mut progress_state = github_import::GitHubImportProgressState::default();
     github_import::write_snapshot_source_to_target(
         &snapshot,

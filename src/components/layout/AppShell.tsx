@@ -6,6 +6,8 @@ import { GlobalSearchDialog } from "./GlobalSearchDialog";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
+import { useStorageStore } from "@/stores/storageStore";
+import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 
 /**
  * Top-level app shell: TopBar + icon sidebar + scrollable main content area.
@@ -20,9 +22,11 @@ export function AppShell() {
   const rescan = usePlatformStore((s) => s.rescan);
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const rescanDiscoverFromDisk = useDiscoverStore((s) => s.rescanFromDisk);
+  const loadStorageStatus = useStorageStore((s) => s.loadStatus);
 
   useEffect(() => {
     initialize();
+    void loadStorageStatus().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -50,6 +54,7 @@ export function AppShell() {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
       <TopBar onSearchClick={() => setIsSearchOpen(true)} />
+      <LegacyMigrationNotice onMigrated={handleGlobalRescan} />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <main ref={mainRef} className="flex-1 min-h-0 min-w-0 overflow-hidden">

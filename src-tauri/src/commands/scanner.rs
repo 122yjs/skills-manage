@@ -65,6 +65,7 @@ enum AgentSkillSourceKind {
     User,
     Plugin,
     Compatibility,
+    Unmanaged,
 }
 
 impl AgentSkillSourceKind {
@@ -73,11 +74,12 @@ impl AgentSkillSourceKind {
             Self::User => "user",
             Self::Plugin => "plugin",
             Self::Compatibility => "compatibility",
+            Self::Unmanaged => "unmanaged",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Plugin | Self::Compatibility)
+        matches!(self, Self::Plugin | Self::Compatibility | Self::Unmanaged)
     }
 }
 
@@ -507,10 +509,31 @@ fn push_unique_scan_root(roots: &mut Vec<AgentScanRoot>, root: AgentScanRoot) {
     roots.push(root);
 }
 
-fn scan_roots_for_agent(agent: &crate::db::Agent) -> Vec<AgentScanRoot> {
+fn scan_roots_for_agent(
+    agent: &crate::db::Agent,
+    universal_root: Option<&Path>,
+    central_root: Option<&Path>,
+) -> Vec<AgentScanRoot> {
     let primary_root = PathBuf::from(&agent.global_skills_dir);
 
-    let compatibility_root = agents_skills_compatibility_root(&primary_root);
+    if agent.id == "universal" {
+        if central_root.is_some_and(|central_root| central_root == primary_root) {
+            return vec![compatibility_scan_root(primary_root)];
+        }
+        return vec![AgentScanRoot {
+            path: primary_root.clone(),
+            source_root: Some(primary_root),
+            source_kind: Some(AgentSkillSourceKind::Unmanaged),
+        }];
+    }
+
+    if universal_root.is_some_and(|universal_root| universal_root == primary_root) {
+        return vec![compatibility_scan_root(primary_root)];
+    }
+
+    let compatibility_root = universal_root
+        .map(Path::to_path_buf)
+        .or_else(|| agents_skills_compatibility_root(&primary_root));
     if db::agent_supports_universal_agents_skills(&agent.id)
         && compatibility_root
             .as_ref()
@@ -561,6 +584,14 @@ fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
 pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     let agents = db::get_all_agents(pool).await?;
     let custom_dirs = db::get_scan_directories(pool).await?;
+    let universal_root = agents
+        .iter()
+        .find(|agent| agent.id == "universal")
+        .map(|agent| PathBuf::from(&agent.global_skills_dir));
+    let central_root = agents
+        .iter()
+        .find(|agent| agent.id == "central")
+        .map(|agent| PathBuf::from(&agent.global_skills_dir));
 
     let mut total_skills: usize = 0;
     let mut skills_by_agent: HashMap<String, usize> = HashMap::new();
@@ -572,7 +603,8 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
         let is_central = agent.category == "central";
-        let scan_roots = scan_roots_for_agent(agent);
+        let scan_roots =
+            scan_roots_for_agent(agent, universal_root.as_deref(), central_root.as_deref());
         let tracks_observations = scan_roots.iter().any(|root| root.source_kind.is_some());
         let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
@@ -608,8 +640,25 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
 
             for skill in &root_scanned {
                 let now = Utc::now().to_rfc3339();
+                let source_kind = if root.source_kind == Some(AgentSkillSourceKind::Unmanaged) {
+                    let is_tracked = db::get_skill_installations(pool, &skill.id)
+                        .await?
+                        .into_iter()
+                        .any(|installation| {
+                            installation.agent_id == "universal"
+                                && installation.installed_path == skill.dir_path
+                                && installation.link_type == skill.link_type
+                        });
+                    if is_tracked {
+                        None
+                    } else {
+                        root.source_kind
+                    }
+                } else {
+                    root.source_kind
+                };
 
-                if let Some(source_kind) = root.source_kind {
+                if let Some(source_kind) = source_kind {
                     let observation = AgentSkillObservation {
                         row_id: claude_observation_row_id(&agent.id, &skill.dir_path),
                         agent_id: agent.id.clone(),
@@ -629,9 +678,8 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                     found_observation_row_ids.push(observation.row_id);
                 }
 
-                let should_persist_manageable_state = root
-                    .source_kind
-                    .is_none_or(|source_kind| !source_kind.is_read_only());
+                let should_persist_manageable_state =
+                    source_kind.is_none_or(|source_kind| !source_kind.is_read_only());
                 if should_persist_manageable_state {
                     all_found_skill_ids.insert(skill.id.clone());
                     found_install_ids.push(skill.id.clone());
@@ -1899,6 +1947,173 @@ mod tests {
             cursor_installations.is_empty(),
             "shared .agents skills must not be persisted as removable universal-agent installs"
         );
+    }
+
+    #[tokio::test]
+    async fn test_separated_universal_root_manages_only_physically_installed_skills() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('cursor', 'universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let central_root = tmp.path().join(".skillsmanage/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let cursor_root = tmp.path().join(".cursor/skills");
+        fs::create_dir_all(&universal_root).unwrap();
+        fs::create_dir_all(&cursor_root).unwrap();
+        create_skill_dir(
+            &central_root,
+            "vault-only",
+            &valid_skill_md("Vault Only", "Not installed"),
+        );
+        let installed_source = create_skill_dir(
+            &central_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Installed to Universal"),
+        );
+        symlink(&installed_source, universal_root.join("shared-skill")).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "shared-skill".to_string(),
+                agent_id: "universal".to_string(),
+                installed_path: universal_root
+                    .join("shared-skill")
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(installed_source.to_string_lossy().into_owned()),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        for (agent_id, root) in [
+            ("central", &central_root),
+            ("universal", &universal_root),
+            ("cursor", &cursor_root),
+        ] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let universal_installations: Vec<_> = db::get_skill_installations(&pool, "shared-skill")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|installation| installation.agent_id == "universal")
+            .collect();
+        assert_eq!(universal_installations.len(), 1);
+        assert_eq!(universal_installations[0].link_type, "symlink");
+
+        let cursor_observations = db::get_agent_skill_observations(&pool, "cursor")
+            .await
+            .unwrap();
+        assert_eq!(cursor_observations.len(), 1);
+        assert_eq!(cursor_observations[0].skill_id, "shared-skill");
+        assert!(cursor_observations[0].is_read_only);
+        assert!(cursor_observations
+            .iter()
+            .all(|observation| observation.skill_id != "vault-only"));
+    }
+
+    #[tokio::test]
+    async fn test_untracked_universal_directory_is_read_only_unmanaged_observation() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let central_root = tmp.path().join(".skillsmanage/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_root).unwrap();
+        create_skill_dir(
+            &universal_root,
+            "manual-skill",
+            &valid_skill_md("Manual Skill", "User-managed directory"),
+        );
+        for (agent_id, root) in [("central", &central_root), ("universal", &universal_root)] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        assert!(db::get_skill_installations(&pool, "manual-skill")
+            .await
+            .unwrap()
+            .iter()
+            .all(|installation| installation.agent_id != "universal"));
+        let observations = db::get_agent_skill_observations(&pool, "universal")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].source_kind, "unmanaged");
+        assert!(observations[0].is_read_only);
+    }
+
+    #[tokio::test]
+    async fn test_legacy_shared_central_root_does_not_create_universal_install_record() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let shared_root = tmp.path().join(".agents/skills");
+        create_skill_dir(
+            &shared_root,
+            "legacy-skill",
+            &valid_skill_md("Legacy Skill", "Shared legacy source"),
+        );
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id IN ('universal', 'central')")
+            .bind(shared_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        scan_all_skills_impl(&pool).await.unwrap();
+
+        let installations = db::get_skill_installations(&pool, "legacy-skill")
+            .await
+            .unwrap();
+        assert!(installations
+            .iter()
+            .all(|installation| installation.agent_id != "universal"));
+        let observations = db::get_agent_skill_observations(&pool, "universal")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].is_read_only);
     }
 
     #[tokio::test]

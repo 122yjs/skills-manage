@@ -16,7 +16,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioItem } from "@/components/ui/radio-group";
 import { AgentWithStatus, SkillWithLinks } from "@/types";
-import { isInstallTargetAgent } from "@/lib/agents";
+import {
+  getAgentDisplayName,
+  getDistinctInstallTargetAgents,
+  isUniversalCompatibleAgentId,
+  UNIVERSAL_AGENT_ID,
+  updateInstallTargetSelection,
+} from "@/lib/agents";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,7 +49,7 @@ export function InstallDialog({
   const { t } = useTranslation();
   // Only show real install targets; source-only categories such as Obsidian
   // must never become selectable platform targets.
-  const targetAgents = agents.filter(isInstallTargetAgent);
+  const targetAgents = getDistinctInstallTargetAgents(agents);
 
   // Track which agents are selected for installation.
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(
@@ -67,7 +73,15 @@ export function InstallDialog({
           )
           .map((a) => a.id)
       );
-      setSelectedAgentIds(initialSelection);
+      setSelectedAgentIds(
+        initialSelection.has(UNIVERSAL_AGENT_ID)
+          ? updateInstallTargetSelection(
+              initialSelection,
+              UNIVERSAL_AGENT_ID,
+              true
+            )
+          : initialSelection
+      );
       setInstallMethod("symlink");
       setError(null);
     }
@@ -75,15 +89,9 @@ export function InstallDialog({
   }, [open, skill?.id]);
 
   function handleCheckboxChange(agentId: string, checked: boolean) {
-    setSelectedAgentIds((prev) => {
-      const next = new Set(prev);
-      if (checked) {
-        next.add(agentId);
-      } else {
-        next.delete(agentId);
-      }
-      return next;
-    });
+    setSelectedAgentIds((prev) =>
+      updateInstallTargetSelection(prev, agentId, checked)
+    );
   }
 
   function getSelectedInstallableAgentIds() {
@@ -115,6 +123,15 @@ export function InstallDialog({
 
   if (!skill) return null;
   const selectedInstallableCount = getSelectedInstallableAgentIds().length;
+  const convertedAgentNames = selectedAgentIds.has(UNIVERSAL_AGENT_ID)
+    ? targetAgents
+        .filter(
+          (agent) =>
+            isUniversalCompatibleAgentId(agent.id) &&
+            skill.linked_agents.includes(agent.id)
+        )
+        .map((agent) => getAgentDisplayName(agent, t("sidebar.universal")))
+    : [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -137,9 +154,11 @@ export function InstallDialog({
               </p>
             ) : (
               targetAgents.map((agent) => {
+                const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
                 const isLinked = skill.linked_agents.includes(agent.id);
                 const isReadOnly = skill.read_only_agents?.includes(agent.id) ?? false;
                 const isChecked = selectedAgentIds.has(agent.id);
+                const checkboxId = `install-target-${agent.id}`;
 
                 return (
                   <div
@@ -147,23 +166,22 @@ export function InstallDialog({
                     className="flex items-center gap-2"
                   >
                     <Checkbox
+                      id={checkboxId}
                       checked={isChecked}
                       disabled={isReadOnly}
                       onCheckedChange={(checked) =>
                         handleCheckboxChange(agent.id, !!checked)
                       }
-                      aria-label={agent.display_name}
+                      aria-label={displayName}
                     />
-                    <span
-                      className="text-sm text-foreground flex-1 cursor-pointer select-none truncate"
-                      onClick={() => {
-                        if (!isReadOnly) {
-                          handleCheckboxChange(agent.id, !isChecked);
-                        }
-                      }}
+                    <label
+                      htmlFor={checkboxId}
+                      className={`flex-1 select-none truncate text-sm text-foreground ${
+                        isReadOnly ? "cursor-default" : "cursor-pointer"
+                      }`}
                     >
-                      {agent.display_name}
-                    </span>
+                      {displayName}
+                    </label>
                     {isReadOnly ? (
                       <span className="text-xs text-primary shrink-0">
                         {t("installDialog.alwaysIncluded")}
@@ -183,6 +201,18 @@ export function InstallDialog({
               })
             )}
           </div>
+
+          {convertedAgentNames.length > 0 && (
+            <p
+              className="text-xs text-amber-600 dark:text-amber-400"
+              role="status"
+              aria-live="polite"
+            >
+              {t("installDialog.universalConversionNotice", {
+                platforms: convertedAgentNames.join(", "),
+              })}
+            </p>
+          )}
 
           {/* Install method selector */}
           <div className="space-y-2">

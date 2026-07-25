@@ -449,7 +449,7 @@ describe("PlatformView", () => {
   it("shows source indicator on skill cards", () => {
     renderPlatformView();
     expect(
-      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "中央技能库 - 符号链接")
+      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "技能仓库 - 符号链接")
         .length
     ).toBeGreaterThan(0);
     expect(
@@ -492,7 +492,7 @@ describe("PlatformView", () => {
 
     expect(await screen.findByRole("button", { name: /查看 fixture-central-skill 的详情/i })).toBeInTheDocument();
     expect(
-      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "中央技能库 - 符号链接")
+      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "技能仓库 - 符号链接")
         .length
     ).toBeGreaterThan(0);
 

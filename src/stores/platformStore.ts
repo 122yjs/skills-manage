@@ -23,8 +23,17 @@ const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   },
   {
     id: "central",
-    display_name: "Central Skills",
+    display_name: "Skill Library",
     category: "central",
+    global_skills_dir: "~/.skillsmanage/skills/",
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  },
+  {
+    id: "universal",
+    display_name: "Shared Install (.agents)",
+    category: "shared",
     global_skills_dir: "~/.agents/skills/",
     is_detected: true,
     is_builtin: true,
@@ -34,11 +43,12 @@ const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
 
 const BROWSER_FIXTURE_COUNTS: ScanResult = {
   total_skills: 1,
-  agents_scanned: 3,
+  agents_scanned: 4,
   skills_by_agent: {
     "claude-code": 1,
     cursor: 1,
     central: 1,
+    universal: 1,
   },
 };
 

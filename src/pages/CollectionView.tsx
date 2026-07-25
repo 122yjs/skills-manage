@@ -164,6 +164,7 @@ export function CollectionView() {
     try {
       const result = await installCentralSkill(skillId, agentIds, method);
       await refreshCounts();
+      await loadCentralSkills();
       if (result.failed.length > 0) {
         const failedNames = result.failed.map((f) => f.agent_id).join(", ");
         toast.error(t("central.installPartialFail", { platforms: failedNames }));
