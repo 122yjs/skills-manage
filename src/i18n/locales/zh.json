@@ -141,7 +141,9 @@
     "sharedCount": "{{count}} 个共享",
     "preview": "{{names}}",
     "searchPlaceholder": "搜索此目录中的技能...",
-    "noSkills": "此目录中没有匹配的技能。"
+    "noSkills": "此目录中没有匹配的技能。",
+    "installAll": "安装整个套件",
+    "installBundleDesc": "将此套件中的 {{count}} 个技能以符号链接方式安装到选中的平台。"
   },
   "central": {
     "title": "技能仓库",
@@ -347,6 +349,7 @@
     "noPlatforms": "未检测到平台。请在设置中添加平台。",
     "notDetected": "(未检测到)",
     "succeeded": "{{succeeded}} 个成功，{{failed}} 个失败：",
+    "skipped": "技能仓库中已存在，已跳过：{{skills}}",
     "close": "关闭",
     "cancel": "取消",
     "install": "安装到 {{count}} 个平台",

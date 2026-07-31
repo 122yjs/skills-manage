@@ -54,6 +54,7 @@ pub struct AgentSkillObservation {
     pub dir_path: String,
     pub source_kind: String,
     pub source_root: String,
+    pub source_label: Option<String>,
     pub link_type: String,
     pub symlink_target: Option<String>,
     pub is_read_only: bool,
@@ -163,6 +164,7 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             dir_path       TEXT NOT NULL,
             source_kind    TEXT NOT NULL,
             source_root    TEXT NOT NULL,
+            source_label   TEXT,
             link_type      TEXT NOT NULL,
             symlink_target TEXT,
             is_read_only   BOOLEAN NOT NULL DEFAULT 0,
@@ -172,6 +174,22 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    let observation_columns = sqlx::query("PRAGMA table_info(agent_skill_observations)")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let has_source_label = observation_columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .map(|name| name == "source_label")
+            .unwrap_or(false)
+    });
+    if !has_source_label {
+        sqlx::query("ALTER TABLE agent_skill_observations ADD COLUMN source_label TEXT")
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     // Migration: add created_at column to skill_installations for existing databases
     // that were created before this column was introduced. We check via PRAGMA table_info
@@ -1217,6 +1235,7 @@ pub struct SkillForAgent {
     pub is_central: bool,
     pub source_kind: Option<String>,
     pub source_root: Option<String>,
+    pub source_label: Option<String>,
     pub is_read_only: bool,
     pub conflict_group: Option<String>,
     pub conflict_count: i64,
@@ -1235,6 +1254,7 @@ fn observation_to_skill_for_agent(observation: AgentSkillObservation) -> SkillFo
         is_central: false,
         source_kind: Some(observation.source_kind),
         source_root: Some(observation.source_root),
+        source_label: observation.source_label,
         is_read_only: observation.is_read_only,
         conflict_group: None,
         conflict_count: 0,
@@ -1292,6 +1312,7 @@ pub async fn get_skills_for_agent(
                 s.is_central,
                 NULL AS source_kind,
                 NULL AS source_root,
+                NULL AS source_label,
                 0 AS is_read_only,
                 NULL AS conflict_group,
                 0 AS conflict_count
@@ -1329,8 +1350,8 @@ pub async fn upsert_agent_skill_observation(
     sqlx::query(
         "INSERT INTO agent_skill_observations
          (row_id, agent_id, skill_id, name, description, file_path, dir_path,
-          source_kind, source_root, link_type, symlink_target, is_read_only, scanned_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          source_kind, source_root, source_label, link_type, symlink_target, is_read_only, scanned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(row_id) DO UPDATE SET
            agent_id       = excluded.agent_id,
            skill_id       = excluded.skill_id,
@@ -1340,6 +1361,7 @@ pub async fn upsert_agent_skill_observation(
            dir_path       = excluded.dir_path,
            source_kind    = excluded.source_kind,
            source_root    = excluded.source_root,
+           source_label   = excluded.source_label,
            link_type      = excluded.link_type,
            symlink_target = excluded.symlink_target,
            is_read_only   = excluded.is_read_only,
@@ -1354,6 +1376,7 @@ pub async fn upsert_agent_skill_observation(
     .bind(&observation.dir_path)
     .bind(&observation.source_kind)
     .bind(&observation.source_root)
+    .bind(&observation.source_label)
     .bind(&observation.link_type)
     .bind(&observation.symlink_target)
     .bind(observation.is_read_only)

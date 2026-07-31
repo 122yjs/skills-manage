@@ -45,6 +45,8 @@ interface SkillFolderDrawerProps {
   agents?: AgentWithStatus[];
   loading?: boolean;
   meta?: ReactNode;
+  installAllLabel?: string;
+  onInstallAll?: () => void;
   onOpenChange: (open: boolean) => void;
   onInstallationsChange?: () => void | Promise<void>;
 }
@@ -58,6 +60,8 @@ export function SkillFolderDrawer({
   agents = [],
   loading = false,
   meta,
+  installAllLabel,
+  onInstallAll,
   onOpenChange,
   onInstallationsChange,
 }: SkillFolderDrawerProps) {
@@ -124,18 +128,25 @@ export function SkillFolderDrawer({
                     {path ? formatPathForDisplay(path) : t("centralBundleDrawer.loading")}
                   </DialogDescription>
                 </div>
-                <DialogClose
-                  render={
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={t("common.close")}
-                    />
-                  }
-                >
-                  <XIcon />
-                </DialogClose>
+                <div className="flex shrink-0 items-center gap-2">
+                  {onInstallAll && (
+                    <Button type="button" size="sm" onClick={onInstallAll}>
+                      {installAllLabel ?? t("skillFolder.installAll")}
+                    </Button>
+                  )}
+                  <DialogClose
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("common.close")}
+                      />
+                    }
+                  >
+                    <XIcon />
+                  </DialogClose>
+                </div>
               </div>
               {meta && <div className="mt-3">{meta}</div>}
             </div>

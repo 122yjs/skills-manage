@@ -22,6 +22,7 @@ import { SkillListModeToggle } from "@/components/skill/SkillListModeToggle";
 import { InstallDialog } from "@/components/central/InstallDialog";
 import { CentralBundleDrawer } from "@/components/central/CentralBundleDrawer";
 import { PlatformInstallDrawer } from "@/components/central/PlatformInstallDrawer";
+import { CollectionInstallDialog } from "@/components/collection/CollectionInstallDialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -158,6 +159,12 @@ const noopInstallSkill = async () => ({
   succeeded: [],
   failed: [],
 });
+const noopInstallCentralBundle = async () => ({
+  imported: [],
+  skipped: [],
+  succeeded: [],
+  failed: [],
+});
 const noopImportGitHubRepoSkills = async () => {
   throw new Error("GitHub import is unavailable");
 };
@@ -262,6 +269,9 @@ export function CentralSkillsView() {
     noopLoadCentralBundles;
   const installSkill =
     useCentralSkillsStore((state) => state.installSkill) ?? noopInstallSkill;
+  const installCentralBundle =
+    useCentralSkillsStore((state) => state.installCentralBundle) ??
+    noopInstallCentralBundle;
   const togglePlatformLink =
     useCentralSkillsStore((state) => state.togglePlatformLink) ??
     noopTogglePlatformLink;
@@ -327,6 +337,9 @@ export function CentralSkillsView() {
     useState<CentralSkillBundle | null>(null);
   const [isBundleDrawerOpen, setIsBundleDrawerOpen] = useState(false);
   const [bundleDrawerPath, setBundleDrawerPath] = useState<string | null>(null);
+  const [installTargetBundle, setInstallTargetBundle] =
+    useState<CentralSkillBundle | null>(null);
+  const [isBundleInstallDialogOpen, setIsBundleInstallDialogOpen] = useState(false);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [drawerSkillId, setDrawerSkillId] = useState<string | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -533,6 +546,27 @@ export function CentralSkillsView() {
       setBundleDrawerPath(null);
       toast.error(t("central.bundleDetailError", { error: String(err) }));
     }
+  }
+
+  function handleInstallBundleClick() {
+    if (!bundleDetail) return;
+    setInstallTargetBundle(bundleDetail.bundle);
+    setIsBundleDrawerOpen(false);
+    setBundleDrawerPath(null);
+    clearCentralBundleDetail();
+    setIsBundleInstallDialogOpen(true);
+  }
+
+  async function handleInstallCentralBundle(agentIds: string[]) {
+    if (!installTargetBundle) {
+      throw new Error(t("platform.notFound"));
+    }
+    const result = await installCentralBundle(
+      installTargetBundle.relativePath,
+      agentIds
+    );
+    await refreshCounts();
+    return result;
   }
 
   async function handleDeleteBundleClick(bundle: CentralSkillBundle) {
@@ -830,6 +864,7 @@ export function CentralSkillsView() {
         detail={bundleDetail ?? null}
         agents={agents}
         loadingPath={loadingBundleDetailPath ?? bundleDrawerPath}
+        onInstallAll={bundleDetail ? handleInstallBundleClick : undefined}
         onOpenChange={(open) => {
           setIsBundleDrawerOpen(open);
           if (!open) {
@@ -846,6 +881,21 @@ export function CentralSkillsView() {
               : Promise.resolve(null),
           ]);
         }}
+      />
+
+      <CollectionInstallDialog
+        open={isBundleInstallDialogOpen}
+        onOpenChange={(open) => {
+          setIsBundleInstallDialogOpen(open);
+          if (!open) setInstallTargetBundle(null);
+        }}
+        collectionName={installTargetBundle?.name ?? ""}
+        skillCount={installTargetBundle?.skillCount ?? 0}
+        agents={agents}
+        description={t("skillFolder.installBundleDesc", {
+          count: installTargetBundle?.skillCount ?? 0,
+        })}
+        onInstall={handleInstallCentralBundle}
       />
 
       <PlatformInstallDrawer

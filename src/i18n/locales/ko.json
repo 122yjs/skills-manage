@@ -141,7 +141,9 @@
     "sharedCount": "공유 {{count}}개",
     "preview": "{{names}}",
     "searchPlaceholder": "이 폴더에서 스킬 검색...",
-    "noSkills": "이 폴더에 일치하는 스킬이 없습니다."
+    "noSkills": "이 폴더에 일치하는 스킬이 없습니다.",
+    "installAll": "묶음 전체 설치",
+    "installBundleDesc": "이 묶음의 스킬 {{count}}개를 선택한 플랫폼에 심볼릭 링크로 설치합니다."
   },
   "central": {
     "title": "스킬 보관함",
@@ -347,6 +349,7 @@
     "noPlatforms": "감지된 플랫폼이 없습니다. 설정에서 플랫폼을 추가하세요.",
     "notDetected": "(감지 안 됨)",
     "succeeded": "{{succeeded}}개 성공, {{failed}}개 실패:",
+    "skipped": "이미 스킬 보관함에 있어 건너뜀: {{skills}}",
     "close": "닫기",
     "cancel": "취소",
     "install": "{{count}}개 플랫폼에 설치",

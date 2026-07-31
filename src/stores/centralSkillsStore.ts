@@ -10,6 +10,7 @@ import {
   DeleteCentralSkillBundleOptions,
   DeleteCentralSkillBundleResult,
   DeleteCentralSkillResult,
+  SkillBundleInstallResult,
   SkillWithLinks,
 } from "@/types";
 
@@ -99,6 +100,15 @@ interface CentralSkillsState {
     agentIds: string[],
     method: string
   ) => Promise<BatchInstallResult>;
+  installCentralBundle: (
+    relativePath: string,
+    agentIds: string[]
+  ) => Promise<SkillBundleInstallResult>;
+  installPluginBundle: (
+    sourceAgentId: string,
+    sourceLabel: string,
+    agentIds: string[]
+  ) => Promise<SkillBundleInstallResult>;
   deleteCentralSkill: (
     skillId: string,
     options: DeleteCentralSkillOptions
@@ -230,6 +240,32 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       set({ error: String(err), isInstalling: false });
       throw err;
     }
+  },
+
+  installCentralBundle: async (relativePath, agentIds) => {
+    const result = await invoke<SkillBundleInstallResult>(
+      "install_central_skill_bundle_to_agents",
+      { relativePath, agentIds }
+    );
+    const [skills, bundles] = await Promise.all([
+      invoke<SkillWithLinks[]>("get_central_skills"),
+      invoke<CentralSkillBundle[]>("get_central_skill_bundles"),
+    ]);
+    set({ skills, bundles });
+    return result;
+  },
+
+  installPluginBundle: async (sourceAgentId, sourceLabel, agentIds) => {
+    const result = await invoke<SkillBundleInstallResult>(
+      "install_plugin_skill_bundle_to_agents",
+      { sourceAgentId, sourceLabel, agentIds }
+    );
+    const [skills, bundles] = await Promise.all([
+      invoke<SkillWithLinks[]>("get_central_skills"),
+      invoke<CentralSkillBundle[]>("get_central_skill_bundles"),
+    ]);
+    set({ skills, bundles });
+    return result;
   },
 
   /**

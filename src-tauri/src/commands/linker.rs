@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,14 @@ pub struct BatchInstallResult {
 pub struct FailedInstall {
     pub agent_id: String,
     pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillBundleInstallResult {
+    pub imported: Vec<String>,
+    pub skipped: Vec<String>,
+    pub succeeded: Vec<String>,
+    pub failed: Vec<FailedInstall>,
 }
 
 // ─── Path Utilities ───────────────────────────────────────────────────────────
@@ -1138,6 +1147,205 @@ pub async fn batch_install_to_agents_impl(
     Ok(BatchInstallResult { succeeded, failed })
 }
 
+pub(crate) async fn batch_install_skills_to_agents_impl(
+    pool: &DbPool,
+    skill_ids: &[String],
+    agent_ids: &[String],
+) -> Result<BatchInstallResult, String> {
+    if agent_ids.is_empty() {
+        return Err("Select at least one install target".to_string());
+    }
+
+    let uses_universal = validate_batch_install_targets(pool, agent_ids).await?;
+    if uses_universal {
+        for skill_id in skill_ids {
+            preflight_universal_install(pool, skill_id).await?;
+        }
+    }
+
+    let mut succeeded = Vec::new();
+    let mut failed = Vec::new();
+    for skill_id in skill_ids {
+        for agent_id in agent_ids {
+            match install_skill_to_agent_impl(pool, skill_id, agent_id).await {
+                Ok(_) => succeeded.push(format!("{skill_id}:{agent_id}")),
+                Err(error) => failed.push(FailedInstall {
+                    agent_id: format!("{skill_id}:{agent_id}"),
+                    error,
+                }),
+            }
+        }
+    }
+
+    Ok(BatchInstallResult { succeeded, failed })
+}
+
+fn plugin_bundle_directory_name(source_label: &str) -> Result<String, String> {
+    let mut name = String::new();
+    let mut last_was_dash = false;
+    for ch in source_label.trim().to_lowercase().chars() {
+        if ch.is_ascii_alphanumeric() {
+            name.push(ch);
+            last_was_dash = false;
+        } else if !last_was_dash {
+            name.push('-');
+            last_was_dash = true;
+        }
+    }
+    let name = name.trim_matches('-').to_string();
+    if name.is_empty() {
+        return Err("Plugin source label is invalid".to_string());
+    }
+    Ok(name)
+}
+
+async fn rollback_plugin_bundle_import(
+    pool: &DbPool,
+    skill_ids: &[String],
+    skill_paths: &[PathBuf],
+    bundle_dir: &Path,
+    remove_bundle_dir: bool,
+) {
+    for skill_id in skill_ids.iter().rev() {
+        let _ = db::delete_skill(pool, skill_id).await;
+    }
+    for skill_path in skill_paths.iter().rev() {
+        let _ = std::fs::remove_dir_all(skill_path);
+    }
+    if remove_bundle_dir {
+        let _ = std::fs::remove_dir(bundle_dir);
+    }
+}
+
+async fn centralize_plugin_bundle_impl(
+    pool: &DbPool,
+    source_agent_id: &str,
+    source_label: &str,
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let observations = db::get_agent_skill_observations(pool, source_agent_id)
+        .await?
+        .into_iter()
+        .filter(|observation| {
+            observation.source_kind == "plugin"
+                && observation.source_label.as_deref() == Some(source_label)
+        })
+        .collect::<Vec<_>>();
+    if observations.is_empty() {
+        return Err(format!("Plugin bundle '{}' was not found", source_label));
+    }
+
+    let central = db::get_agent_by_id(pool, "central")
+        .await?
+        .ok_or_else(|| "Central agent not found in database".to_string())?;
+    let central_root = PathBuf::from(central.global_skills_dir);
+    std::fs::create_dir_all(&central_root)
+        .map_err(|error| format!("Failed to create Central Skills root: {error}"))?;
+    let bundle_dir = central_root.join(plugin_bundle_directory_name(source_label)?);
+    let bundle_dir_existed = match std::fs::symlink_metadata(&bundle_dir) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => true,
+        Ok(_) => {
+            return Err(format!(
+                "Central bundle path '{}' is not a writable directory",
+                bundle_dir.display()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("Failed to inspect Central bundle path: {error}")),
+    };
+    if bundle_dir.join("SKILL.md").exists() {
+        return Err(format!(
+            "Central path '{}' is already a skill, not a bundle",
+            bundle_dir.display()
+        ));
+    }
+
+    let mut seen_ids = HashSet::new();
+    let mut skipped = Vec::new();
+    let mut candidates = Vec::new();
+    for observation in observations {
+        if !seen_ids.insert(observation.skill_id.clone()) {
+            continue;
+        }
+        let target_dir = bundle_dir.join(&observation.skill_id);
+        if db::get_skill_by_id(pool, &observation.skill_id)
+            .await?
+            .is_some()
+            || std::fs::symlink_metadata(&target_dir).is_ok()
+        {
+            skipped.push(observation.skill_id);
+            continue;
+        }
+        candidates.push((observation, target_dir));
+    }
+
+    let mut imported = Vec::new();
+    let mut created_paths = Vec::new();
+    for (observation, target_dir) in candidates {
+        let skill = db::Skill {
+            id: observation.skill_id.clone(),
+            name: observation.name,
+            description: observation.description,
+            file_path: observation.file_path,
+            canonical_path: None,
+            is_central: false,
+            source: Some(format!("plugin:{source_label}")),
+            content: None,
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+        };
+        created_paths.push(target_dir.clone());
+        imported.push(skill.id.clone());
+
+        if let Err(error) = db::upsert_skill(pool, &skill).await {
+            rollback_plugin_bundle_import(
+                pool,
+                &imported,
+                &created_paths,
+                &bundle_dir,
+                !bundle_dir_existed,
+            )
+            .await;
+            return Err(error);
+        }
+        if let Err(error) = ensure_centralized(pool, &skill.id, &target_dir).await {
+            rollback_plugin_bundle_import(
+                pool,
+                &imported,
+                &created_paths,
+                &bundle_dir,
+                !bundle_dir_existed,
+            )
+            .await;
+            return Err(error);
+        }
+    }
+
+    imported.sort();
+    skipped.sort();
+    Ok((imported, skipped))
+}
+
+pub async fn install_plugin_skill_bundle_to_agents_impl(
+    pool: &DbPool,
+    source_agent_id: &str,
+    source_label: &str,
+    agent_ids: &[String],
+) -> Result<SkillBundleInstallResult, String> {
+    if agent_ids.is_empty() {
+        return Err("Select at least one install target".to_string());
+    }
+    validate_batch_install_targets(pool, agent_ids).await?;
+
+    let (imported, skipped) =
+        centralize_plugin_bundle_impl(pool, source_agent_id, source_label).await?;
+    let installs = batch_install_skills_to_agents_impl(pool, &imported, agent_ids).await?;
+    Ok(SkillBundleInstallResult {
+        imported,
+        skipped,
+        succeeded: installs.succeeded,
+        failed: installs.failed,
+    })
+}
+
 /// 여러 설치 대상에 같은 스킬을 설치한다.
 /// 공용 설치 관련 충돌은 쓰기 전에 중단하고, 그 밖의 독립적인 실패는 결과에 모은다.
 #[tauri::command]
@@ -1152,6 +1360,22 @@ pub async fn batch_install_to_agents(
         &skill_id,
         &agent_ids,
         method.as_deref().unwrap_or("auto"),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn install_plugin_skill_bundle_to_agents(
+    state: State<'_, AppState>,
+    source_agent_id: String,
+    source_label: String,
+    agent_ids: Vec<String>,
+) -> Result<SkillBundleInstallResult, String> {
+    install_plugin_skill_bundle_to_agents_impl(
+        &state.db,
+        &source_agent_id,
+        &source_label,
+        &agent_ids,
     )
     .await
 }
@@ -1212,6 +1436,47 @@ mod tests {
         )
         .unwrap();
         skill_dir
+    }
+
+    async fn create_plugin_observation(
+        pool: &DbPool,
+        plugin_root: &Path,
+        source_label: &str,
+        skill_id: &str,
+        skill_name: &str,
+        create_source: bool,
+    ) {
+        let skill_dir = plugin_root.join("skills").join(skill_id);
+        if create_source {
+            fs::create_dir_all(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {skill_name}\ndescription: Plugin skill\n---\n"),
+            )
+            .unwrap();
+        }
+
+        db::upsert_agent_skill_observation(
+            pool,
+            &db::AgentSkillObservation {
+                row_id: format!("claude-code::plugin::{source_label}::{skill_id}"),
+                agent_id: "claude-code".to_string(),
+                skill_id: skill_id.to_string(),
+                name: skill_name.to_string(),
+                description: Some("Plugin skill".to_string()),
+                file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: skill_dir.to_string_lossy().into_owned(),
+                source_kind: "plugin".to_string(),
+                source_root: plugin_root.to_string_lossy().into_owned(),
+                source_label: Some(source_label.to_string()),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                is_read_only: true,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
     }
 
     // ── make_relative_path ────────────────────────────────────────────────────
@@ -2394,5 +2659,159 @@ mod tests {
             !meta.file_type().is_symlink(),
             "batch copy install should create a real directory"
         );
+    }
+
+    #[tokio::test]
+    async fn plugin_bundle_copies_all_skills_and_installs_to_two_agents() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let cursor_dir = tmp.path().join("cursor");
+        let plugin_root = tmp.path().join("plugins/ponytail/1.0.0");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &claude_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_plugin_observation(
+            &pool,
+            &plugin_root,
+            "ponytail@official",
+            "ponytail-audit",
+            "Ponytail Audit",
+            true,
+        )
+        .await;
+        create_plugin_observation(
+            &pool,
+            &plugin_root,
+            "ponytail@official",
+            "ponytail-review",
+            "Ponytail Review",
+            true,
+        )
+        .await;
+
+        let result = install_plugin_skill_bundle_to_agents_impl(
+            &pool,
+            "claude-code",
+            "ponytail@official",
+            &["claude-code".to_string(), "cursor".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.imported, vec!["ponytail-audit", "ponytail-review"]);
+        assert!(result.skipped.is_empty());
+        assert_eq!(result.succeeded.len(), 4);
+        assert!(result.failed.is_empty());
+        for skill_id in ["ponytail-audit", "ponytail-review"] {
+            let canonical = central_dir.join("ponytail-official").join(skill_id);
+            assert!(canonical.join("SKILL.md").is_file());
+            assert!(fs::symlink_metadata(claude_dir.join(skill_id))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(fs::symlink_metadata(cursor_dir.join(skill_id))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_bundle_skips_existing_skill_without_overwriting_it() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let plugin_root = tmp.path().join("plugins/ponytail/1.0.0");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &claude_dir).await;
+        let existing_dir = create_central_skill(&central_dir, "shared-skill");
+        fs::write(existing_dir.join("SKILL.md"), "user-owned content").unwrap();
+        db::upsert_skill(
+            &pool,
+            &db::Skill {
+                id: "shared-skill".to_string(),
+                name: "Shared Skill".to_string(),
+                description: None,
+                file_path: existing_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: Some(existing_dir.to_string_lossy().into_owned()),
+                is_central: true,
+                source: Some("native".to_string()),
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        create_plugin_observation(
+            &pool,
+            &plugin_root,
+            "ponytail@official",
+            "shared-skill",
+            "Plugin Shared Skill",
+            true,
+        )
+        .await;
+
+        let result = install_plugin_skill_bundle_to_agents_impl(
+            &pool,
+            "claude-code",
+            "ponytail@official",
+            &["claude-code".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert!(result.imported.is_empty());
+        assert_eq!(result.skipped, vec!["shared-skill"]);
+        assert!(result.succeeded.is_empty());
+        assert_eq!(
+            fs::read_to_string(existing_dir.join("SKILL.md")).unwrap(),
+            "user-owned content"
+        );
+    }
+
+    #[tokio::test]
+    async fn plugin_bundle_copy_failure_removes_every_created_skill() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let plugin_root = tmp.path().join("plugins/ponytail/1.0.0");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &claude_dir).await;
+        create_plugin_observation(
+            &pool,
+            &plugin_root,
+            "ponytail@official",
+            "first-good",
+            "A Good Skill",
+            true,
+        )
+        .await;
+        create_plugin_observation(
+            &pool,
+            &plugin_root,
+            "ponytail@official",
+            "second-missing",
+            "B Missing Skill",
+            false,
+        )
+        .await;
+
+        let result = install_plugin_skill_bundle_to_agents_impl(
+            &pool,
+            "claude-code",
+            "ponytail@official",
+            &["claude-code".to_string()],
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!central_dir.join("ponytail-official").exists());
+        assert!(db::get_skill_by_id(&pool, "first-good")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(!claude_dir.join("first-good").exists());
     }
 }

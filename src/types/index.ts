@@ -47,6 +47,7 @@ export interface ScannedSkill {
   is_central: boolean;
   source_kind?: ClaudeSourceKind | null;
   source_root?: string | null;
+  source_label?: string | null;
   is_read_only?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
@@ -81,6 +82,7 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   dir_path?: string;
   source_kind?: ClaudeSourceKind | null;
   source_root?: string | null;
+  source_label?: string | null;
   is_read_only?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
@@ -130,6 +132,11 @@ export interface SkillWithLinks {
 export interface BatchInstallResult {
   succeeded: string[];
   failed: Array<{ agent_id: string; error: string }>;
+}
+
+export interface SkillBundleInstallResult extends BatchInstallResult {
+  imported: string[];
+  skipped: string[];
 }
 
 export interface DeleteCentralSkillOptions {

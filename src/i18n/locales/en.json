@@ -141,7 +141,9 @@
     "sharedCount": "{{count}} shared",
     "preview": "{{names}}",
     "searchPlaceholder": "Search skills in this folder...",
-    "noSkills": "No matching skills in this folder."
+    "noSkills": "No matching skills in this folder.",
+    "installAll": "Install bundle",
+    "installBundleDesc": "Install all {{count}} skills in this bundle as symlinks to the selected platforms."
   },
   "central": {
     "title": "Skill Library",
@@ -347,6 +349,7 @@
     "noPlatforms": "No platforms detected. Add platforms in Settings.",
     "notDetected": "(not detected)",
     "succeeded": "{{succeeded}} succeeded, {{failed}} failed:",
+    "skipped": "Skipped because already in the Skill Library: {{skills}}",
     "close": "Close",
     "cancel": "Cancel",
     "install": "Install to {{count}} platform{{count, select, 1 {} other {s}}}",

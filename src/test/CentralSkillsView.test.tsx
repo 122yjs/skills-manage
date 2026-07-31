@@ -523,6 +523,9 @@ describe("CentralSkillsView", () => {
     expect(screen.getByText("using-superpowers")).toBeInTheDocument();
     expect(screen.getByText("writing-plans")).toBeInTheDocument();
     expect(screen.getByText("folder-detail-skill:using-superpowers")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /安装整个套件|Install bundle/i })
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /writing-plans/i }));
 
