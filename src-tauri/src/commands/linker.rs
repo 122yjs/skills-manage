@@ -1180,22 +1180,25 @@ pub(crate) async fn batch_install_skills_to_agents_impl(
     Ok(BatchInstallResult { succeeded, failed })
 }
 
+/// 원본 플러그인 라벨을 서로 겹치지 않는 안전한 경로 이름으로 바꾼다.
+/// 소문자 영숫자와 `-`, `_`만 유지하고 나머지 UTF-8 바이트는 `~xx`로 인코딩한다.
 fn plugin_bundle_directory_name(source_label: &str) -> Result<String, String> {
-    let mut name = String::new();
-    let mut last_was_dash = false;
-    for ch in source_label.trim().to_lowercase().chars() {
-        if ch.is_ascii_alphanumeric() {
-            name.push(ch);
-            last_was_dash = false;
-        } else if !last_was_dash {
-            name.push('-');
-            last_was_dash = true;
-        }
-    }
-    let name = name.trim_matches('-').to_string();
-    if name.is_empty() {
+    if source_label.trim().is_empty() {
         return Err("Plugin source label is invalid".to_string());
     }
+
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut name = String::new();
+    for byte in source_label.bytes() {
+        if byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_') {
+            name.push(char::from(byte));
+        } else {
+            name.push('~');
+            name.push(char::from(HEX[usize::from(byte >> 4)]));
+            name.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+
     Ok(name)
 }
 
@@ -1477,6 +1480,20 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn plugin_bundle_directory_name_keeps_distinct_labels_separate() {
+        let at_label = plugin_bundle_directory_name("foo@bar").unwrap();
+        let dash_label = plugin_bundle_directory_name("foo-bar").unwrap();
+        let uppercase_label = plugin_bundle_directory_name("Foo@bar").unwrap();
+        let escaped_text_label = plugin_bundle_directory_name("foo~40bar").unwrap();
+
+        assert_eq!(at_label, "foo~40bar");
+        assert_eq!(dash_label, "foo-bar");
+        assert_ne!(at_label, dash_label);
+        assert_ne!(at_label, uppercase_label);
+        assert_ne!(at_label, escaped_text_label);
     }
 
     // ── make_relative_path ────────────────────────────────────────────────────
@@ -2704,7 +2721,7 @@ mod tests {
         assert_eq!(result.succeeded.len(), 4);
         assert!(result.failed.is_empty());
         for skill_id in ["ponytail-audit", "ponytail-review"] {
-            let canonical = central_dir.join("ponytail-official").join(skill_id);
+            let canonical = central_dir.join("ponytail~40official").join(skill_id);
             assert!(canonical.join("SKILL.md").is_file());
             assert!(fs::symlink_metadata(claude_dir.join(skill_id))
                 .unwrap()
@@ -2807,7 +2824,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(!central_dir.join("ponytail-official").exists());
+        assert!(!central_dir.join("ponytail~40official").exists());
         assert!(db::get_skill_by_id(&pool, "first-good")
             .await
             .unwrap()
