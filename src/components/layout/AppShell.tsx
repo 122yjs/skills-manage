@@ -10,7 +10,7 @@ import { useStorageStore } from "@/stores/storageStore";
 import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 
 /**
- * Top-level app shell: TopBar + icon sidebar + scrollable main content area.
+ * Top-level app shell shared visually with the read-only web dashboard.
  * Triggers the initial platform scan on mount.
  */
 export function AppShell() {
@@ -52,11 +52,11 @@ export function AppShell() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden">
-      <TopBar onSearchClick={() => setIsSearchOpen(true)} />
-      <LegacyMigrationNotice onMigrated={handleGlobalRescan} />
-      <div className="flex flex-1 min-h-0">
-        <Sidebar />
+    <div className="flex h-screen overflow-hidden bg-background text-foreground">
+      <Sidebar />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar onSearchClick={() => setIsSearchOpen(true)} />
+        <LegacyMigrationNotice onMigrated={handleGlobalRescan} />
         <main ref={mainRef} className="flex-1 min-h-0 min-w-0 overflow-hidden">
           <Outlet />
         </main>
