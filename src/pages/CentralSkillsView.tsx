@@ -627,7 +627,7 @@ export function CentralSkillsView() {
   async function handleInstallImportedSkill(
     skillId: string,
     agentIds: string[],
-    method: "symlink" | "copy"
+    method: "auto" | "copy"
   ) {
     await handleInstall(skillId, agentIds, method);
     await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));

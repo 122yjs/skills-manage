@@ -160,10 +160,10 @@ describe("InstallDialog", () => {
     expect(screen.getByText("(未检测到)")).toBeInTheDocument();
   });
 
-  it("shows symlink/copy radio options", () => {
+  it("shows automatic/copy radio options", () => {
     renderDialog();
     // The radio items are rendered
-    expect(screen.getByText("符号链接")).toBeInTheDocument();
+    expect(screen.getByText("自动")).toBeInTheDocument();
     expect(screen.getByText("复制安装")).toBeInTheDocument();
   });
 
@@ -197,7 +197,7 @@ describe("InstallDialog", () => {
     });
   });
 
-  it("passes 'symlink' method to onInstall by default", async () => {
+  it("passes 'auto' method to onInstall by default", async () => {
     mockOnInstall.mockResolvedValueOnce(undefined);
 
     renderDialog();
@@ -210,7 +210,7 @@ describe("InstallDialog", () => {
       expect(mockOnInstall).toHaveBeenCalledWith(
         "frontend-design",
         expect.any(Array),
-        "symlink"
+        "auto"
       );
     });
   });
@@ -326,7 +326,7 @@ describe("InstallDialog", () => {
       expect(mockOnInstall).toHaveBeenCalledWith(
         "frontend-design",
         ["universal"],
-        "symlink"
+        "auto"
       );
     });
   });

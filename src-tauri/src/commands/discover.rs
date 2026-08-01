@@ -96,6 +96,7 @@ pub enum ImportTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DiscoveredPlatformInstallMethod {
+    Auto,
     Symlink,
     Copy,
 }
@@ -114,8 +115,9 @@ struct ObsidianRegistryVault {
 
 impl DiscoveredPlatformInstallMethod {
     fn parse(method: Option<&str>) -> Result<Self, String> {
-        match method.unwrap_or("symlink") {
-            "symlink" | "auto" => Ok(Self::Symlink),
+        match method.unwrap_or("auto") {
+            "auto" => Ok(Self::Auto),
+            "symlink" => Ok(Self::Symlink),
             "copy" => Ok(Self::Copy),
             other => Err(format!("Unsupported install method '{}'", other)),
         }
@@ -123,6 +125,7 @@ impl DiscoveredPlatformInstallMethod {
 
     fn as_str(self) -> &'static str {
         match self {
+            Self::Auto => "auto",
             Self::Symlink => "symlink",
             Self::Copy => "copy",
         }
@@ -1620,17 +1623,30 @@ async fn import_discovered_skill_to_platform_from_pool(
         ));
     }
 
-    // Create symlink from discovered skill dir to platform dir.
+    // Install from the discovered skill dir without changing the source.
     let src_path = Path::new(&skill.dir_path);
-    match install_method {
+    let installed_method = match install_method {
+        DiscoveredPlatformInstallMethod::Auto => {
+            let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
+            match super::linker::create_symlink(&relative_target, &target_path) {
+                Ok(()) => DiscoveredPlatformInstallMethod::Symlink,
+                Err(error) if super::linker::should_fallback_to_copy(&error) => {
+                    super::linker::copy_dir_all(src_path, &target_path)?;
+                    DiscoveredPlatformInstallMethod::Copy
+                }
+                Err(error) => return Err(error),
+            }
+        }
         DiscoveredPlatformInstallMethod::Symlink => {
             let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
             super::linker::create_symlink(&relative_target, &target_path)?;
+            DiscoveredPlatformInstallMethod::Symlink
         }
         DiscoveredPlatformInstallMethod::Copy => {
             super::linker::copy_dir_all(src_path, &target_path)?;
+            DiscoveredPlatformInstallMethod::Copy
         }
-    }
+    };
 
     // Record the installation.
     let now = Utc::now().to_rfc3339();
@@ -1638,7 +1654,8 @@ async fn import_discovered_skill_to_platform_from_pool(
     // Also ensure the skill is in the skills table.
     let skill_md_path = src_path.join("SKILL.md");
     let info = super::scanner::parse_skill_md(&skill_md_path);
-    let stored_skill_md_path = match install_method {
+    let stored_skill_md_path = match installed_method {
+        DiscoveredPlatformInstallMethod::Auto => unreachable!(),
         DiscoveredPlatformInstallMethod::Symlink => skill_md_path.clone(),
         DiscoveredPlatformInstallMethod::Copy => target_path.join("SKILL.md"),
     };
@@ -1651,7 +1668,7 @@ async fn import_discovered_skill_to_platform_from_pool(
             file_path: stored_skill_md_path.to_string_lossy().into_owned(),
             canonical_path: None,
             is_central: false,
-            source: Some(install_method.as_str().to_string()),
+            source: Some(installed_method.as_str().to_string()),
             content: None,
             scanned_at: now.clone(),
         };
@@ -1662,8 +1679,9 @@ async fn import_discovered_skill_to_platform_from_pool(
         skill_id: skill_dir_name.clone(),
         agent_id: agent_id.to_string(),
         installed_path: target_path.to_string_lossy().into_owned(),
-        link_type: install_method.as_str().to_string(),
-        symlink_target: match install_method {
+        link_type: installed_method.as_str().to_string(),
+        symlink_target: match installed_method {
+            DiscoveredPlatformInstallMethod::Auto => unreachable!(),
             DiscoveredPlatformInstallMethod::Symlink => Some(skill.dir_path.clone()),
             DiscoveredPlatformInstallMethod::Copy => None,
         },
@@ -3245,7 +3263,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_obsidian_discovered_platform_install_honors_symlink_and_copy_methods() {
+    async fn test_obsidian_discovered_platform_install_honors_auto_and_copy_methods() {
         let tmp = tempfile::TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -3294,7 +3312,7 @@ mod tests {
             &pool,
             "obsidian__fixture__platform-methods",
             "claude-code",
-            Some("symlink"),
+            Some("auto"),
         )
         .await
         .unwrap();
@@ -3311,6 +3329,15 @@ mod tests {
         assert_eq!(
             symlink_install.symlink_target.as_deref(),
             Some(&*skill_dir.to_string_lossy())
+        );
+        assert_eq!(
+            db::get_skill_by_id(&pool, "platform-methods")
+                .await
+                .unwrap()
+                .unwrap()
+                .source
+                .as_deref(),
+            Some("symlink")
         );
 
         import_discovered_skill_to_platform_from_pool(

@@ -135,7 +135,7 @@ xattr -dr com.apple.quarantine "/Applications/skills-manage.app"
 
 ### 前置依赖
 
-- [Node.js](https://nodejs.org/)（LTS）
+- [Node.js](https://nodejs.org/) 22.13 或更高版本
 - [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/)（stable）
 - Tauri v2 系统依赖：<https://v2.tauri.app/start/prerequisites/>

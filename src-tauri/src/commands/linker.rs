@@ -920,12 +920,12 @@ pub async fn install_skill_to_agent_auto_impl(
 }
 
 #[cfg(windows)]
-fn should_fallback_to_copy(error: &str) -> bool {
+pub(crate) fn should_fallback_to_copy(error: &str) -> bool {
     error.contains("Failed to create symlink")
 }
 
 #[cfg(not(windows))]
-fn should_fallback_to_copy(_error: &str) -> bool {
+pub(crate) fn should_fallback_to_copy(_error: &str) -> bool {
     false
 }
 
@@ -1167,7 +1167,7 @@ pub(crate) async fn batch_install_skills_to_agents_impl(
     let mut failed = Vec::new();
     for skill_id in skill_ids {
         for agent_id in agent_ids {
-            match install_skill_to_agent_impl(pool, skill_id, agent_id).await {
+            match install_skill_to_agent_auto_impl(pool, skill_id, agent_id).await {
                 Ok(_) => succeeded.push(format!("{skill_id}:{agent_id}")),
                 Err(error) => failed.push(FailedInstall {
                     agent_id: format!("{skill_id}:{agent_id}"),
@@ -1392,6 +1392,15 @@ mod tests {
     use sqlx::SqlitePool;
     use std::fs;
     use tempfile::TempDir;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_symlink_errors_use_copy_fallback() {
+        assert!(should_fallback_to_copy(
+            "Failed to create symlink: privilege not held"
+        ));
+        assert!(!should_fallback_to_copy("Failed to copy directory"));
+    }
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 

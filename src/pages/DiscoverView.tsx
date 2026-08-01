@@ -321,7 +321,7 @@ export function DiscoverView() {
   }, [selectedSkillIds, handleInstallToCentral]);
 
   const handleInstallFromDialog = useCallback(
-    async (_skillId: string, agentIds: string[], method: "symlink" | "copy") => {
+    async (_skillId: string, agentIds: string[], method: "auto" | "copy") => {
       if (!installTargetSkill) return;
       const targetId = installTargetSkill.id;
       setImportingIds((prev) => new Set(prev).add(targetId));
