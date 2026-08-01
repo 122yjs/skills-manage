@@ -1038,32 +1038,6 @@ pub async fn install_from_skills_sh(
 
 // ─── AI Explanation ──────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-struct ClaudeRequest {
-    model: String,
-    max_tokens: u32,
-    messages: Vec<ClaudeMessage>,
-}
-
-#[derive(Serialize)]
-struct ClaudeMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(Deserialize)]
-struct ClaudeResponse {
-    content: Vec<ClaudeContentBlock>,
-}
-
-#[derive(Deserialize)]
-struct ClaudeContentBlock {
-    #[serde(rename = "type", default)]
-    block_type: String,
-    #[serde(default)]
-    text: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExplanationApiProtocol {
     AnthropicCompatible,
@@ -1465,114 +1439,6 @@ fn format_reqwest_error(e: &reqwest::Error) -> String {
     } else {
         format!("{}\n{}", info.details, info.message)
     }
-}
-
-#[tauri::command]
-pub async fn explain_skill(state: State<'_, AppState>, content: String) -> Result<String, String> {
-    let api_key = get_provider_setting(&state.db, "ai_api_key")
-        .await
-        .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?;
-
-    let api_url = get_provider_setting(&state.db, "ai_api_url")
-        .await
-        .unwrap_or_else(|| "https://api.anthropic.com/v1/messages".to_string());
-
-    let model = get_provider_setting(&state.db, "ai_model")
-        .await
-        .unwrap_or_else(|| "claude-sonnet-4-20250514".to_string());
-
-    let client = reqwest::Client::builder()
-        .user_agent("skills-manage/0.9.1")
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let truncated = if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
-    } else {
-        content
-    };
-
-    let request = ClaudeRequest {
-        model,
-        max_tokens: 1024,
-        messages: vec![ClaudeMessage {
-            role: "user".to_string(),
-            content: format!(
-                "请用中文简洁地解释以下 AI Agent Skill（SKILL.md）的用途、使用场景和关键功能。\
-                分为三部分：1) 一句话总结 2) 适用场景 3) 关键功能点。\
-                控制在 200 字以内。\n\n---\n\n{}",
-                truncated
-            ),
-        }],
-    };
-
-    let explicit_protocol_opt = get_provider_setting(&state.db, "ai_protocol").await;
-    let explicit_protocol = explicit_protocol_opt.as_deref();
-    let protocol = resolve_api_protocol(&api_url, explicit_protocol);
-    let resolved_url = resolve_custom_url(&api_url, &protocol);
-    let mut req_builder = client
-        .post(&resolved_url)
-        .header("content-type", "application/json");
-
-    match protocol {
-        ExplanationApiProtocol::AnthropicCompatible | ExplanationApiProtocol::Unknown => {
-            req_builder = req_builder
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01");
-        }
-        ExplanationApiProtocol::OpenAiCompatible => {
-            req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
-        }
-    }
-
-    let resp = req_builder
-        .json(&request)
-        .send()
-        .await
-        .map_err(|e| format!("API 请求失败: {}", format_reqwest_error(&e)))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("API 返回错误 {}: {}", status, body));
-    }
-
-    let body = resp
-        .text()
-        .await
-        .map_err(|e| format!("读取响应失败: {}", e))?;
-
-    // Try parsing as Anthropic format: { "content": [{ "type": "text", "text": "..." }] }
-    if let Ok(claude_resp) = serde_json::from_str::<ClaudeResponse>(&body) {
-        // Filter for "text" type blocks, skip "thinking" blocks
-        if let Some(block) = claude_resp
-            .content
-            .iter()
-            .find(|b| b.block_type.is_empty() || b.block_type == "text")
-        {
-            if !block.text.is_empty() {
-                return Ok(block.text.clone());
-            }
-        }
-    }
-
-    // Fallback: try extracting text from any JSON with a "text" or "content" field
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-        // Some providers return { "choices": [{ "message": { "content": "..." } }] }
-        if let Some(text) = val
-            .get("choices")
-            .and_then(|c| c.get(0))
-            .and_then(|c| c.get("message"))
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_str())
-        {
-            return Ok(text.to_string());
-        }
-    }
-
-    Err(format!("无法解析响应: {}", &body[..body.len().min(500)]))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1980,9 +1846,12 @@ async fn cache_skill_explanation(
 }
 
 fn empty_explanation_error_info(lang: &str, saw_thinking_delta: bool) -> ExplanationErrorInfo {
-    let message = match lang {
-        "en" => "The model returned no displayable explanation text.".to_string(),
-        _ => "模型没有返回可显示的解释正文。".to_string(),
+    let message = if lang.starts_with("en") {
+        "The model returned no displayable explanation text.".to_string()
+    } else if lang.starts_with("ko") {
+        "모델이 표시할 수 있는 설명을 반환하지 않았습니다.".to_string()
+    } else {
+        "模型没有返回可显示的解释正文。".to_string()
     };
     let details = if saw_thinking_delta {
         "Streaming completed without any text_delta content. The provider emitted thinking deltas but no final text block.".to_string()
@@ -2029,20 +1898,28 @@ fn truncate_content(content: &str) -> String {
 
 /// Helper: build the explanation prompt based on language.
 fn build_explanation_prompt(truncated: &str, lang: &str) -> String {
-    match lang {
-        "en" => format!(
+    if lang.starts_with("en") {
+        format!(
             "Please explain in English concisely the purpose, use cases, and key features \
             of the following AI Agent Skill (SKILL.md). \
             Divide into three parts: 1) One-sentence summary 2) Applicable scenarios 3) Key features. \
             Keep it under 200 words.\n\n---\n\n{}",
             truncated
-        ),
-        _ => format!(
+        )
+    } else if lang.starts_with("ko") {
+        format!(
+            "다음 AI Agent Skill(SKILL.md)의 용도, 사용 상황, 핵심 기능을 한국어로 간결하게 설명하세요. \
+            세 부분으로 나누세요: 1) 한 문장 요약 2) 적합한 사용 상황 3) 핵심 기능. \
+            200자 이내로 작성하세요.\n\n---\n\n{}",
+            truncated
+        )
+    } else {
+        format!(
             "请用中文简洁地解释以下 AI Agent Skill（SKILL.md）的用途、使用场景和关键功能。\
             分为三部分：1) 一句话总结 2) 适用场景 3) 关键功能点。\
             控制在 200 字以内。\n\n---\n\n{}",
             truncated
-        ),
+        )
     }
 }
 
@@ -2436,14 +2313,14 @@ pub async fn refresh_skill_explanation(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_registry_impl, cache_skill_explanation, classify_reqwest_error, derive_models_url,
-        detect_explanation_api_protocol, extract_dir_path, fallback_models, format_reqwest_error,
-        get_fallback_endpoint, load_cached_skill_explanation, marketplace_skills_from_candidates,
-        models_fetch_url, parse_models_dev_provider, parse_models_response,
-        registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
-        search_marketplace_skills_impl, sync_registry_impl, tree_entries_under_dir,
-        ExplanationApiProtocol, ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus,
-        SyncRegistryOptions,
+        add_registry_impl, build_explanation_prompt, cache_skill_explanation,
+        classify_reqwest_error, derive_models_url, detect_explanation_api_protocol,
+        extract_dir_path, fallback_models, format_reqwest_error, get_fallback_endpoint,
+        load_cached_skill_explanation, marketplace_skills_from_candidates, models_fetch_url,
+        parse_models_dev_provider, parse_models_response, registry_has_cached_skills,
+        resolve_api_protocol, resolve_custom_url, search_marketplace_skills_impl,
+        sync_registry_impl, tree_entries_under_dir, ExplanationApiProtocol, ExplanationErrorKind,
+        RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
     use crate::commands::github_import::RemoteSkillCandidate;
     use crate::db;
@@ -2456,6 +2333,13 @@ mod tests {
         let pool = db::create_pool(&db_path).await.expect("create pool");
         db::init_database(&pool).await.expect("init db");
         (pool, dir)
+    }
+
+    #[test]
+    fn builds_korean_explanation_prompt_for_korean_locale() {
+        let prompt = build_explanation_prompt("# Demo", "ko-KR");
+        assert!(prompt.contains("한국어로"));
+        assert!(prompt.contains("# Demo"));
     }
 
     #[test]

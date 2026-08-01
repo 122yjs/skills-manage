@@ -764,6 +764,37 @@ describe("SkillDetailView", () => {
     });
   });
 
+  it("uses the shared cached streaming explanation path for discovered skills", async () => {
+    const filePath = "/tmp/project/.claude/skills/frontend-design/SKILL.md";
+    applyStoreMocks();
+    render(
+      <MemoryRouter>
+        <SkillDetailView
+          filePath={filePath}
+          discoverMetadata={{
+            name: "frontend-design",
+            description: "Discovered skill",
+            platformName: "Claude Code",
+            projectName: "project",
+            filePath,
+            dirPath: "/tmp/project/.claude/skills/frontend-design",
+            isAlreadyCentral: false,
+          }}
+          variant="page"
+        />
+      </MemoryRouter>
+    );
+
+    await waitFor(() => {
+      expect(mockLoadCachedExplanation).toHaveBeenCalledWith(filePath, "zh");
+    });
+
+    fireEvent.click(screen.getByRole("tab", { name: /AI 解释/i }));
+    fireEvent.click(screen.getAllByRole("button", { name: /生成解释/i })[0]);
+
+    expect(mockGenerateExplanation).toHaveBeenCalledWith(filePath, mockContent, "zh");
+  });
+
   it("loads cached explanation with the selected Claude row id", async () => {
     applyStoreMocks({
       detail: mockPluginDetail,

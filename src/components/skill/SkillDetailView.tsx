@@ -371,8 +371,6 @@ export function SkillDetailView({
   // Local state for filePath mode
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileIsLoading, setFileIsLoading] = useState(false);
-  const [fileExplanation, setFileExplanation] = useState<string | null>(null);
-  const [fileIsExplaining, setFileIsExplaining] = useState(false);
   const [directoryTree, setDirectoryTree] = useState<SkillDirectoryNode[]>([]);
   const [isDirectoryTreeLoading, setIsDirectoryTreeLoading] = useState(false);
   const [directoryTreeError, setDirectoryTreeError] = useState<string | null>(null);
@@ -385,17 +383,14 @@ export function SkillDetailView({
     [skillId, agentId, rowId]
   );
   const explanationRequestKey = useMemo(() => {
-    if (!skillId) {
-      return null;
-    }
-    return detail?.row_id ?? rowId ?? skillId;
-  }, [detail?.row_id, rowId, skillId]);
+    return isFileMode ? filePath ?? null : detail?.row_id ?? rowId ?? skillId ?? null;
+  }, [detail?.row_id, filePath, isFileMode, rowId, skillId]);
 
   // Unified accessors
   const skillContent = isFileMode ? fileContent : storeContent;
   const isLoading = isFileMode ? fileIsLoading : storeIsLoading;
-  const explanation = isFileMode ? fileExplanation : storeExplanation;
-  const isExplanationLoading = isFileMode ? fileIsExplaining : storeIsExplanationLoading;
+  const explanation = storeExplanation;
+  const isExplanationLoading = storeIsExplanationLoading;
 
   // Local UI state
   const [activeTab, setActiveTab] = useState<PreviewTab>("markdown");
@@ -456,7 +451,6 @@ export function SkillDetailView({
   useEffect(() => {
     if (isFileMode) {
       setFileContent(null);
-      setFileExplanation(null);
       setSelectedFile(null);
       setSelectedFileContent(null);
       setExpandedDirectories(new Set());
@@ -476,10 +470,10 @@ export function SkillDetailView({
   }, [detailRequest, loadDetail, reset]);
 
   useLayoutEffect(() => {
-    if (explanationRequestKey && storeContent) {
+    if (explanationRequestKey && skillContent) {
       loadCachedExplanation(explanationRequestKey, i18n.language);
     }
-  }, [explanationRequestKey, storeContent, i18n.language, loadCachedExplanation]);
+  }, [explanationRequestKey, skillContent, i18n.language, loadCachedExplanation]);
 
   useEffect(() => {
     if (!currentDirectoryPath) {
@@ -600,25 +594,12 @@ export function SkillDetailView({
   }
 
   function handleGenerateExplanation() {
-    if (isFileMode && skillContent) {
-      setFileIsExplaining(true);
-      setFileExplanation(null);
-      invoke<string>("explain_skill", { content: skillContent })
-        .then(setFileExplanation)
-        .catch((err) => setFileExplanation(`Error: ${String(err)}`))
-        .finally(() => setFileIsExplaining(false));
-      return;
-    }
     if (explanationRequestKey && skillContent) {
       generateExplanation(explanationRequestKey, skillContent, i18n.language);
     }
   }
 
   function handleRefreshExplanation() {
-    if (isFileMode && skillContent) {
-      handleGenerateExplanation();
-      return;
-    }
     if (explanationRequestKey && skillContent) {
       refreshExplanation(explanationRequestKey, skillContent, i18n.language);
     }

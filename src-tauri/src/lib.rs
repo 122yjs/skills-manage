@@ -121,7 +121,6 @@ pub fn run() {
             commands::marketplace::browse_skills_sh_directory,
             commands::marketplace::read_skills_sh_file,
             commands::marketplace::install_from_skills_sh,
-            commands::marketplace::explain_skill,
             commands::marketplace::get_skill_explanation,
             commands::marketplace::explain_skill_stream,
             commands::marketplace::refresh_skill_explanation,

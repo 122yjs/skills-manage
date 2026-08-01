@@ -45,6 +45,23 @@ describe("marketplaceStore", () => {
     });
   });
 
+  it("uses a Korean prompt for GitHub import summaries", async () => {
+    mockInvoke.mockResolvedValue(null);
+
+    await useMarketplaceStore.getState().generateGitHubImportAiSummary(
+      "skills/demo/SKILL.md",
+      "demo",
+      "# Demo",
+      "ko-KR"
+    );
+
+    expect(mockInvoke).toHaveBeenNthCalledWith(1, "explain_skill_stream", {
+      skillId: "github-import:skills/demo/SKILL.md",
+      content: expect.stringContaining("한국어로 요약"),
+      lang: "ko-KR",
+    });
+  });
+
   it("uses cached sync by default and refreshes registry metadata", async () => {
     const skills = [
       {
