@@ -384,7 +384,7 @@ export function MarketplaceView() {
   async function handleInstallImportedSkill(
     skillId: string,
     agentIds: string[],
-    method: "symlink" | "copy"
+    method: "auto" | "copy"
   ) {
     const result = await installCentralSkill(skillId, agentIds, method);
     await rescan();

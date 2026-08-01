@@ -5,7 +5,7 @@ use crate::db::{self, Collection, DbPool, Skill};
 use crate::AppState;
 
 use super::linker::{
-    install_skill_to_agent_impl, preflight_universal_install, validate_batch_install_targets,
+    install_skill_to_agent_auto_impl, preflight_universal_install, validate_batch_install_targets,
     BatchInstallResult, FailedInstall,
 };
 
@@ -137,7 +137,7 @@ pub async fn update_collection_impl(
         .ok_or_else(|| format!("Collection '{}' not found after update", collection_id))
 }
 
-/// Install all skills in a collection to the given agents (symlink method).
+/// Install all skills in a collection, preferring symlinks with Windows copy fallback.
 ///
 /// Each (skill, agent) pair is attempted independently. Failures are collected
 /// in the `failed` list rather than aborting the whole batch.
@@ -165,7 +165,7 @@ pub async fn batch_install_collection_impl(
 
     for skill in &skills {
         for agent_id in agent_ids {
-            match install_skill_to_agent_impl(pool, &skill.id, agent_id).await {
+            match install_skill_to_agent_auto_impl(pool, &skill.id, agent_id).await {
                 Ok(_) => succeeded.push(format!("{}:{}", skill.id, agent_id)),
                 Err(e) => failed.push(FailedInstall {
                     agent_id: format!("{}:{}", skill.id, agent_id),

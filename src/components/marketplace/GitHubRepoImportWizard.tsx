@@ -85,7 +85,7 @@ interface GitHubRepoImportWizardProps {
   onInstallImportedSkill?: (
     skillId: string,
     agentIds: string[],
-    method: "symlink" | "copy",
+    method: "auto" | "copy",
   ) => Promise<void>;
   onAfterImportSuccess?: (
     result: GitHubRepoImportResult,
@@ -558,7 +558,7 @@ export function GitHubRepoImportWizard({
   async function handleInstallDialogConfirm(
     skillId: string,
     agentIds: string[],
-    method: "symlink" | "copy",
+    method: "auto" | "copy",
   ) {
     if (!onInstallImportedSkill) return;
     await onInstallImportedSkill(skillId, agentIds, method);

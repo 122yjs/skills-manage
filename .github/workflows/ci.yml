@@ -33,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -118,7 +118,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -174,7 +174,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
@@ -195,6 +195,9 @@ jobs:
       - name: Build Windows MSI smoke package
         run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi --no-sign --ci
 
+      - name: Test Windows symlink fallback policy
+        run: cargo test --manifest-path src-tauri/Cargo.toml windows_symlink_errors_use_copy_fallback
+
   macos-package:
     name: macOS universal smoke packages
     runs-on: macos-14
@@ -211,7 +214,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "22"
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 

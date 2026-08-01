@@ -138,7 +138,7 @@ Custom platforms can be added through Settings.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (LTS)
+- [Node.js](https://nodejs.org/) 22.13 or newer
 - [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/) (stable)
 - Tauri v2 system dependencies: <https://v2.tauri.app/start/prerequisites/>
