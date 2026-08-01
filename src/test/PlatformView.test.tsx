@@ -60,14 +60,17 @@ vi.mock("../components/skill/SkillFolderDrawer", () => ({
     open,
     title,
     skills,
+    onInstallAll,
   }: {
     open: boolean;
     title: string;
     skills: Array<{ name: string }>;
+    onInstallAll?: () => void;
   }) =>
     open ? (
       <div data-testid="skill-folder-drawer">
         <div>folder-title:{title}</div>
+        {onInstallAll && <button onClick={onInstallAll}>install-all</button>}
         {skills.map((skill) => (
           <div key={skill.name}>folder-skill:{skill.name}</div>
         ))}
@@ -168,6 +171,37 @@ const mockNestedPlatformSkills: ScannedSkill[] = [
     dir_path: "/Users/test/.claude/skills/toolkit/nested-helper",
     link_type: "copy",
     is_central: false,
+  },
+];
+
+const mockPluginBundleSkills: ScannedSkill[] = [
+  {
+    id: "ponytail-audit",
+    row_id: "claude-code::plugin::ponytail-audit",
+    name: "ponytail-audit",
+    description: "Audit over-engineering",
+    file_path: "/Users/test/.claude/plugins/ponytail/1.0.0/skills/ponytail-audit/SKILL.md",
+    dir_path: "/Users/test/.claude/plugins/ponytail/1.0.0/skills/ponytail-audit",
+    link_type: "copy",
+    is_central: false,
+    source_kind: "plugin",
+    source_root: "/Users/test/.claude/plugins/ponytail/1.0.0",
+    source_label: "ponytail@official",
+    is_read_only: true,
+  },
+  {
+    id: "ponytail-review",
+    row_id: "claude-code::plugin::ponytail-review",
+    name: "ponytail-review",
+    description: "Review over-engineering",
+    file_path: "/Users/test/.claude/plugins/ponytail/1.0.0/skills/ponytail-review/SKILL.md",
+    dir_path: "/Users/test/.claude/plugins/ponytail/1.0.0/skills/ponytail-review",
+    link_type: "copy",
+    is_central: false,
+    source_kind: "plugin",
+    source_root: "/Users/test/.claude/plugins/ponytail/1.0.0",
+    source_label: "ponytail@official",
+    is_read_only: true,
   },
 ];
 
@@ -444,6 +478,36 @@ describe("PlatformView", () => {
     expect(screen.getByTestId("skill-folder-drawer")).toBeInTheDocument();
     expect(screen.getByText("folder-title:toolkit")).toBeInTheDocument();
     expect(screen.getByText("folder-skill:nested-helper")).toBeInTheDocument();
+  });
+
+  it("groups plugin skills by their plugin label in folders mode", () => {
+    window.localStorage.setItem("skills-manage.skillListViewMode.platform", "folders");
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": mockPluginBundleSkills },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+
+    expect(screen.getByText("ponytail@official")).toBeInTheDocument();
+    expect(screen.getByText(/2 个技能|2 skills/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /查看 ponytail-audit 的详情/i })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /打开目录 ponytail@official|Open folder ponytail@official/i,
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "install-all" }));
+
+    expect(
+      screen.getByRole("dialog", { name: /批量安装.*ponytail@official|Batch Install.*ponytail@official/i })
+    ).toBeInTheDocument();
   });
 
   it("shows source indicator on skill cards", () => {

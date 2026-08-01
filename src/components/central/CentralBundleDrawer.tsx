@@ -11,6 +11,7 @@ interface CentralBundleDrawerProps {
   detail: CentralSkillBundleDetail | null;
   agents: AgentWithStatus[];
   loadingPath: string | null;
+  onInstallAll?: () => void;
   onOpenChange: (open: boolean) => void;
   onInstallationsChange?: () => void | Promise<void>;
 }
@@ -24,6 +25,7 @@ export function CentralBundleDrawer({
   detail,
   agents,
   loadingPath,
+  onInstallAll,
   onOpenChange,
   onInstallationsChange,
 }: CentralBundleDrawerProps) {
@@ -57,6 +59,7 @@ export function CentralBundleDrawer({
             })
           : null
       }
+      onInstallAll={onInstallAll}
       onOpenChange={onOpenChange}
       onInstallationsChange={onInstallationsChange}
     />

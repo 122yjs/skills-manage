@@ -80,7 +80,7 @@ interface DiscoverState {
   importToPlatform: (
     skillId: string,
     agentId: string,
-    method?: "symlink" | "copy"
+    method?: "auto" | "copy"
   ) => Promise<DiscoverImportResult>;
   clearResults: () => Promise<void>;
   setGroupBy: (groupBy: "project" | "platform" | "skill") => void;
@@ -391,7 +391,7 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
   importToPlatform: async (
     skillId: string,
     agentId: string,
-    method?: "symlink" | "copy"
+    method?: "auto" | "copy"
   ) => {
     set({ error: null });
     if (agentId === OBSIDIAN_AGENT_ID) {

@@ -135,7 +135,7 @@ xattr -dr com.apple.quarantine "/Applications/skills-manage.app"
 
 ### 前置依赖
 
-- [Node.js](https://nodejs.org/)（LTS）
+- [Node.js](https://nodejs.org/) 22.13 或更高版本
 - [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/)（stable）
 - Tauri v2 系统依赖：<https://v2.tauri.app/start/prerequisites/>
@@ -153,6 +153,18 @@ pnpm tauri dev
 ```
 
 Vite 开发服务器默认使用 `24200` 端口。
+
+### 启动只读 Web 仪表盘（技能中心）
+
+```bash
+pnpm web:dev
+```
+
+浏览器打开 <http://127.0.0.1:24200>。该页面（技能中心）只允许本机访问，
+读取已有的 `~/.skillsmanage/db.sqlite`，并复刻桌面应用的布局：侧边栏包含
+技能仓库、各平台视图、Discover、技能市场（最近同步缓存）、技能集和设置。
+所有内容均为只读，不提供安装、删除或修改设置的命令。请先运行一次桌面应用
+完成数据库初始化。
 
 ### 验证命令
 

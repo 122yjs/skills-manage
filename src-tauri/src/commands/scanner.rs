@@ -87,6 +87,7 @@ impl AgentSkillSourceKind {
 struct AgentScanRoot {
     path: PathBuf,
     source_root: Option<PathBuf>,
+    source_label: Option<String>,
     source_kind: Option<AgentSkillSourceKind>,
 }
 
@@ -478,6 +479,7 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
                 roots.push(AgentScanRoot {
                     path: scan_path,
                     source_root: Some(install_root.clone()),
+                    source_label: Some(plugin_id.clone()),
                     source_kind: Some(AgentSkillSourceKind::Plugin),
                 });
             }
@@ -498,6 +500,7 @@ fn compatibility_scan_root(path: PathBuf) -> AgentScanRoot {
     AgentScanRoot {
         path: path.clone(),
         source_root: Some(path),
+        source_label: None,
         source_kind: Some(AgentSkillSourceKind::Compatibility),
     }
 }
@@ -523,6 +526,7 @@ fn scan_roots_for_agent(
         return vec![AgentScanRoot {
             path: primary_root.clone(),
             source_root: Some(primary_root),
+            source_label: None,
             source_kind: Some(AgentSkillSourceKind::Unmanaged),
         }];
     }
@@ -550,6 +554,7 @@ fn scan_roots_for_agent(
             let mut roots = vec![AgentScanRoot {
                 path: primary_root.clone(),
                 source_root: Some(primary_root.clone()),
+                source_label: None,
                 source_kind: Some(AgentSkillSourceKind::User),
             }];
             roots.extend(claude_plugin_roots(&primary_root));
@@ -558,6 +563,7 @@ fn scan_roots_for_agent(
         _ => vec![AgentScanRoot {
             path: primary_root.clone(),
             source_root: None,
+            source_label: None,
             source_kind: None,
         }],
     };
@@ -669,6 +675,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                         dir_path: skill.dir_path.clone(),
                         source_kind: source_kind.as_str().to_string(),
                         source_root: root_path.clone(),
+                        source_label: root.source_label.clone(),
                         link_type: skill.link_type.clone(),
                         symlink_target: skill.symlink_target.clone(),
                         is_read_only: source_kind.is_read_only(),
@@ -1569,6 +1576,10 @@ mod tests {
             plugin_a_rows[0].source_root,
             plugin_a_root.to_string_lossy()
         );
+        assert_eq!(
+            plugin_a_rows[0].source_label.as_deref(),
+            Some("plugin-a@publisher-a")
+        );
 
         let plugin_b_rows: Vec<_> = observations
             .iter()
@@ -1583,6 +1594,10 @@ mod tests {
         assert_eq!(
             plugin_b_rows[0].source_root,
             plugin_b_root.to_string_lossy()
+        );
+        assert_eq!(
+            plugin_b_rows[0].source_label.as_deref(),
+            Some("plugin-b@publisher-b")
         );
 
         let plugin_a_installations = db::get_skill_installations(&pool, "plugin-a-skill")

@@ -30,7 +30,10 @@ interface CollectionInstallDialogProps {
   collectionName: string;
   skillCount: number;
   agents: AgentWithStatus[];
-  onInstall: (agentIds: string[]) => Promise<CollectionBatchInstallResult>;
+  description?: string;
+  onInstall: (
+    agentIds: string[]
+  ) => Promise<CollectionBatchInstallResult & { skipped?: string[] }>;
 }
 
 // ─── CollectionInstallDialog ──────────────────────────────────────────────────
@@ -41,6 +44,7 @@ export function CollectionInstallDialog({
   collectionName,
   skillCount,
   agents,
+  description,
   onInstall,
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
@@ -49,7 +53,9 @@ export function CollectionInstallDialog({
   const [selectedAgentIds, setSelectedAgentIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<CollectionBatchInstallResult | null>(null);
+  const [result, setResult] = useState<
+    (CollectionBatchInstallResult & { skipped?: string[] }) | null
+  >(null);
 
   // Reset when dialog opens.
   useEffect(() => {
@@ -87,7 +93,7 @@ export function CollectionInstallDialog({
     try {
       const installResult = await onInstall(agentIds);
       setResult(installResult);
-      if (installResult.failed.length === 0) {
+      if (installResult.failed.length === 0 && !installResult.skipped?.length) {
         // All succeeded — close dialog.
         onOpenChange(false);
       }
@@ -108,7 +114,7 @@ export function CollectionInstallDialog({
 
         <DialogBody className="space-y-5">
           <DialogDescription>
-            {t("batchInstall.desc", { count: skillCount })}
+            {description ?? t("batchInstall.desc", { count: skillCount })}
           </DialogDescription>
 
           {/* Platform checkboxes */}
@@ -150,21 +156,32 @@ export function CollectionInstallDialog({
           </div>
 
           {/* Result summary if partial failure */}
-          {result && result.failed.length > 0 && (
+          {result && (result.failed.length > 0 || (result.skipped?.length ?? 0) > 0) && (
             <div className="space-y-1">
-              <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
-                {t("batchInstall.succeeded", {
-                  succeeded: result.succeeded.length,
-                  failed: result.failed.length,
-                })}
-              </p>
-              <ul className="text-xs text-muted-foreground space-y-0.5">
-                {result.failed.map((f) => (
-                  <li key={f.agent_id} className="text-destructive">
-                    {f.agent_id}: {f.error}
-                  </li>
-                ))}
-              </ul>
+              {result.failed.length > 0 && (
+                <>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 font-medium">
+                    {t("batchInstall.succeeded", {
+                      succeeded: result.succeeded.length,
+                      failed: result.failed.length,
+                    })}
+                  </p>
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    {result.failed.map((f) => (
+                      <li key={f.agent_id} className="text-destructive">
+                        {f.agent_id}: {f.error}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {(result.skipped?.length ?? 0) > 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  {t("batchInstall.skipped", {
+                    skills: result.skipped?.join(", "),
+                  })}
+                </p>
+              )}
               <Button
                 variant="outline"
                 size="sm"

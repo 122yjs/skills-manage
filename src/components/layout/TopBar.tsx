@@ -1,10 +1,11 @@
 import { useTranslation } from "react-i18next";
-import { useLocation, useNavigate } from "react-router-dom";
-import { Blocks, Search, Settings } from "lucide-react";
+import { useLocation } from "react-router-dom";
+import { Search } from "lucide-react";
 
 import { usePlatformStore } from "@/stores/platformStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { cn } from "@/lib/utils";
+import { DashboardHeader } from "./DashboardShell";
 
 interface TopBarProps {
   onSearchClick: () => void;
@@ -12,47 +13,39 @@ interface TopBarProps {
 
 export function TopBar({ onSearchClick }: TopBarProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { pathname } = useLocation();
 
   const agents = usePlatformStore((s) => s.agents);
-  const skillsByAgent = usePlatformStore((s) => s.skillsByAgent);
-  const totalDiscovered = useDiscoverStore((s) => s.totalSkillsFound);
   const isScanning = useDiscoverStore((s) => s.isScanning);
 
-  // Determine current view label and count
-  const viewInfo = (() => {
+  const pageTitle = (() => {
     if (pathname === "/central" || pathname === "/") {
-      const count = skillsByAgent["central"] ?? 0;
-      return { label: t("sidebar.centralSkills"), count };
+      return t("sidebar.centralSkills");
     }
     if (pathname.startsWith("/platform/")) {
       const agentId = pathname.split("/platform/")[1];
       const agent = agents.find((a) => a.id === agentId);
-      return {
-        label: agent?.display_name ?? agentId,
-        count: skillsByAgent[agentId] ?? 0,
-      };
+      return agent?.display_name ?? agentId;
     }
     if (pathname === "/universal") {
-      return { label: t("sidebar.universal"), count: skillsByAgent.universal ?? 0 };
+      return t("sidebar.universal");
     }
     if (pathname.startsWith("/discover")) {
-      return { label: t("sidebar.discovered"), count: totalDiscovered };
+      return t("sidebar.discovered");
     }
     if (pathname === "/marketplace") {
-      return { label: t("marketplace.title"), count: undefined };
+      return t("marketplace.title");
     }
     if (pathname === "/collections") {
-      return { label: t("sidebar.collections"), count: undefined };
+      return t("sidebar.collections");
     }
     if (pathname === "/settings") {
-      return { label: t("sidebar.settings"), count: undefined };
+      return t("sidebar.settings");
     }
     if (pathname.startsWith("/skill/")) {
-      return { label: t("globalSearch.skillDetail"), count: undefined };
+      return t("globalSearch.skillDetail");
     }
-    return { label: "", count: undefined };
+    return t("webDashboard.title");
   })();
 
   const isMac =
@@ -60,60 +53,21 @@ export function TopBar({ onSearchClick }: TopBarProps) {
     navigator.platform.toUpperCase().includes("MAC");
 
   return (
-    <header className="relative flex items-center h-12 px-4 border-b border-border bg-sidebar text-sidebar-foreground shrink-0">
-      {/* App icon */}
+    <DashboardHeader title={pageTitle}>
       <button
-        onClick={() => navigate("/central")}
-        className="z-10 p-1.5 rounded-md transition-colors cursor-pointer text-sidebar-primary hover:bg-muted/60 shrink-0"
-        aria-label={t("app.name")}
-        title={t("app.name")}
-      >
-        <Blocks className="size-4" />
-      </button>
-
-      <div className="flex-1" />
-
-      <div className="pointer-events-none absolute inset-0 hidden items-center justify-center px-16 lg:flex">
-        <div className="pointer-events-auto flex items-center gap-3 max-w-[min(56rem,calc(100vw-14rem))]">
-          <button
-            onClick={onSearchClick}
-            className={cn(
-              "flex items-center gap-2 h-8 w-[min(26rem,40vw)] min-w-[14rem] px-3 rounded-md text-sm",
-              "bg-muted/40 text-muted-foreground border border-border/50",
-              "hover:bg-muted/60 hover:border-border transition-colors cursor-pointer",
-            )}
-          >
-            <Search className="size-3.5 shrink-0" />
-            <span className="truncate flex-1 text-left">
-              {t("globalSearch.trigger")}
-            </span>
-            <kbd className="hidden sm:inline-flex items-center gap-0.5 text-[10px] font-mono text-muted-foreground/60 border border-border/50 rounded px-1 py-0.5">
-              {isMac ? "⌘" : "Ctrl"}K
-            </kbd>
-          </button>
-        </div>
-      </div>
-
-      <div className="ml-3 flex min-w-0 flex-1 items-center gap-2 lg:hidden">
-        <button
-          onClick={onSearchClick}
-          className={cn(
-            "flex min-w-0 flex-1 items-center gap-2 h-8 px-3 rounded-md text-sm",
-            "bg-muted/40 text-muted-foreground border border-border/50",
-            "hover:bg-muted/60 hover:border-border transition-colors cursor-pointer",
-          )}
-        >
-          <Search className="size-3.5 shrink-0" />
-          <span className="truncate flex-1 text-left">
-            {t("globalSearch.trigger")}
-          </span>
-        </button>
-        {viewInfo.label && (
-          <span className="truncate text-sm text-muted-foreground">
-            {viewInfo.label}
-          </span>
+        type="button"
+        onClick={onSearchClick}
+        className={cn(
+          "flex h-8 min-w-0 items-center gap-2 rounded-md border border-border/50 bg-muted/40 px-3 text-sm text-muted-foreground",
+          "w-[min(26rem,42vw)] hover:border-border hover:bg-muted/60 transition-colors cursor-pointer",
         )}
-      </div>
+      >
+        <Search className="size-3.5 shrink-0" />
+        <span className="flex-1 truncate text-left">{t("globalSearch.trigger")}</span>
+        <kbd className="hidden items-center gap-0.5 rounded border border-border/50 px-1 py-0.5 font-mono text-[10px] text-muted-foreground/60 sm:inline-flex">
+          {isMac ? "⌘" : "Ctrl"}K
+        </kbd>
+      </button>
 
       {/* Scan indicator */}
       {isScanning && (
@@ -126,19 +80,6 @@ export function TopBar({ onSearchClick }: TopBarProps) {
         </div>
       )}
 
-      {/* Settings */}
-      <button
-        onClick={() => navigate("/settings")}
-        className={cn(
-          "z-10 p-1.5 rounded-md transition-colors cursor-pointer shrink-0",
-          "text-muted-foreground hover:text-foreground hover:bg-muted/60",
-          pathname === "/settings" && "bg-muted/60 text-foreground",
-        )}
-        aria-label={t("sidebar.settings")}
-        title={t("sidebar.settings")}
-      >
-        <Settings className="size-4" />
-      </button>
-    </header>
+    </DashboardHeader>
   );
 }

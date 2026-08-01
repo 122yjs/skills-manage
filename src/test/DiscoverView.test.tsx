@@ -27,7 +27,7 @@ vi.mock("../components/central/InstallDialog", () => ({
   InstallDialog: (props: {
     open: boolean;
     agents: Array<{ id: string; display_name: string }>;
-    onInstall: (skillId: string, agentIds: string[], method: "symlink" | "copy") => Promise<void>;
+    onInstall: (skillId: string, agentIds: string[], method: "auto" | "copy") => Promise<void>;
   }) => {
     mockInstallDialogProps(props);
     return props.open ? (

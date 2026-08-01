@@ -17,6 +17,7 @@ import { SkillFolderCard } from "@/components/skill/SkillFolderCard";
 import { SkillListModeToggle } from "@/components/skill/SkillListModeToggle";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { InstallDialog } from "@/components/central/InstallDialog";
+import { CollectionInstallDialog } from "@/components/collection/CollectionInstallDialog";
 import { useSkillListViewMode } from "@/hooks/useSkillListViewMode";
 import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
@@ -38,6 +39,13 @@ function EmptyState({ message }: { message: string }) {
 
 type ClaudeSourceFilter = "all" | "user" | "plugin";
 type InstallSourceFilter = "all" | "platform" | "universal";
+
+interface PluginBundleTarget {
+  sourceAgentId: string;
+  sourceLabel: string;
+  name: string;
+  skillCount: number;
+}
 
 function isUniversalSource(skill: ScannedSkill): boolean {
   return Boolean(skill.is_read_only && skill.source_kind === "compatibility");
@@ -62,6 +70,9 @@ export function PlatformView() {
   const centralAgents = useCentralSkillsStore((state) => state.agents);
   const loadCentralSkills = useCentralSkillsStore((state) => state.loadCentralSkills);
   const installSkill = useCentralSkillsStore((state) => state.installSkill);
+  const installPluginBundle = useCentralSkillsStore(
+    (state) => state.installPluginBundle
+  );
   const refreshCounts = usePlatformStore((state) => state.refreshCounts);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -74,6 +85,9 @@ export function PlatformView() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [folderDrawerGroupPath, setFolderDrawerGroupPath] = useState<string | null>(null);
   const [isFolderDrawerOpen, setIsFolderDrawerOpen] = useState(false);
+  const [pluginBundleTarget, setPluginBundleTarget] =
+    useState<PluginBundleTarget | null>(null);
+  const [isPluginBundleDialogOpen, setIsPluginBundleDialogOpen] = useState(false);
   const [returnFocusRowKey, setReturnFocusRowKey] = useState<string | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const detailButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -179,6 +193,14 @@ export function PlatformView() {
         skills: sourceFilteredSkills,
         rootPath: agent?.global_skills_dir ?? "",
         getDirPaths: (skill) => skill.dir_path,
+        getTopLevelGroup: (skill) =>
+          skill.source_kind === "plugin" && skill.source_label && skill.source_root
+            ? {
+                name: skill.source_label,
+                relativePath: `plugin:${skill.source_label}`,
+                path: skill.source_root,
+              }
+            : null,
       }),
     [agent?.global_skills_dir, sourceFilteredSkills]
   );
@@ -281,6 +303,15 @@ export function PlatformView() {
   const folderDrawerGroup = folderDrawerGroupPath
     ? platformFolderGroupsByPath.get(folderDrawerGroupPath)
     : null;
+  const folderDrawerPluginLabel =
+    folderDrawerGroup?.skills.length &&
+    folderDrawerGroup.skills.every(
+      (skill) =>
+        skill.source_kind === "plugin" &&
+        skill.source_label === folderDrawerGroup.skills[0].source_label
+    )
+      ? folderDrawerGroup.skills[0].source_label
+      : null;
   const folderDrawerSkills = useMemo<SkillFolderDrawerSkill[]>(
     () =>
       (folderDrawerGroup?.skills ?? []).map((skill) => ({
@@ -304,6 +335,35 @@ export function PlatformView() {
       })),
     [agentId, folderDrawerGroup, t]
   );
+
+  function handleInstallPluginBundleClick() {
+    if (!agentId || !folderDrawerGroup || !folderDrawerPluginLabel) return;
+    setPluginBundleTarget({
+      sourceAgentId: agentId,
+      sourceLabel: folderDrawerPluginLabel,
+      name: folderDrawerGroup.name,
+      skillCount: folderDrawerGroup.skillCount,
+    });
+    setIsFolderDrawerOpen(false);
+    setFolderDrawerGroupPath(null);
+    setIsPluginBundleDialogOpen(true);
+  }
+
+  async function handleInstallPluginBundle(agentIds: string[]) {
+    if (!pluginBundleTarget) {
+      throw new Error(t("platform.notFound"));
+    }
+    const result = await installPluginBundle(
+      pluginBundleTarget.sourceAgentId,
+      pluginBundleTarget.sourceLabel,
+      agentIds
+    );
+    await Promise.all([
+      refreshCounts(),
+      agentId ? getSkillsByAgent(agentId) : Promise.resolve(),
+    ]);
+    return result;
+  }
 
   if (!agent) {
     return (
@@ -565,6 +625,9 @@ export function PlatformView() {
         path={folderDrawerGroup?.path}
         skills={folderDrawerSkills}
         loading={false}
+        onInstallAll={
+          folderDrawerPluginLabel ? handleInstallPluginBundleClick : undefined
+        }
         onOpenChange={(open) => {
           setIsFolderDrawerOpen(open);
           if (!open) {
@@ -577,6 +640,21 @@ export function PlatformView() {
             agentId ? getSkillsByAgent(agentId) : Promise.resolve(),
           ]);
         }}
+      />
+
+      <CollectionInstallDialog
+        open={isPluginBundleDialogOpen}
+        onOpenChange={(open) => {
+          setIsPluginBundleDialogOpen(open);
+          if (!open) setPluginBundleTarget(null);
+        }}
+        collectionName={pluginBundleTarget?.name ?? ""}
+        skillCount={pluginBundleTarget?.skillCount ?? 0}
+        agents={centralAgents}
+        description={t("skillFolder.installBundleDesc", {
+          count: pluginBundleTarget?.skillCount ?? 0,
+        })}
+        onInstall={handleInstallPluginBundle}
       />
     </div>
   );

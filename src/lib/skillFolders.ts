@@ -14,6 +14,10 @@ export interface SplitSkillsByTopLevelOptions<TSkill> {
   skills: TSkill[];
   rootPath: string;
   getDirPaths: (skill: TSkill) => string | null | undefined | Array<string | null | undefined>;
+  getTopLevelGroup?: (skill: TSkill) => Pick<
+    SkillFolderGroup<TSkill>,
+    "name" | "relativePath" | "path"
+  > | null;
   getLinkedAgentIds?: (skill: TSkill) => readonly string[] | null | undefined;
   getReadOnlyAgentIds?: (skill: TSkill) => readonly string[] | null | undefined;
 }
@@ -53,6 +57,7 @@ export function splitSkillsByTopLevel<TSkill>({
   skills,
   rootPath,
   getDirPaths,
+  getTopLevelGroup,
   getLinkedAgentIds,
   getReadOnlyAgentIds,
 }: SplitSkillsByTopLevelOptions<TSkill>) {
@@ -60,26 +65,32 @@ export function splitSkillsByTopLevel<TSkill>({
   const groups = new Map<string, SkillFolderGroup<TSkill>>();
 
   for (const skill of skills) {
-    let relativePath: string | null = null;
-    for (const path of candidatePaths(getDirPaths(skill))) {
-      if (!path) continue;
-      relativePath = getRelativePathUnderRoot(path, rootPath);
-      if (relativePath !== null) break;
+    let groupInfo = getTopLevelGroup?.(skill) ?? null;
+    if (!groupInfo) {
+      let relativePath: string | null = null;
+      for (const path of candidatePaths(getDirPaths(skill))) {
+        if (!path) continue;
+        relativePath = getRelativePathUnderRoot(path, rootPath);
+        if (relativePath !== null) break;
+      }
+
+      const parts = relativePath?.split("/").filter(Boolean) ?? [];
+      if (parts.length <= 1) {
+        rootSkills.push(skill);
+        continue;
+      }
+
+      groupInfo = {
+        name: parts[0],
+        relativePath: parts[0],
+        path: `${normalizeFsPath(rootPath)}/${parts[0]}`,
+      };
     }
 
-    const parts = relativePath?.split("/").filter(Boolean) ?? [];
-    if (parts.length <= 1) {
-      rootSkills.push(skill);
-      continue;
-    }
-
-    const folderName = parts[0];
     const group =
-      groups.get(folderName) ??
+      groups.get(groupInfo.relativePath) ??
       {
-        name: folderName,
-        relativePath: folderName,
-        path: `${normalizeFsPath(rootPath)}/${folderName}`,
+        ...groupInfo,
         skillCount: 0,
         linkedAgentCount: 0,
         readOnlyAgentCount: 0,
@@ -94,7 +105,7 @@ export function splitSkillsByTopLevel<TSkill>({
     group.readOnlyAgentCount = uniqueCount(
       group.skills.flatMap((item) => [...(getReadOnlyAgentIds?.(item) ?? [])])
     );
-    groups.set(folderName, group);
+    groups.set(groupInfo.relativePath, group);
   }
 
   return {

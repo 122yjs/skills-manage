@@ -8,7 +8,9 @@ use tauri::State;
 use crate::db::{self, Collection, DbPool, SkillForAgent};
 use crate::AppState;
 
-use super::linker::uninstall_skill_from_agent_impl;
+use super::linker::{
+    batch_install_skills_to_agents_impl, uninstall_skill_from_agent_impl, SkillBundleInstallResult,
+};
 use super::scanner::{scan_skill_root, ScanDirectoryOptions};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -63,6 +65,7 @@ pub struct SkillDetail {
     pub scanned_at: String,
     pub source_kind: Option<String>,
     pub source_root: Option<String>,
+    pub source_label: Option<String>,
     pub is_read_only: bool,
     pub conflict_group: Option<String>,
     pub conflict_count: i64,
@@ -719,6 +722,7 @@ async fn get_observation_detail(
         scanned_at: observation.scanned_at,
         source_kind: Some(observation.source_kind),
         source_root: Some(observation.source_root),
+        source_label: observation.source_label,
         is_read_only: observation.is_read_only,
         conflict_group,
         conflict_count,
@@ -763,6 +767,7 @@ async fn get_skill_detail_with_row_impl(
         scanned_at: skill.scanned_at,
         source_kind: None,
         source_root: None,
+        source_label: None,
         is_read_only: false,
         conflict_group: None,
         conflict_count: 0,
@@ -817,6 +822,7 @@ pub async fn get_skills_by_agent_impl(
         universal_skill.row_id = format!("{}::{}", agent.id, universal_skill.dir_path);
         universal_skill.source_kind = Some("compatibility".to_string());
         universal_skill.source_root = Some(universal.global_skills_dir.clone());
+        universal_skill.source_label = None;
         universal_skill.is_read_only = true;
         skills.push(universal_skill);
     }
@@ -1038,6 +1044,40 @@ pub async fn get_central_skill_bundle_detail(
     relative_path: String,
 ) -> Result<CentralSkillBundleDetail, String> {
     get_central_skill_bundle_detail_impl(&state.db, &relative_path).await
+}
+
+pub async fn install_central_skill_bundle_to_agents_impl(
+    pool: &DbPool,
+    relative_path: &str,
+    agent_ids: &[String],
+) -> Result<SkillBundleInstallResult, String> {
+    let central_root = central_root_path(pool).await?;
+    let target = validate_central_bundle_target(relative_path, &central_root)?;
+    let skills = central_skills_in_bundle(pool, &target).await?;
+    if skills.is_empty() {
+        return Err(format!(
+            "No Central Skills found under bundle '{}'",
+            target.relative_path
+        ));
+    }
+
+    let skill_ids = skills.into_iter().map(|skill| skill.id).collect::<Vec<_>>();
+    let installs = batch_install_skills_to_agents_impl(pool, &skill_ids, agent_ids).await?;
+    Ok(SkillBundleInstallResult {
+        imported: Vec::new(),
+        skipped: Vec::new(),
+        succeeded: installs.succeeded,
+        failed: installs.failed,
+    })
+}
+
+#[tauri::command]
+pub async fn install_central_skill_bundle_to_agents(
+    state: State<'_, AppState>,
+    relative_path: String,
+    agent_ids: Vec<String>,
+) -> Result<SkillBundleInstallResult, String> {
+    install_central_skill_bundle_to_agents_impl(&state.db, &relative_path, &agent_ids).await
 }
 
 pub async fn preview_delete_central_skill_bundle_impl(
@@ -1357,6 +1397,7 @@ mod tests {
             } else {
                 "/tmp/.claude/plugins/cache/publisher/plugin-a/1.0.0".to_string()
             },
+            source_label: (source_kind == "plugin").then(|| "plugin-a@publisher".to_string()),
             link_type: "copy".to_string(),
             symlink_target: None,
             is_read_only: read_only,
@@ -1384,6 +1425,7 @@ mod tests {
             dir_path: dir_path.to_string(),
             source_kind: source_kind.to_string(),
             source_root: source_root.to_string(),
+            source_label: (source_kind == "plugin").then(|| "plugin-a@publisher".to_string()),
             link_type: "copy".to_string(),
             symlink_target: None,
             is_read_only: read_only,
@@ -1992,6 +2034,43 @@ mod tests {
             vec!["using-superpowers", "writing-plans"]
         );
         assert_eq!(detail.skills[0].linked_agents, vec!["cursor".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn central_bundle_installs_every_skill_to_selected_agents() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        let cursor_dir = tmp.path().join("cursor");
+        let bundle_dir = central_dir.join("Superpowers");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        set_agent_dir(&pool, "claude-code", &claude_dir).await;
+        set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        create_nested_central_skill(&pool, &bundle_dir, "using-superpowers").await;
+        create_nested_central_skill(&pool, &bundle_dir, "writing-plans").await;
+
+        let result = install_central_skill_bundle_to_agents_impl(
+            &pool,
+            "Superpowers",
+            &["claude-code".to_string(), "cursor".to_string()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.succeeded.len(), 4);
+        assert!(result.failed.is_empty());
+        for skill_id in ["using-superpowers", "writing-plans"] {
+            assert!(fs::symlink_metadata(claude_dir.join(skill_id))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(fs::symlink_metadata(cursor_dir.join(skill_id))
+                .unwrap()
+                .file_type()
+                .is_symlink());
+        }
     }
 
     #[tokio::test]

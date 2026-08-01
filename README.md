@@ -138,7 +138,7 @@ Custom platforms can be added through Settings.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (LTS)
+- [Node.js](https://nodejs.org/) 22.13 or newer
 - [pnpm](https://pnpm.io/)
 - [Rust toolchain](https://rustup.rs/) (stable)
 - Tauri v2 system dependencies: <https://v2.tauri.app/start/prerequisites/>
@@ -156,6 +156,19 @@ pnpm tauri dev
 ```
 
 The Vite dev server runs on port `24200`.
+
+### Run the Read-only Web Dashboard (Skill Hub)
+
+```bash
+pnpm web:dev
+```
+
+Open <http://127.0.0.1:24200>. This local-only dashboard ("Skill Hub") reads
+the existing `~/.skillsmanage/db.sqlite` database and mirrors the desktop app
+layout: a sidebar with the Skill Library, per-platform views, Discover,
+Marketplace (last-sync cache), Collections, and Settings. It never exposes
+install, delete, or settings commands — everything is read-only. Run the
+desktop app once first so the database has been initialized.
 
 ### Validation
 

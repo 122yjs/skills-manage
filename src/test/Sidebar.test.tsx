@@ -217,10 +217,13 @@ describe("Sidebar", () => {
 
   // ── Rendering ─────────────────────────────────────────────────────────────
 
-  it("renders expanded sidebar by default", () => {
+  it("웹 대시보드와 같은 확장 사이드바 틀을 사용한다", () => {
     const { container } = renderSidebar();
     const nav = container.querySelector("nav");
-    expect(nav?.className).toContain("w-52");
+    expect(nav?.className).toContain("w-56");
+    expect(screen.getByText("技能中心")).toBeInTheDocument();
+    expect(screen.getByText("skills-manage")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "设置" })).toBeInTheDocument();
   });
 
   it("renders platform agents as icon buttons", () => {
@@ -247,10 +250,9 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("button", { name: /导入技能集/i })).not.toBeInTheDocument();
   });
 
-  it("does not render Settings (moved to TopBar)", () => {
+  it("설정 메뉴를 웹 대시보드처럼 사이드바 하단에 표시한다", () => {
     renderSidebar();
-    // Settings button no longer exists in sidebar
-    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /设置/ })).toBeInTheDocument();
   });
 
   it("does not render legacy section headers", () => {
@@ -305,10 +307,10 @@ describe("Sidebar", () => {
     expect(centralButton.className).toContain("bg-hover-bg");
   });
 
-  it("does not highlight Settings in sidebar (moved to TopBar)", () => {
+  it("설정 경로에서 사이드바 설정 메뉴를 활성화한다", () => {
     renderSidebar("/settings");
-    // No settings button in sidebar anymore
-    expect(screen.queryByRole("button", { name: /设置/ })).not.toBeInTheDocument();
+    const settingsLink = screen.getByRole("link", { name: /设置/ });
+    expect(settingsLink.className).toContain("bg-hover-bg");
   });
 
   // ── Empty States ──────────────────────────────────────────────────────────
