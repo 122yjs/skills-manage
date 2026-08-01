@@ -6,6 +6,7 @@ import {
   ExternalLink,
   FileQuestion,
   GitBranch,
+  Layers,
   Loader2,
   PartyPopper,
   RefreshCw,
@@ -23,6 +24,7 @@ import {
   SkillWithLinks,
 } from "@/types";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
@@ -40,6 +42,7 @@ import {
   type GitHubImportAiSummaryEntry,
   type SkillMarkdownEntry,
 } from "@/stores/marketplaceStore";
+import { useCollectionStore } from "@/stores/collectionStore";
 
 type WizardStep = "input" | "preview" | "confirm" | "result";
 
@@ -55,6 +58,9 @@ const noopGenerateGitHubImportAiSummary = async (
   _content: string,
   _lang: string,
 ) => {};
+const noopCreateCollectionFromSkills = async () => {
+  throw new Error("Collection creation is unavailable.");
+};
 
 type SelectionState = {
   selected: boolean;
@@ -63,6 +69,12 @@ type SelectionState = {
 };
 
 type DetailTab = "overview" | "ai";
+
+type RepoCollectionState = {
+  name: string;
+  status: "creating" | "created" | "error";
+  error?: string;
+};
 
 interface GitHubRepoImportWizardProps {
   open: boolean;
@@ -157,6 +169,9 @@ export function GitHubRepoImportWizard({
   );
   const [detailTab, setDetailTab] = useState<DetailTab>("overview");
   const [isRenameEditing, setIsRenameEditing] = useState(false);
+  const [createRepoCollection, setCreateRepoCollection] = useState(true);
+  const [repoCollectionState, setRepoCollectionState] =
+    useState<RepoCollectionState | null>(null);
   const detailScrollRef = useRef<HTMLDivElement | null>(null);
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const browserMode = !isTauriRuntime();
@@ -172,6 +187,9 @@ export function GitHubRepoImportWizard({
   const generateGitHubImportAiSummary = useMarketplaceStore(
     (state) => state.generateGitHubImportAiSummary,
   ) ?? noopGenerateGitHubImportAiSummary;
+  const createCollectionFromSkills = useCollectionStore(
+    (state) => state.createCollectionFromSkills,
+  ) ?? noopCreateCollectionFromSkills;
   const importProgress = useMarketplaceStore(
     (state) => state.githubImport.importProgress,
   ) ?? null;
@@ -187,6 +205,8 @@ export function GitHubRepoImportWizard({
       setPostImportTargetSkillId(null);
       setSelectedSkillPath(null);
       setDetailTab("overview");
+      setCreateRepoCollection(true);
+      setRepoCollectionState(null);
       return;
     }
     if (importResult) {
@@ -206,6 +226,11 @@ export function GitHubRepoImportWizard({
     setSelectedSkillPath(null);
     setStep("input");
   }, [open, preview, importResult]);
+
+  useEffect(() => {
+    setCreateRepoCollection(true);
+    setRepoCollectionState(null);
+  }, [preview?.repo.normalizedUrl]);
 
   const postImportSkill = useMemo(() => {
     if (!postImportTargetSkillId) return null;
@@ -544,11 +569,25 @@ export function GitHubRepoImportWizard({
 
   async function handleImportConfirmClick() {
     const result = await onImport(selectedImportPayload);
-    if (result) {
-      await onAfterImportSuccess?.(result);
-    } else if (importResult) {
-      await onAfterImportSuccess?.(importResult);
+    const completedResult = result ?? importResult;
+    if (!completedResult) return;
+
+    if (createRepoCollection && completedResult.importedSkills.length > 0) {
+      const name = `${completedResult.repo.owner}/${completedResult.repo.repo}`;
+      setRepoCollectionState({ name, status: "creating" });
+      try {
+        await createCollectionFromSkills(
+          name,
+          t("marketplace.githubImportCollectionDescription", { name }),
+          completedResult.importedSkills.map((skill) => skill.importedSkillId),
+        );
+        setRepoCollectionState({ name, status: "created" });
+      } catch (error) {
+        setRepoCollectionState({ name, status: "error", error: String(error) });
+      }
     }
+
+    await onAfterImportSuccess?.(completedResult);
   }
 
   function handleInstallImported(skillId: string) {
@@ -569,6 +608,8 @@ export function GitHubRepoImportWizard({
     setSelectionState({});
     setPostImportTargetSkillId(null);
     setSelectedSkillPath(null);
+    setCreateRepoCollection(true);
+    setRepoCollectionState(null);
     onReset();
     setStep("input");
   }
@@ -842,6 +883,40 @@ export function GitHubRepoImportWizard({
             </div>
           </div>
 
+          {repoCollectionState ? (
+            <div
+              className={cn(
+                "rounded-xl border p-4 text-sm",
+                repoCollectionState.status === "error"
+                  ? "border-destructive/30 bg-destructive/5 text-destructive"
+                  : "border-primary/20 bg-primary/5 text-muted-foreground",
+              )}
+              data-testid="github-import-collection-result"
+            >
+              <div className="flex items-start gap-2">
+                {repoCollectionState.status === "creating" ? (
+                  <Loader2 className="mt-0.5 size-4 shrink-0 animate-spin" />
+                ) : (
+                  <Layers className="mt-0.5 size-4 shrink-0" />
+                )}
+                <div>
+                  {repoCollectionState.status === "creating"
+                    ? t("marketplace.githubImportCollectionCreating", {
+                        name: repoCollectionState.name,
+                      })
+                    : repoCollectionState.status === "created"
+                      ? t("marketplace.githubImportCollectionCreated", {
+                          name: repoCollectionState.name,
+                        })
+                      : t("marketplace.githubImportCollectionFailed", {
+                          name: repoCollectionState.name,
+                          error: normalizeMessage(repoCollectionState.error ?? ""),
+                        })}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
             <div className="rounded-xl border border-border/70 bg-card/80 p-4">
               <div className="text-sm font-semibold">
@@ -1108,6 +1183,35 @@ export function GitHubRepoImportWizard({
                         })}
                       </div>
                     ) : null}
+
+                    <div className="mt-4 rounded-xl border border-primary/20 bg-primary/5 p-4">
+                      <div className="flex items-start gap-3">
+                        <Checkbox
+                          id="github-import-create-collection"
+                          data-testid="github-import-create-collection"
+                          checked={createRepoCollection}
+                          onCheckedChange={(checked) =>
+                            setCreateRepoCollection(Boolean(checked))
+                          }
+                          aria-label={t("marketplace.githubImportCreateCollection", {
+                            name: `${preview.repo.owner}/${preview.repo.repo}`,
+                          })}
+                        />
+                        <label
+                          htmlFor="github-import-create-collection"
+                          className="min-w-0 cursor-pointer"
+                        >
+                          <div className="text-sm font-medium text-foreground">
+                            {t("marketplace.githubImportCreateCollection", {
+                              name: `${preview.repo.owner}/${preview.repo.repo}`,
+                            })}
+                          </div>
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {t("marketplace.githubImportCreateCollectionDesc")}
+                          </div>
+                        </label>
+                      </div>
+                    </div>
                   </div>
 
                   <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,0.95fr)]">

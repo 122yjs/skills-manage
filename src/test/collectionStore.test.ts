@@ -325,4 +325,34 @@ describe("collectionStore", () => {
     const state = useCollectionStore.getState();
     expect(state.collections).toHaveLength(3);
   });
+
+  it("createCollectionFromSkills builds an import payload with the requested skills", async () => {
+    const importedCollection: Collection = {
+      id: "col-repo",
+      name: "openai/skills",
+      description: "GitHub repository openai/skills",
+      created_at: "2026-04-10T00:00:00Z",
+      updated_at: "2026-04-10T00:00:00Z",
+    };
+
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(importedCollection)
+      .mockResolvedValueOnce([...mockCollections, importedCollection]);
+
+    await useCollectionStore.getState().createCollectionFromSkills!(
+      "openai/skills",
+      "GitHub repository openai/skills",
+      ["docs", "skill-creator"]
+    );
+
+    const args = vi.mocked(invoke).mock.calls[0][1] as Record<string, unknown>;
+    const payload = JSON.parse(args.json as string);
+    expect(payload).toMatchObject({
+      version: 1,
+      name: "openai/skills",
+      description: "GitHub repository openai/skills",
+      skills: ["docs", "skill-creator"],
+      exportedFrom: "skills-manage:github-import",
+    });
+  });
 });

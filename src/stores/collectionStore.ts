@@ -52,6 +52,11 @@ interface CollectionState {
   batchInstallCollection: (collectionId: string, agentIds: string[]) => Promise<CollectionBatchInstallResult>;
   exportCollection: (collectionId: string) => Promise<string>;
   importCollection: (json: string) => Promise<Collection>;
+  createCollectionFromSkills?: (
+    name: string,
+    description: string,
+    skillIds: string[]
+  ) => Promise<Collection>;
   refreshCounts: () => Promise<void>;
 }
 
@@ -249,6 +254,16 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
       throw err;
     }
   },
+
+  createCollectionFromSkills: async (name: string, description: string, skillIds: string[]) =>
+    get().importCollection(JSON.stringify({
+      version: 1,
+      name,
+      description,
+      skills: skillIds,
+      createdAt: new Date().toISOString(),
+      exportedFrom: "skills-manage:github-import",
+    })),
 
   refreshCounts: async () => {
     if (!isTauriRuntime()) {
