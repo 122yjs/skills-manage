@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "web:dev": "vite --mode web",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

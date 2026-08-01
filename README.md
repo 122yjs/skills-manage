@@ -157,6 +157,19 @@ pnpm tauri dev
 
 The Vite dev server runs on port `24200`.
 
+### Run the Read-only Web Dashboard (Skill Hub)
+
+```bash
+pnpm web:dev
+```
+
+Open <http://127.0.0.1:24200>. This local-only dashboard ("Skill Hub") reads
+the existing `~/.skillsmanage/db.sqlite` database and mirrors the desktop app
+layout: a sidebar with the Skill Library, per-platform views, Discover,
+Marketplace (last-sync cache), Collections, and Settings. It never exposes
+install, delete, or settings commands — everything is read-only. Run the
+desktop app once first so the database has been initialized.
+
 ### Validation
 
 ```bash
