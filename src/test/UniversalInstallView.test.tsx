@@ -60,11 +60,13 @@ describe("UniversalInstallView", () => {
         skillsByAgent: { universal: 2 },
         isLoading: false,
         isRefreshing: false,
+        updatingAgentIds: {},
         scanGeneration: 1,
         error: null,
         initialize: vi.fn(),
         rescan: vi.fn(),
         refreshCounts,
+        setAgentEnabled: vi.fn(),
       })
     );
     vi.mocked(useSkillStore).mockImplementation((selector) =>

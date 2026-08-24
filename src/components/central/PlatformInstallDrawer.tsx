@@ -63,7 +63,7 @@ export function PlatformInstallDrawer({
       .filter((agent) => {
         const isLinked = linkedAgentIds.has(agent.id);
         const isReadOnly = readOnlyAgentIds.has(agent.id);
-        if (activeTab === "installed" && !isLinked && !isReadOnly) return false;
+        if (activeTab === "installed" && !isLinked) return false;
         if (activeTab === "coding" && agent.category === "lobster") return false;
         if (activeTab === "lobster" && agent.category !== "lobster") return false;
         if (activeTab === "shared" && !isReadOnly) return false;

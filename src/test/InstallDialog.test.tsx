@@ -115,11 +115,11 @@ describe("InstallDialog", () => {
     expect(screen.getByText("安装 frontend-design")).toBeInTheDocument();
   });
 
-  it("shows non-central agent checkboxes", () => {
+  it("shows detected non-central agent checkboxes only", () => {
     renderDialog();
     expect(screen.getByRole("checkbox", { name: "Claude Code" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Cursor" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Gemini CLI" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Gemini CLI" })).not.toBeInTheDocument();
   });
 
   it("does not show 'central' agent checkbox", () => {
@@ -154,10 +154,10 @@ describe("InstallDialog", () => {
     expect(screen.getByRole("button", { name: /安装到 0 个平台/i })).toBeDisabled();
   });
 
-  it("shows 'not detected' badge for undetected agents", () => {
+  it("does not expose undetected agents as install targets", () => {
     renderDialog();
-    // gemini-cli has is_detected: false
-    expect(screen.getByText("(未检测到)")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Gemini CLI" })).not.toBeInTheDocument();
+    expect(screen.queryByText("(未检测到)")).not.toBeInTheDocument();
   });
 
   it("shows automatic/copy radio options", () => {

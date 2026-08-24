@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
+use crate::commands::agents::is_agent_detected;
 use crate::db::{self, DbPool, SkillInstallation};
 use crate::AppState;
 
@@ -357,8 +358,22 @@ pub(crate) async fn validate_batch_install_targets(
     let agents = db::get_all_agents(pool).await?;
     let selected = agent_ids
         .iter()
-        .filter_map(|id| agents.iter().find(|agent| agent.id == *id))
-        .collect::<Vec<_>>();
+        .map(|id| {
+            agents
+                .iter()
+                .find(|agent| agent.id == *id)
+                .ok_or_else(|| format!("Agent '{}' not found", id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for agent in &selected {
+        if agent.id != "universal" && !is_agent_detected(agent) {
+            return Err(format!(
+                "Agent '{}' is not installed on this machine",
+                agent.id
+            ));
+        }
+    }
 
     for (index, left) in selected.iter().enumerate() {
         for right in selected.iter().skip(index + 1) {
@@ -755,6 +770,12 @@ async fn prepare_install(
     let requested_agent = db::get_agent_by_id(pool, requested_agent_id)
         .await?
         .ok_or_else(|| format!("Agent '{}' not found", requested_agent_id))?;
+    if requested_agent.id != "universal" && !is_agent_detected(&requested_agent) {
+        return Err(format!(
+            "Agent '{}' is not installed on this machine",
+            requested_agent_id
+        ));
+    }
     let central = db::get_agent_by_id(pool, "central")
         .await?
         .ok_or_else(|| "Central agent not found in database".to_string())?;
@@ -1410,6 +1431,7 @@ mod tests {
     async fn setup_db(central_dir: &Path, agent_dir: &Path) -> DbPool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         db::init_database(&pool).await.unwrap();
+        mark_builtin_agent_installed(agent_dir);
 
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
             .bind(central_dir.to_str().unwrap())
@@ -1433,6 +1455,12 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    fn mark_builtin_agent_installed(global_skills_dir: &Path) {
+        let platform_root = global_skills_dir.parent().unwrap();
+        fs::create_dir_all(platform_root).unwrap();
+        fs::write(platform_root.join("settings.json"), "{}").unwrap();
     }
 
     /// Create a minimal skill directory containing a valid `SKILL.md`.
@@ -1566,6 +1594,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        mark_builtin_agent_installed(&cursor_dir);
         create_central_skill(&central_dir, "universal-skill");
 
         let result = install_skill_to_agent_impl(&pool, "universal-skill", "cursor")
@@ -1667,6 +1696,8 @@ mod tests {
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "codex", &universal_dir).await;
+        fs::create_dir_all(tmp.path().join(".codex")).unwrap();
+        fs::write(tmp.path().join(".codex/settings.json"), "{}").unwrap();
         create_central_skill(&central_dir, "codex-shared");
 
         install_skill_to_agent_impl(&pool, "codex-shared", "codex")
@@ -1691,6 +1722,7 @@ mod tests {
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         create_central_skill(&central_dir, "move-to-shared");
         install_skill_to_agent_impl(&pool, "move-to-shared", "cursor")
             .await
@@ -1719,6 +1751,7 @@ mod tests {
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         create_central_skill(&central_dir, "copied-skill");
         install_skill_to_agent_copy_impl(&pool, "copied-skill", "cursor")
             .await
@@ -1747,6 +1780,7 @@ mod tests {
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         create_central_skill(&central_dir, "shared-first");
         install_skill_to_agent_impl(&pool, "shared-first", "universal")
             .await
@@ -1768,6 +1802,7 @@ mod tests {
         let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         let canonical = create_central_skill(&central_dir, "rollback-skill");
         install_skill_to_agent_impl(&pool, "rollback-skill", "cursor")
             .await
@@ -2357,19 +2392,50 @@ mod tests {
         let pool = setup_db(&central_dir, &claude_dir).await;
         create_central_skill(&central_dir, "partial-skill");
 
-        let result = batch_install_impl(
+        let result = batch_install_to_agents_impl(
             &pool,
             "partial-skill",
             &[
                 "claude-code".to_string(),
                 "nonexistent-agent".to_string(), // will fail
             ],
+            "symlink",
         )
         .await;
 
-        assert_eq!(result.succeeded.len(), 1);
-        assert_eq!(result.failed.len(), 1);
-        assert_eq!(result.failed[0].agent_id, "nonexistent-agent");
+        assert!(result.is_err());
+        assert!(!claude_dir.join("partial-skill").exists());
+        assert!(db::get_skill_installations(&pool, "partial-skill")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_batch_install_rejects_undetected_builtin_before_creating_directory() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let augment_dir = tmp.path().join(".augment/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &tmp.path().join("claude")).await;
+        set_agent_dir(&pool, "augment", &augment_dir).await;
+        create_central_skill(&central_dir, "guarded-skill");
+
+        let result = batch_install_to_agents_impl(
+            &pool,
+            "guarded-skill",
+            &["augment".to_string()],
+            "symlink",
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!augment_dir.exists());
+        assert!(db::get_skill_installations(&pool, "guarded-skill")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -2384,6 +2450,7 @@ mod tests {
         let pool = setup_db(&central_dir, &claude_dir).await;
         set_agent_dir(&pool, "universal", &universal_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         create_central_skill(&central_dir, "conflicting-batch");
 
         for (agent_ids, method) in [
@@ -2697,6 +2764,7 @@ mod tests {
         fs::create_dir_all(&central_dir).unwrap();
         let pool = setup_db(&central_dir, &claude_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        mark_builtin_agent_installed(&cursor_dir);
         create_plugin_observation(
             &pool,
             &plugin_root,
@@ -2751,6 +2819,7 @@ mod tests {
         let plugin_root = tmp.path().join("plugins/ponytail/1.0.0");
         fs::create_dir_all(&central_dir).unwrap();
         let pool = setup_db(&central_dir, &claude_dir).await;
+        mark_builtin_agent_installed(&claude_dir);
         let existing_dir = create_central_skill(&central_dir, "shared-skill");
         fs::write(existing_dir.join("SKILL.md"), "user-owned content").unwrap();
         db::upsert_skill(
@@ -2805,6 +2874,7 @@ mod tests {
         let plugin_root = tmp.path().join("plugins/ponytail/1.0.0");
         fs::create_dir_all(&central_dir).unwrap();
         let pool = setup_db(&central_dir, &claude_dir).await;
+        mark_builtin_agent_installed(&claude_dir);
         create_plugin_observation(
             &pool,
             &plugin_root,

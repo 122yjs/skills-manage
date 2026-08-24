@@ -32,6 +32,15 @@ const agents: AgentWithStatus[] = [
     is_builtin: true,
     is_enabled: true,
   },
+  {
+    id: "augment",
+    display_name: "Augment",
+    category: "coding",
+    global_skills_dir: "~/.augment/skills",
+    is_detected: false,
+    is_builtin: true,
+    is_enabled: true,
+  },
 ];
 
 describe("CollectionInstallDialog", () => {
@@ -51,6 +60,7 @@ describe("CollectionInstallDialog", () => {
     expect(screen.getByRole("checkbox", { name: "共享安装 (.agents)" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Cursor" })).not.toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Claude Code" })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "Augment" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("checkbox", { name: "Cursor" }));
 

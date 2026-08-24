@@ -51,6 +51,7 @@ describe("platformStore", () => {
       skillsByAgent: {},
       isLoading: false,
       isRefreshing: false,
+      updatingAgentIds: {},
       scanGeneration: 0,
       error: null,
     });
@@ -65,6 +66,7 @@ describe("platformStore", () => {
     expect(state.skillsByAgent).toEqual({});
     expect(state.isLoading).toBe(false);
     expect(state.isRefreshing).toBe(false);
+    expect(state.updatingAgentIds).toEqual({});
     expect(state.scanGeneration).toBe(0);
     expect(state.error).toBeNull();
   });
@@ -202,5 +204,45 @@ describe("platformStore", () => {
     expect(state.isLoading).toBe(false);
     expect(state.isRefreshing).toBe(false);
     expect(state.scanGeneration).toBe(2);
+  });
+
+  it("setAgentEnabled persists the platform state and refreshes the scan", async () => {
+    usePlatformStore.setState({
+      agents: mockAgents,
+      skillsByAgent: mockScanResult.skills_by_agent,
+      isLoading: false,
+      isRefreshing: false,
+      updatingAgentIds: {},
+      scanGeneration: 1,
+      error: null,
+    });
+    const disabledAgents = mockAgents.map((agent) =>
+      agent.id === "claude-code" ? { ...agent, is_enabled: false } : agent
+    );
+    const disabledScanResult: ScanResult = {
+      total_skills: 3,
+      agents_scanned: 1,
+      skills_by_agent: { central: 3 },
+    };
+
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(disabledAgents[0])
+      .mockResolvedValueOnce(disabledAgents)
+      .mockResolvedValueOnce(disabledScanResult);
+
+    await usePlatformStore.getState().setAgentEnabled("claude-code", false);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "set_agent_enabled", {
+      agentId: "claude-code",
+      enabled: false,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_agents");
+    expect(invoke).toHaveBeenNthCalledWith(3, "scan_all_skills");
+    expect(
+      usePlatformStore.getState().agents.find((agent) => agent.id === "claude-code")
+        ?.is_enabled
+    ).toBe(false);
+    expect(usePlatformStore.getState().skillsByAgent).toEqual({ central: 3 });
+    expect(usePlatformStore.getState().updatingAgentIds).toEqual({});
   });
 });

@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
+import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 
 let triggerRescanInMock = false;
 
@@ -18,6 +19,14 @@ vi.mock("@/stores/centralSkillsStore", () => ({
 
 vi.mock("@/stores/discoverStore", () => ({
   useDiscoverStore: vi.fn(),
+}));
+
+vi.mock("@/stores/devToolSetupStore", () => ({
+  useDevToolSetupStore: vi.fn(),
+}));
+
+vi.mock("@/components/settings/DevToolSetupDialog", () => ({
+  DevToolSetupDialog: () => <div data-testid="dev-tool-setup-dialog" />,
 }));
 
 vi.mock("@/components/layout/Sidebar", () => ({
@@ -54,6 +63,7 @@ vi.mock("@/components/layout/GlobalSearchDialog", () => ({
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
 const mockUseDiscoverStore = vi.mocked(useDiscoverStore);
+const mockUseDevToolSetupStore = vi.mocked(useDevToolSetupStore);
 
 let testNavigate: ReturnType<typeof useNavigate> | null = null;
 
@@ -78,6 +88,16 @@ describe("AppShell", () => {
     vi.clearAllMocks();
     testNavigate = null;
     triggerRescanInMock = false;
+
+    mockUseDevToolSetupStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        status: "ready",
+        completed: true,
+        load: vi.fn().mockResolvedValue(undefined),
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
 
     mockUsePlatformStore.mockImplementation((selector?: unknown) => {
       const state = {

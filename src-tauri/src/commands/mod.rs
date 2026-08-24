@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod collections;
+pub mod dev_tools;
 pub mod discover;
 pub mod github_import;
 pub mod linker;

@@ -97,6 +97,21 @@
       "readOnlyModeDesc": "只读取本地数据库，不会进行修改。"
     }
   },
+  "devToolSetup": {
+    "title": "选择你使用的开发工具",
+    "description": "常用工具会排在前面。只有选中的工具会被扫描并显示在菜单和安装目标中，现有完整目录仍然保留。",
+    "detectedHint": "已确认存在可执行文件或应用的工具会被预选。仅有设置文件夹不会被视为已安装。",
+    "listLabel": "开发工具列表",
+    "detected": "已检测",
+    "unselectedTools": "未选工具",
+    "showUnselectedTools": "显示 {{count}} 个未选工具",
+    "hideUnselectedTools": "收起未选工具",
+    "continue": "选择并开始",
+    "save": "保存选择",
+    "settingsTitle": "开发工具",
+    "settingsDescription": "从现有完整目录中选择扫描和安装目标。",
+    "changeSelection": "更改选择"
+  },
   "common": {
     "install": "安装",
     "uninstall": "卸载",
@@ -115,7 +130,16 @@
     "loading": "加载中...",
     "search": "搜索",
     "refresh": "刷新",
-    "detail": "详情"
+    "detail": "详情",
+    "translateWithApi": "使用 API 翻译",
+    "translateWithApiConfirm": "使用已配置的 API？可能产生费用",
+    "translationLoading": "正在翻译...",
+    "translationFailed": "翻译失败：{{error}}",
+    "showOriginal": "查看原文",
+    "showTranslation": "查看译文",
+    "translatedOnDevice": "已在此 Mac 上翻译",
+    "translatedWithApi": "已使用 API 翻译",
+    "englishFallback": "正在显示英文说明"
   },
   "sidebar": {
     "byTool": "按工具",
@@ -141,7 +165,11 @@
     "categoryObsidian": "Obsidian",
     "obsidianVaultLabel": "Obsidian 仓库 {{name}} — {{count}} 个技能 — {{path}}",
     "showAllPlatforms": "显示所有平台",
-    "hideEmptyPlatforms": "隐藏空平台"
+    "hideEmptyPlatforms": "隐藏空平台",
+    "showActivePlatforms": "仅显示已启用平台",
+    "enablePlatform": "启用 {{name}}",
+    "disablePlatform": "停用 {{name}}",
+    "platformToggleError": "无法更改 {{name}} 的启用状态。"
   },
   "platform": {
     "searchPlaceholder": "搜索技能...",

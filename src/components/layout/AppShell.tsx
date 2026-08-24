@@ -8,6 +8,8 @@ import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useStorageStore } from "@/stores/storageStore";
 import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
+import { DevToolSetupDialog } from "@/components/settings/DevToolSetupDialog";
+import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 
 /**
  * Top-level app shell shared visually with the read-only web dashboard.
@@ -16,6 +18,7 @@ import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 export function AppShell() {
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
+  const didInitializeRef = useRef(false);
   const { pathname } = useLocation();
 
   const initialize = usePlatformStore((s) => s.initialize);
@@ -23,12 +26,21 @@ export function AppShell() {
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const rescanDiscoverFromDisk = useDiscoverStore((s) => s.rescanFromDisk);
   const loadStorageStatus = useStorageStore((s) => s.loadStatus);
+  const setupStatus = useDevToolSetupStore((s) => s.status);
+  const setupCompleted = useDevToolSetupStore((s) => s.completed);
+  const loadDevToolSetup = useDevToolSetupStore((s) => s.load);
 
   useEffect(() => {
-    initialize();
+    void loadDevToolSetup();
     void loadStorageStatus().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (setupStatus !== "ready" || !setupCompleted || didInitializeRef.current) return;
+    didInitializeRef.current = true;
+    void initialize();
+  }, [initialize, setupCompleted, setupStatus]);
 
   useEffect(() => {
     if (!mainRef.current) return;
@@ -66,6 +78,7 @@ export function AppShell() {
         onOpenChange={setIsSearchOpen}
         onAction={handleAction}
       />
+      <DevToolSetupDialog />
     </div>
   );
 }

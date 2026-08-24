@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tauri::State;
 
+use crate::commands::agents::is_agent_detected;
 use crate::db::{self, Collection, DbPool, SkillForAgent};
 use crate::AppState;
 
@@ -626,10 +627,17 @@ async fn read_only_agent_ids_for_skill(
     skill_id: &str,
     _is_central: bool,
 ) -> Result<Vec<String>, String> {
+    let agents = db::get_all_agents(pool).await?;
     let mut agent_ids: BTreeSet<String> =
         db::get_read_only_observed_agent_ids_for_skill(pool, skill_id)
             .await?
             .into_iter()
+            .filter(|agent_id| {
+                agents
+                    .iter()
+                    .find(|agent| agent.id == *agent_id)
+                    .is_some_and(is_agent_detected)
+            })
             .collect();
 
     for installation in db::get_skill_installations(pool, skill_id).await? {
@@ -786,14 +794,17 @@ pub async fn get_skills_by_agent_impl(
     pool: &DbPool,
     agent_id: &str,
 ) -> Result<Vec<SkillForAgent>, String> {
-    let mut skills = db::get_skills_for_agent(pool, agent_id).await?;
     if matches!(agent_id, "central" | "universal") {
-        return Ok(skills);
+        return db::get_skills_for_agent(pool, agent_id).await;
     }
 
     let Some(agent) = db::get_agent_by_id(pool, agent_id).await? else {
-        return Ok(skills);
+        return Ok(Vec::new());
     };
+    if !is_agent_detected(&agent) {
+        return Ok(Vec::new());
+    }
+    let mut skills = db::get_skills_for_agent(pool, agent_id).await?;
     let Some(universal) = db::get_agent_by_id(pool, "universal").await? else {
         return Ok(skills);
     };
@@ -846,8 +857,11 @@ pub async fn get_skills_by_agent(
 }
 
 async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLinks, String> {
-    let installations = db::get_skill_installations(pool, &skill.id).await?;
-    let linked_agents: Vec<String> = installations.into_iter().map(|i| i.agent_id).collect();
+    let linked_agents: Vec<String> = db::get_skill_installations(pool, &skill.id)
+        .await?
+        .into_iter()
+        .map(|installation| installation.agent_id)
+        .collect();
     let read_only_agents = read_only_agent_ids_for_skill(pool, &skill.id, skill.is_central).await?;
     let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
 
@@ -1433,6 +1447,18 @@ mod tests {
         }
     }
 
+    async fn mark_builtin_agent_installed(
+        pool: &SqlitePool,
+        agent_id: &str,
+        temp_root: &Path,
+    ) -> std::path::PathBuf {
+        let skills_root = temp_root.join(format!(".{agent_id}/skills"));
+        set_agent_dir(pool, agent_id, &skills_root).await;
+        fs::create_dir_all(skills_root.parent().unwrap()).unwrap();
+        fs::write(skills_root.parent().unwrap().join("settings.json"), "{}").unwrap();
+        skills_root
+    }
+
     async fn set_agent_dir(pool: &SqlitePool, agent_id: &str, dir: &Path) {
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
             .bind(dir.to_string_lossy().into_owned())
@@ -1539,7 +1565,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_central_skills_includes_linked_agents() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+
+        for (agent_id, root_name) in [("claude-code", ".claude"), ("cursor", ".cursor")] {
+            let skills_root = tmp.path().join(root_name).join("skills");
+            set_agent_dir(&pool, agent_id, &skills_root).await;
+            fs::create_dir_all(skills_root.parent().unwrap()).unwrap();
+            fs::write(skills_root.parent().unwrap().join("settings.json"), "{}").unwrap();
+        }
 
         let central_skill = make_skill("central-a", "Central A", true);
         db::upsert_skill(&pool, &central_skill).await.unwrap();
@@ -1618,7 +1652,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_central_skills_reports_factory_compatibility_as_read_only_agent() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        let factory_root = tmp.path().join(".factory/skills");
+        set_agent_dir(&pool, "factory-droid", &factory_root).await;
+        fs::create_dir_all(factory_root.parent().unwrap()).unwrap();
+        fs::write(factory_root.parent().unwrap().join("settings.json"), "{}").unwrap();
 
         let central_skill = make_skill("shared-skill", "Shared Skill", true);
         db::upsert_skill(&pool, &central_skill).await.unwrap();
@@ -1647,6 +1686,43 @@ mod tests {
         assert_eq!(
             skills_with_links[0].read_only_agents,
             vec!["factory-droid".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_get_central_skills_keeps_stale_links_for_safe_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let augment_root = tmp.path().join(".augment/skills");
+        set_agent_dir(&pool, "augment", &augment_root).await;
+        fs::create_dir_all(&augment_root).unwrap();
+
+        let central_skill = make_skill("shared-skill", "Shared Skill", true);
+        db::upsert_skill(&pool, &central_skill).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: central_skill.id.clone(),
+                agent_id: "augment".to_string(),
+                installed_path: augment_root
+                    .join(&central_skill.id)
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: central_skill.canonical_path.clone(),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let skills_with_links = get_central_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(skills_with_links.len(), 1);
+        assert_eq!(
+            skills_with_links[0].linked_agents,
+            vec!["augment".to_string()],
+            "과거 설치 기록은 UI가 숨기더라도 안전한 제거 흐름을 위해 응답에 남긴다"
         );
     }
 
@@ -1994,6 +2070,7 @@ mod tests {
         let pool = setup_test_db().await;
         set_agent_dir(&pool, "central", &central_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        fs::write(cursor_dir.parent().unwrap().join("settings.json"), "{}").unwrap();
         create_nested_central_skill(&pool, &bundle_dir, "using-superpowers").await;
         create_nested_central_skill(&pool, &bundle_dir, "writing-plans").await;
 
@@ -2048,6 +2125,9 @@ mod tests {
         set_agent_dir(&pool, "central", &central_dir).await;
         set_agent_dir(&pool, "claude-code", &claude_dir).await;
         set_agent_dir(&pool, "cursor", &cursor_dir).await;
+        for skills_root in [&claude_dir, &cursor_dir] {
+            fs::write(skills_root.parent().unwrap().join("settings.json"), "{}").unwrap();
+        }
         create_nested_central_skill(&pool, &bundle_dir, "using-superpowers").await;
         create_nested_central_skill(&pool, &bundle_dir, "writing-plans").await;
 
@@ -2356,26 +2436,7 @@ mod tests {
         let skills = db::get_central_skills(pool).await?;
         let mut result = Vec::with_capacity(skills.len());
         for skill in skills {
-            let installations = db::get_skill_installations(pool, &skill.id).await?;
-            let linked_agents: Vec<String> =
-                installations.into_iter().map(|i| i.agent_id).collect();
-            let read_only_agents =
-                read_only_agent_ids_for_skill(pool, &skill.id, skill.is_central).await?;
-            let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
-            result.push(SkillWithLinks {
-                id: skill.id,
-                name: skill.name,
-                description: skill.description,
-                file_path: skill.file_path,
-                canonical_path: skill.canonical_path,
-                is_central: skill.is_central,
-                source: skill.source,
-                scanned_at: skill.scanned_at,
-                created_at,
-                updated_at,
-                linked_agents,
-                read_only_agents,
-            });
+            result.push(skill_with_links(pool, skill).await?);
         }
         Ok(result)
     }
@@ -2403,7 +2464,9 @@ mod tests {
     /// source indicator.
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_includes_installation_metadata() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "claude-code", tmp.path()).await;
 
         let skill = make_skill("meta-skill", "Meta Skill", false);
         db::upsert_skill(&pool, &skill).await.unwrap();
@@ -2456,7 +2519,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_claude_uses_observations_for_duplicate_rows() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "claude-code", tmp.path()).await;
 
         db::upsert_agent_skill_observation(
             &pool,
@@ -2502,7 +2567,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_claude_includes_source_identity_and_conflict_grouping() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "claude-code", tmp.path()).await;
 
         db::upsert_agent_skill_observation(
             &pool,
@@ -2571,7 +2638,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_includes_generic_read_only_observations() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "factory-droid", tmp.path()).await;
 
         let skill = make_skill("shared-skill", "Shared Skill", true);
         db::upsert_skill(&pool, &skill).await.unwrap();
@@ -2618,6 +2687,8 @@ mod tests {
                 .await
                 .unwrap();
         }
+        fs::create_dir_all(cursor_root.parent().unwrap()).unwrap();
+        fs::write(cursor_root.parent().unwrap().join("settings.json"), "{}").unwrap();
         let installed = make_skill("shared-installed", "Shared Installed", true);
         let vault_only = make_skill("vault-only", "Vault Only", true);
         db::upsert_skill(&pool, &installed).await.unwrap();
@@ -2655,6 +2726,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_skills_by_undetected_compatible_agent_does_not_merge_universal() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let universal_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&universal_root).unwrap();
+        fs::write(tmp.path().join(".agents/.skill-lock.json"), "{}").unwrap();
+
+        for agent_id in ["universal", "dexto"] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(universal_root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let installed = make_skill("shared-installed", "Shared Installed", true);
+        db::upsert_skill(&pool, &installed).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: installed.id.clone(),
+                agent_id: "universal".to_string(),
+                installed_path: universal_root
+                    .join(&installed.id)
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: installed.canonical_path.clone(),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(get_skills_by_agent_impl(&pool, "dexto")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn test_get_skills_by_universal_keeps_install_manageable() {
         let pool = setup_test_db().await;
         let skill = make_skill("managed-shared", "Managed Shared", true);
@@ -2683,7 +2796,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_prefers_manageable_install_over_read_only_observation() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "factory-droid", tmp.path()).await;
 
         let skill = make_skill("shared-skill", "Shared Skill", false);
         db::upsert_skill(&pool, &skill).await.unwrap();
@@ -2943,7 +3058,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_skills_by_agent_impl_copy_link_type() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        mark_builtin_agent_installed(&pool, "cursor", tmp.path()).await;
 
         let skill = make_skill("copy-skill", "Copy Skill", false);
         db::upsert_skill(&pool, &skill).await.unwrap();

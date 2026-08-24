@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use tauri::State;
 
 use crate::db::{self, DbPool, ScanDirectory};
@@ -8,7 +10,20 @@ use crate::AppState;
 
 /// Return all scan directories, built-in first then custom ordered by added_at.
 pub async fn get_scan_directories_impl(pool: &DbPool) -> Result<Vec<ScanDirectory>, String> {
-    db::get_scan_directories(pool).await
+    let enabled_builtin_paths = db::get_all_agents(pool)
+        .await?
+        .into_iter()
+        .filter(|agent| agent.is_enabled)
+        .map(|agent| agent.global_skills_dir)
+        .collect::<HashSet<_>>();
+    let directories = db::get_scan_directories(pool).await?;
+
+    Ok(directories
+        .into_iter()
+        .filter(|directory| {
+            !directory.is_builtin || enabled_builtin_paths.contains(&directory.path)
+        })
+        .collect())
 }
 
 /// Add a new custom (non-builtin) scan directory.

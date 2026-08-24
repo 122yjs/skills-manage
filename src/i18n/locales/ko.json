@@ -97,6 +97,21 @@
       "readOnlyModeDesc": "로컬호스트에서 DB를 읽기만 합니다."
     }
   },
+  "devToolSetup": {
+    "title": "사용할 개발 도구를 선택하세요",
+    "description": "주로 쓰는 도구를 앞쪽에 배치했습니다. 선택한 도구만 스캔하고 메뉴와 설치 대상에 표시하며, 기존 전체 카탈로그도 그대로 선택할 수 있습니다.",
+    "detectedHint": "실행 파일이나 앱이 확인된 도구는 미리 선택했습니다. 설정 폴더만으로는 설치됨으로 판단하지 않습니다.",
+    "listLabel": "개발 도구 목록",
+    "detected": "감지됨",
+    "unselectedTools": "선택하지 않은 도구",
+    "showUnselectedTools": "선택하지 않은 도구 {{count}}개 보기",
+    "hideUnselectedTools": "선택하지 않은 도구 접기",
+    "continue": "선택하고 시작",
+    "save": "선택 저장",
+    "settingsTitle": "개발 도구",
+    "settingsDescription": "기존 전체 카탈로그에서 스캔·설치 대상으로 사용할 도구를 관리합니다.",
+    "changeSelection": "선택 변경"
+  },
   "common": {
     "install": "설치",
     "uninstall": "제거",
@@ -115,7 +130,16 @@
     "loading": "불러오는 중...",
     "search": "검색",
     "refresh": "새로고침",
-    "detail": "상세 정보"
+    "detail": "상세 정보",
+    "translateWithApi": "API로 번역",
+    "translateWithApiConfirm": "설정한 API를 사용할까요? 비용이 발생할 수 있습니다",
+    "translationLoading": "번역 중...",
+    "translationFailed": "번역 실패: {{error}}",
+    "showOriginal": "원문 보기",
+    "showTranslation": "번역문 보기",
+    "translatedOnDevice": "이 Mac에서 번역됨",
+    "translatedWithApi": "API로 번역됨",
+    "englishFallback": "영어 설명으로 표시 중"
   },
   "sidebar": {
     "byTool": "도구별",
@@ -141,7 +165,11 @@
     "categoryObsidian": "Obsidian",
     "obsidianVaultLabel": "Obsidian 보관함 {{name}} — 스킬 {{count}}개 — {{path}}",
     "showAllPlatforms": "모든 플랫폼 표시",
-    "hideEmptyPlatforms": "빈 플랫폼 숨기기"
+    "hideEmptyPlatforms": "빈 플랫폼 숨기기",
+    "showActivePlatforms": "활성 플랫폼만 표시",
+    "enablePlatform": "{{name}} 활성화",
+    "disablePlatform": "{{name}} 비활성화",
+    "platformToggleError": "{{name}}의 활성 상태를 바꾸지 못했습니다."
   },
   "platform": {
     "searchPlaceholder": "스킬 검색...",

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/layout/Sidebar";
 import { usePlatformStore } from "../stores/platformStore";
@@ -71,10 +71,12 @@ const defaultStoreState = {
   },
   isLoading: false,
   isRefreshing: false,
+  updatingAgentIds: {},
   error: null,
   initialize: vi.fn(),
   rescan: vi.fn(),
   refreshCounts: vi.fn(),
+  setAgentEnabled: vi.fn().mockResolvedValue(undefined),
 };
 
 type SidebarPlatformState = Omit<typeof defaultStoreState, "skillsByAgent"> & {
@@ -356,6 +358,38 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /Cursor/ })).toBeInTheDocument();
   });
 
+  it("미설치 플랫폼은 공용 스킬 수가 있어도 기본 메뉴에서 숨긴다", () => {
+    vi.mocked(usePlatformStore).mockReturnValue({
+      ...defaultStoreState,
+      agents: [
+        ...mockAgents,
+        {
+          id: "dexto",
+          display_name: "Dexto",
+          category: "coding",
+          global_skills_dir: "~/.agents/skills/",
+          is_detected: false,
+          is_builtin: true,
+          is_enabled: true,
+        },
+      ],
+      skillsByAgent: {
+        "claude-code": 5,
+        cursor: 3,
+        dexto: 7,
+        central: 10,
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByRole("button", { name: /Dexto/ })).not.toBeInTheDocument();
+  });
+
   it("shows hidden agents after clicking toggle", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
@@ -372,6 +406,60 @@ describe("Sidebar", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
     expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
+  });
+
+  it("모든 플랫폼 표시에서 처음 선택하지 않은 플랫폼을 활성화할 수 있다", async () => {
+    const setAgentEnabled = vi.fn().mockResolvedValue(undefined);
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        setAgentEnabled,
+        agents: [
+          ...mockAgents,
+          {
+            id: "continue",
+            display_name: "Continue",
+            category: "coding",
+            global_skills_dir: "~/.continue/skills/",
+            is_detected: false,
+            is_builtin: true,
+            is_enabled: false,
+          },
+        ],
+      },
+    });
+
+    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
+    const enableSwitch = screen.getByRole("switch", { name: "启用 Continue" });
+    expect(enableSwitch).not.toBeChecked();
+    fireEvent.click(enableSwitch);
+
+    await waitFor(() =>
+      expect(setAgentEnabled).toHaveBeenCalledWith("continue", true)
+    );
+  });
+
+  it("모든 플랫폼 표시에서 활성 플랫폼을 비활성화할 수 있다", async () => {
+    const setAgentEnabled = vi.fn().mockResolvedValue(undefined);
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        setAgentEnabled,
+      },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+    const disableSwitch = screen.getByRole("switch", { name: "停用 Claude Code" });
+    expect(disableSwitch).toBeChecked();
+    fireEvent.click(disableSwitch);
+
+    await waitFor(() =>
+      expect(setAgentEnabled).toHaveBeenCalledWith("claude-code", false)
+    );
   });
 
   // ── Navigation ────────────────────────────────────────────────────────────

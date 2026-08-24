@@ -97,6 +97,21 @@
       "readOnlyModeDesc": "Reads the local database without modifying it."
     }
   },
+  "devToolSetup": {
+    "title": "Choose your development tools",
+    "description": "Common tools are ordered first. Only selected tools are scanned and shown in menus and install targets, while the full existing catalog remains available.",
+    "detectedHint": "Tools with a confirmed executable or app are preselected. A settings folder alone is not treated as an installation.",
+    "listLabel": "Development tools",
+    "detected": "Detected",
+    "unselectedTools": "Unselected tools",
+    "showUnselectedTools": "Show {{count}} unselected tools",
+    "hideUnselectedTools": "Hide unselected tools",
+    "continue": "Select and start",
+    "save": "Save selection",
+    "settingsTitle": "Development tools",
+    "settingsDescription": "Choose scanning and installation targets from the full existing catalog.",
+    "changeSelection": "Change selection"
+  },
   "common": {
     "install": "Install",
     "uninstall": "Uninstall",
@@ -115,7 +130,16 @@
     "loading": "Loading...",
     "search": "Search",
     "refresh": "Refresh",
-    "detail": "Detail"
+    "detail": "Detail",
+    "translateWithApi": "Translate with API",
+    "translateWithApiConfirm": "Use the configured API? Charges may apply",
+    "translationLoading": "Translating...",
+    "translationFailed": "Translation failed: {{error}}",
+    "showOriginal": "Show original",
+    "showTranslation": "Show translation",
+    "translatedOnDevice": "Translated on this Mac",
+    "translatedWithApi": "Translated with API",
+    "englishFallback": "Showing English fallback"
   },
   "sidebar": {
     "byTool": "By Tool",
@@ -141,7 +165,11 @@
     "categoryObsidian": "Obsidian",
     "obsidianVaultLabel": "Obsidian vault {{name}} — {{count}} skills — {{path}}",
     "showAllPlatforms": "Show all platforms",
-    "hideEmptyPlatforms": "Hide empty platforms"
+    "hideEmptyPlatforms": "Hide empty platforms",
+    "showActivePlatforms": "Show active platforms only",
+    "enablePlatform": "Enable {{name}}",
+    "disablePlatform": "Disable {{name}}",
+    "platformToggleError": "Could not change the enabled state for {{name}}."
   },
   "platform": {
     "searchPlaceholder": "Search skills...",

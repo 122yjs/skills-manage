@@ -69,9 +69,13 @@ describe("PlatformInstallDrawer", () => {
 
     expect(screen.getByRole("dialog", { name: /管理 demo-skill 的平台安装/i })).toBeInTheDocument();
     expect(screen.getByText("Claude Code")).toBeInTheDocument();
-    expect(screen.getByText("Cursor")).toBeInTheDocument();
+    expect(screen.queryByText("Cursor")).not.toBeInTheDocument();
     expect(screen.queryByText("Central Skills")).not.toBeInTheDocument();
     expect(screen.getAllByText("已安装").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("tab", { name: "共享" }));
+
+    expect(screen.getByText("Cursor")).toBeInTheDocument();
     expect(screen.getByText("共享只读")).toBeInTheDocument();
   });
 
@@ -91,7 +95,29 @@ describe("PlatformInstallDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "从 Claude Code 卸载 demo-skill" }));
     expect(onToggle).toHaveBeenCalledWith("demo-skill", "claude-code");
 
+    fireEvent.click(screen.getByRole("tab", { name: "共享" }));
     expect(screen.getByRole("button", { name: "Cursor 通过共享目录可用" })).toBeDisabled();
+  });
+
+  it("separates direct installs from shared availability tabs", () => {
+    render(
+      <PlatformInstallDrawer
+        open
+        skill={skill}
+        agents={agents}
+        togglingAgentId={null}
+        onOpenChange={vi.fn()}
+        onToggle={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    expect(screen.queryByText("Cursor")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "共享" }));
+
+    expect(screen.getByText("Cursor")).toBeInTheDocument();
+    expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
   });
 
   it("filters platforms by search text", () => {

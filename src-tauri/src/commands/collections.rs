@@ -857,6 +857,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        fs::write(tmp.path().join("settings.json"), "{}").unwrap();
 
         // Create two central skills on disk.
         for skill_id in &["batch-col-skill-1", "batch-col-skill-2"] {
@@ -931,6 +932,7 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        fs::write(tmp.path().join("settings.json"), "{}").unwrap();
 
         // Create one valid skill, but leave the other missing from disk.
         let good_dir = central_dir.join("good-skill");
@@ -1066,7 +1068,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_install_empty_collection_succeeds() {
+        let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
+        let claude_dir = tmp.path().join(".claude/skills");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(claude_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        fs::create_dir_all(claude_dir.parent().unwrap()).unwrap();
+        fs::write(claude_dir.parent().unwrap().join("settings.json"), "{}").unwrap();
         let col = create_collection_impl(&pool, "Empty Batch", None)
             .await
             .unwrap();

@@ -993,6 +993,14 @@ pub fn builtin_agents() -> Vec<Agent> {
             "pi",
         ),
         agent(
+            "omp",
+            "Oh My Pi",
+            "coding",
+            ".omp/agent/skills",
+            Some(".omp/skills"),
+            "omp",
+        ),
+        agent(
             "rovodev",
             "Rovo Dev",
             "coding",
@@ -1703,6 +1711,21 @@ pub async fn update_agent_detected(
 ) -> Result<(), String> {
     sqlx::query("UPDATE agents SET is_detected = ? WHERE id = ?")
         .bind(is_detected)
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// 플랫폼을 스캔 및 설치 대상으로 사용할지 갱신한다.
+pub async fn update_agent_enabled(
+    pool: &DbPool,
+    agent_id: &str,
+    is_enabled: bool,
+) -> Result<(), String> {
+    sqlx::query("UPDATE agents SET is_enabled = ? WHERE id = ?")
+        .bind(is_enabled)
         .bind(agent_id)
         .execute(pool)
         .await

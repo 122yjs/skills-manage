@@ -135,10 +135,12 @@ function buildPlatformStoreState(overrides = {}) {
     skillsByAgent: {},
     isLoading: false,
     isRefreshing: false,
+    updatingAgentIds: {},
     error: null,
     initialize: vi.fn(),
     rescan: vi.fn(),
     refreshCounts: vi.fn(),
+    setAgentEnabled: vi.fn(),
     ...overrides,
   };
 }

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 use tauri::{Emitter, State};
 
+use crate::commands::agents::is_agent_detected;
 use crate::db::{self, DbPool};
 use crate::path_utils::{path_to_string, resolve_home_dir};
 use crate::AppState;
@@ -1600,6 +1601,12 @@ async fn import_discovered_skill_to_platform_from_pool(
     let agent = db::get_agent_by_id(pool, agent_id)
         .await?
         .ok_or_else(|| format!("Agent '{}' not found", agent_id))?;
+    if agent.id != "universal" && !is_agent_detected(&agent) {
+        return Err(format!(
+            "Agent '{}' is not installed on this machine",
+            agent_id
+        ));
+    }
 
     // Extract the original skill directory name.
     let skill_dir_name = Path::new(&skill.dir_path)
@@ -2931,6 +2938,12 @@ mod tests {
         pool
     }
 
+    fn mark_builtin_agent_installed(global_skills_dir: &Path) {
+        let platform_root = global_skills_dir.parent().unwrap();
+        std::fs::create_dir_all(platform_root).unwrap();
+        std::fs::write(platform_root.join("settings.json"), "{}").unwrap();
+    }
+
     #[tokio::test]
     async fn test_import_discovered_skill_to_platform_creates_symlink() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -3020,6 +3033,8 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        mark_builtin_agent_installed(&claude_install_dir);
+        mark_builtin_agent_installed(&cursor_install_dir);
 
         let obsidian_parent = PathBuf::from(CROSS_AREA_FIXTURE_PARENT_PATH);
         let vault_dir = PathBuf::from(CROSS_AREA_FIXTURE_VAULT_PATH);
@@ -3279,6 +3294,8 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        mark_builtin_agent_installed(&claude_dir);
+        mark_builtin_agent_installed(&cursor_dir);
 
         let vault_dir = tmp.path().join("make-money");
         std::fs::create_dir_all(vault_dir.join(".obsidian")).unwrap();
@@ -4954,6 +4971,55 @@ mod tests {
             .unwrap();
         assert_eq!(skills.0, 0);
         assert_eq!(installs.0, 0);
+    }
+
+    #[tokio::test]
+    async fn test_discovered_import_rejects_undetected_builtin_before_creating_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let augment_dir = tmp.path().join(".augment/skills");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'augment'")
+            .bind(augment_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill_dir = create_skill(
+            &tmp.path().join("project/.claude/skills"),
+            "guarded-skill",
+            "Guarded Skill",
+            "source only",
+        );
+        let now = Utc::now().to_rfc3339();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__guarded-skill",
+            "Guarded Skill",
+            Some("source only"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            &now,
+        )
+        .await
+        .unwrap();
+
+        let result = import_discovered_skill_to_platform_from_pool(
+            &pool,
+            "claude-code__project__guarded-skill",
+            "augment",
+            Some("symlink"),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(!augment_dir.exists());
+        assert!(db::get_skill_installations(&pool, "guarded-skill")
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

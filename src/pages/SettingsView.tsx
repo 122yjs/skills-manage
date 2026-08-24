@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Eye, EyeOff, Check, RefreshCw } from "lucide-react";
+import { Plus, Trash2, Pencil, Loader2, FolderOpen, Cpu, Info, Database, Globe, Palette, Droplets, Bot, ChevronDown, ChevronRight, KeyRound, Eye, EyeOff, Check, RefreshCw, Wrench } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -25,6 +25,7 @@ import { AgentWithStatus, ScanDirectory } from "@/types";
 import { AI_PROVIDERS, PROVIDER_GROUPS, RegionId, ApiProtocol, API_PROTOCOLS } from "@/data/aiProviders";
 import { deriveHomeDir, formatPathForDisplay, joinPathForDisplay } from "@/lib/path";
 import { CentralVaultSettings } from "@/components/settings/CentralVaultSettings";
+import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 
 // ─── App constants ────────────────────────────────────────────────────────────
 
@@ -179,6 +180,7 @@ function CustomPlatformRow({ agent, onEdit, onRemove, isRemoving }: CustomPlatfo
 
 export function SettingsView() {
   const { t } = useTranslation();
+  const openDevToolEditor = useDevToolSetupStore((state) => state.openEditor);
   const activeLanguage = i18n.resolvedLanguage ?? i18n.language.split("-")[0];
 
   // ── Store State ────────────────────────────────────────────────────────────
@@ -734,7 +736,27 @@ export function SettingsView() {
 
         <CentralVaultSettings />
 
-        {/* ── Section 1: Custom Platforms ───────────────────────────────────── */}
+        {/* ── Section 1: Development tools ─────────────────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Wrench className="size-4 text-muted-foreground" />
+                  {t("devToolSetup.settingsTitle")}
+                </CardTitle>
+                <CardDescription className="mt-1">
+                  {t("devToolSetup.settingsDescription")}
+                </CardDescription>
+              </div>
+              <Button variant="outline" size="sm" onClick={openDevToolEditor}>
+                {t("devToolSetup.changeSelection")}
+              </Button>
+            </div>
+          </CardHeader>
+        </Card>
+
+        {/* ── Section 2: Custom Platforms ───────────────────────────────────── */}
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">

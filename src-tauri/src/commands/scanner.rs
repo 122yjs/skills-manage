@@ -5,6 +5,7 @@ use chrono::Utc;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::State;
 
+use crate::commands::agents::is_agent_detected;
 use crate::db::{self, AgentSkillObservation, DbPool, Skill, SkillInstallation};
 use crate::AppState;
 
@@ -588,7 +589,11 @@ fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
 /// Core scanning logic, separated from the Tauri command layer so it can be
 /// unit-tested without a running Tauri runtime.
 pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
-    let agents = db::get_all_agents(pool).await?;
+    let agents = db::get_all_agents(pool)
+        .await?
+        .into_iter()
+        .filter(|agent| agent.is_enabled)
+        .collect::<Vec<_>>();
     let custom_dirs = db::get_scan_directories(pool).await?;
     let universal_root = agents
         .iter()
@@ -609,27 +614,53 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
         let is_central = agent.category == "central";
+        let is_detected = is_agent_detected(agent);
         let scan_roots =
             scan_roots_for_agent(agent, universal_root.as_deref(), central_root.as_deref());
         let tracks_observations = scan_roots.iter().any(|root| root.source_kind.is_some());
+        let has_existing_root = scan_roots.iter().any(|root| root.path.exists());
         let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
-            .filter(|root| root.path.exists())
+            .filter(|root| {
+                root.path.exists()
+                    && (is_detected
+                        || matches!(agent.id.as_str(), "central" | "universal" | "obsidian"))
+            })
             .collect();
 
         if existing_roots.is_empty() {
-            // Mark agent as not detected and record zero count.
-            let _ = db::update_agent_detected(pool, &agent.id, false).await;
+            // 설치된 CLI가 아직 skills 폴더를 만들지 않았을 수 있다.
+            // 이 경우에도 도구 자체는 설치됨으로 유지하고 스킬 수만 0으로 기록한다.
+            let _ = db::update_agent_detected(pool, &agent.id, is_detected).await;
             skills_by_agent.insert(agent.id.clone(), 0);
-            // Remove every installation row for this agent — the directory is gone.
-            let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
+            // 디렉터리가 실제로 사라진 경우에만 설치 기록을 정리한다.
+            // 도구 감지가 실패했지만 경로는 남은 경우, 제거·복구에 필요한 기록을 보존한다.
+            if !has_existing_root {
+                let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
+            } else {
+                let installations = sqlx::query_as::<_, SkillInstallation>(
+                    "SELECT * FROM skill_installations WHERE agent_id = ?",
+                )
+                .bind(&agent.id)
+                .fetch_all(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                let mut found_install_ids = Vec::new();
+                for installation in installations {
+                    if std::fs::symlink_metadata(&installation.installed_path).is_ok() {
+                        all_found_skill_ids.insert(installation.skill_id.clone());
+                        found_install_ids.push(installation.skill_id);
+                    }
+                }
+                db::delete_stale_skill_installations(pool, &agent.id, &found_install_ids).await?;
+            }
             if tracks_observations {
                 let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &[]).await;
             }
             continue;
         }
 
-        let _ = db::update_agent_detected(pool, &agent.id, true).await;
+        let _ = db::update_agent_detected(pool, &agent.id, is_detected).await;
         let mut scanned = Vec::new();
         let mut found_install_ids = Vec::new();
         let mut found_observation_row_ids = Vec::new();
@@ -740,7 +771,10 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // ── Custom scan directories ───────────────────────────────────────────────
     // Skills found in user-added directories are added to the `skills` table
     // but are not attributed to a specific agent installation record.
-    for scan_dir in custom_dirs.iter().filter(|d| d.is_active) {
+    for scan_dir in custom_dirs
+        .iter()
+        .filter(|directory| directory.is_active && !directory.is_builtin)
+    {
         let dir = Path::new(&scan_dir.path);
         if !dir.exists() {
             continue;
@@ -793,6 +827,7 @@ pub async fn scan_all_skills(state: State<'_, AppState>) -> Result<ScanResult, S
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
     use tempfile::TempDir;
 
@@ -857,6 +892,12 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    fn mark_builtin_agent_installed(global_skills_dir: &Path) {
+        let platform_root = global_skills_dir.parent().unwrap();
+        fs::create_dir_all(platform_root).unwrap();
+        fs::write(platform_root.join("settings.json"), "{}").unwrap();
     }
 
     // ── parse_skill_md ────────────────────────────────────────────────────────
@@ -1298,6 +1339,53 @@ mod tests {
         assert_eq!(r.total_skills, 0);
         assert_eq!(r.agents_scanned, 1);
         assert_eq!(r.skills_by_agent.get("empty-agent").copied(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_scan_keeps_detected_agent_when_skills_dir_is_not_created_yet() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let platform_root = tmp.path().join("installed-agent");
+        fs::create_dir_all(&platform_root).unwrap();
+        let agent = db::Agent {
+            id: "installed-without-skills".to_string(),
+            display_name: "Installed Without Skills".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: platform_root.join("skills").to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: false,
+            is_builtin: false,
+            is_enabled: true,
+        };
+        db::insert_custom_agent(&pool, &agent).await.unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(
+            result
+                .skills_by_agent
+                .get("installed-without-skills")
+                .copied(),
+            Some(0)
+        );
+        assert!(
+            db::get_agent_by_id(&pool, "installed-without-skills")
+                .await
+                .unwrap()
+                .unwrap()
+                .is_detected,
+            "스킬 폴더가 아직 없어도 설치된 플랫폼 상태를 지우면 안 된다"
+        );
     }
 
     #[tokio::test]
@@ -1837,6 +1925,7 @@ mod tests {
         let shared_root = tmp.path().join(".agents/skills");
         fs::create_dir_all(&factory_root).unwrap();
         fs::create_dir_all(&shared_root).unwrap();
+        mark_builtin_agent_installed(&factory_root);
 
         create_skill_dir(
             &shared_root.join("superpowers"),
@@ -1924,6 +2013,7 @@ mod tests {
         let shared_root = tmp.path().join(".agents/skills");
         fs::create_dir_all(&cursor_root).unwrap();
         fs::create_dir_all(&shared_root).unwrap();
+        mark_builtin_agent_installed(&cursor_root);
 
         create_skill_dir(
             &shared_root,
@@ -1983,6 +2073,7 @@ mod tests {
         let cursor_root = tmp.path().join(".cursor/skills");
         fs::create_dir_all(&universal_root).unwrap();
         fs::create_dir_all(&cursor_root).unwrap();
+        mark_builtin_agent_installed(&cursor_root);
         create_skill_dir(
             &central_root,
             "vault-only",
@@ -2147,6 +2238,8 @@ mod tests {
 
         let shared_root = tmp.path().join(".agents/skills");
         fs::create_dir_all(&shared_root).unwrap();
+        fs::create_dir_all(tmp.path().join(".antigravity")).unwrap();
+        fs::write(tmp.path().join(".antigravity/settings.json"), "{}").unwrap();
         create_skill_dir(
             &shared_root,
             "native-universal-skill",
@@ -2184,6 +2277,91 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_undetected_agents_do_not_inherit_universal_skills() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('dexto', 'universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let central_root = tmp.path().join(".skillsmanage/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&central_root).unwrap();
+        create_skill_dir(
+            &universal_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Universal install"),
+        );
+        let stale_link = universal_root.join("stale-managed-link");
+        #[cfg(unix)]
+        symlink(central_root.join("stale-managed-link"), &stale_link).unwrap();
+        #[cfg(windows)]
+        fs::create_dir_all(&stale_link).unwrap();
+        fs::write(tmp.path().join(".agents/.skill-lock.json"), "{}").unwrap();
+
+        for (agent_id, root) in [
+            ("central", &central_root),
+            ("universal", &universal_root),
+            ("dexto", &universal_root),
+        ] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "stale-managed-link".to_string(),
+                agent_id: "dexto".to_string(),
+                installed_path: stale_link.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(
+                    central_root
+                        .join("stale-managed-link")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(result.skills_by_agent.get("universal").copied(), Some(1));
+        assert_eq!(result.skills_by_agent.get("dexto").copied(), Some(0));
+        assert!(db::get_agent_skill_observations(&pool, "dexto")
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(
+            !db::get_agent_by_id(&pool, "dexto")
+                .await
+                .unwrap()
+                .unwrap()
+                .is_detected
+        );
+        assert_eq!(
+            db::get_skill_installations(&pool, "stale-managed-link")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "감지가 실패해도 디렉터리가 남아 있으면 안전한 제거에 필요한 기록을 보존한다"
+        );
+    }
+
+    #[tokio::test]
     async fn test_scan_all_skills_impl_factory_droid_primary_root_wins_over_shared_duplicate() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
@@ -2201,6 +2379,7 @@ mod tests {
         let shared_root = tmp.path().join(".agents/skills");
         fs::create_dir_all(&factory_root).unwrap();
         fs::create_dir_all(&shared_root).unwrap();
+        mark_builtin_agent_installed(&factory_root);
 
         create_skill_dir(
             &factory_root,

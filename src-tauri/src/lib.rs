@@ -47,9 +47,12 @@ pub fn run() {
             // Agents
             commands::agents::get_agents,
             commands::agents::detect_agents,
+            commands::agents::set_agent_enabled,
             commands::agents::add_custom_agent,
             commands::agents::update_custom_agent,
             commands::agents::remove_custom_agent,
+            commands::dev_tools::get_dev_tool_setup_state,
+            commands::dev_tools::save_dev_tool_selection,
             // Linker
             commands::linker::install_skill_to_agent,
             commands::linker::uninstall_skill_from_agent,

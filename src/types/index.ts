@@ -25,6 +25,11 @@ export interface UpdateCustomAgentConfig {
   global_skills_dir: string;
 }
 
+export interface DevToolSetupState {
+  completed: boolean;
+  tools: AgentWithStatus[];
+}
+
 // ─── Scan Types ───────────────────────────────────────────────────────────────
 
 export interface ScanResult {

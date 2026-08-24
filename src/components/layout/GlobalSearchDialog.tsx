@@ -174,7 +174,9 @@ export function GlobalSearchDialog({
     }
 
     // Platform Views
-    const platformAgents = agents.filter(isEnabledInstallTargetAgent);
+    const platformAgents = agents.filter(
+      (agent) => isEnabledInstallTargetAgent(agent) && agent.is_detected
+    );
     for (const agent of platformAgents) {
       const displayPath = formatPathForDisplay(agent.global_skills_dir);
       result.push({

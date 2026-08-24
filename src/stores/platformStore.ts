@@ -59,6 +59,7 @@ interface PlatformState {
   skillsByAgent: Record<string, number>;
   isLoading: boolean;
   isRefreshing: boolean;
+  updatingAgentIds: Record<string, boolean>;
   scanGeneration?: number;
   error: string | null;
 
@@ -66,6 +67,7 @@ interface PlatformState {
   initialize: () => Promise<void>;
   rescan: () => Promise<void>;
   refreshCounts: () => Promise<void>;
+  setAgentEnabled: (agentId: string, enabled: boolean) => Promise<void>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -75,6 +77,7 @@ export const usePlatformStore = create<PlatformState>((set) => ({
   skillsByAgent: {},
   isLoading: false,
   isRefreshing: false,
+  updatingAgentIds: {},
   scanGeneration: 0,
   error: null,
 
@@ -166,6 +169,53 @@ export const usePlatformStore = create<PlatformState>((set) => ({
       }));
     } catch (err) {
       set({ error: String(err), isRefreshing: false });
+    }
+  },
+
+  setAgentEnabled: async (agentId, enabled) => {
+    set((state) => ({
+      updatingAgentIds: { ...state.updatingAgentIds, [agentId]: true },
+      error: null,
+    }));
+
+    if (!isTauriRuntime()) {
+      set((state) => {
+        const updatingAgentIds = { ...state.updatingAgentIds };
+        delete updatingAgentIds[agentId];
+        return {
+          agents: state.agents.map((agent) =>
+            agent.id === agentId ? { ...agent, is_enabled: enabled } : agent
+          ),
+          updatingAgentIds,
+        };
+      });
+      return;
+    }
+
+    try {
+      await invoke<AgentWithStatus>("set_agent_enabled", { agentId, enabled });
+      const [agents, scanResult] = await Promise.all([
+        invoke<AgentWithStatus[]>("get_agents"),
+        invoke<ScanResult>("scan_all_skills"),
+      ]);
+      set((state) => {
+        const updatingAgentIds = { ...state.updatingAgentIds };
+        delete updatingAgentIds[agentId];
+        return {
+          agents,
+          skillsByAgent: scanResult.skills_by_agent,
+          updatingAgentIds,
+          scanGeneration: (state.scanGeneration ?? 0) + 1,
+          error: null,
+        };
+      });
+    } catch (error) {
+      set((state) => {
+        const updatingAgentIds = { ...state.updatingAgentIds };
+        delete updatingAgentIds[agentId];
+        return { updatingAgentIds, error: String(error) };
+      });
+      throw error;
     }
   },
 }));

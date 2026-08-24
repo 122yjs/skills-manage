@@ -125,10 +125,12 @@ function setupMocks({
       skillsByAgent: {},
       isLoading: false,
       isRefreshing: false,
+      updatingAgentIds: {},
       error: null,
       initialize: vi.fn(),
       rescan,
       refreshCounts,
+      setAgentEnabled: vi.fn(),
     })
   );
 

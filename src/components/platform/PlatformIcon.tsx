@@ -101,6 +101,7 @@ const MONOGRAM_ICONS: Record<string, string> = {
   "iflow-cli": "IF",
   "kode": "KD",
   "pi": "PI",
+  "omp": "OMP",
   "rovodev": "RV",
   "tabnine-cli": "TN",
   "neovate": "NV",

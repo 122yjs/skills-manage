@@ -53,6 +53,8 @@ export function getDistinctInstallTargetAgents(
     .filter(
       (agent) =>
         isInstallTargetAgent(agent) &&
+        agent.is_enabled &&
+        (agent.id === UNIVERSAL_AGENT_ID || agent.is_detected) &&
         (agent.id === UNIVERSAL_AGENT_ID ||
           normalizeSkillsPath(agent.global_skills_dir) !== universalPath)
     )
