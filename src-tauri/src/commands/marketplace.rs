@@ -1468,7 +1468,7 @@ pub async fn test_ai_connection(
         Some(k) => k,
         None => get_provider_setting(&state.db, "ai_api_key")
             .await
-            .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?,
+            .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?,
     };
 
     let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
@@ -2114,7 +2114,7 @@ async fn do_explain_skill_stream(
 ) -> Result<(), String> {
     let api_key = get_provider_setting(pool, "ai_api_key")
         .await
-        .ok_or_else(|| "请先在设置中配置 AI API Key".to_string())?;
+        .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
 
     let api_url = get_provider_setting(pool, "ai_api_url")
         .await
