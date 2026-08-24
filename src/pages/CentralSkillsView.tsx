@@ -805,6 +805,10 @@ export function CentralSkillsView() {
                       key={skill.id}
                       name={skill.name}
                       description={skill.description}
+                      translation={{
+                        resourceId: `local:${skill.file_path}`,
+                        filePath: skill.file_path,
+                      }}
                       onDetail={() => handleOpenDrawer(skill.id)}
                       onInstallTo={() => handleInstallClick(skill)}
                       onDeleteFromCentral={() => handleDeleteClick(skill)}

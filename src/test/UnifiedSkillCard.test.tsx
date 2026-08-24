@@ -156,7 +156,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     expect(onToggle).toHaveBeenCalledWith("demo-skill", "cursor");
   });
 
-  it("keeps read-only direct toggles disabled while showing installed state", () => {
+  it("keeps read-only direct toggles disabled without marking a direct install", () => {
     renderCard(["cursor"], ["claude-code"]);
 
     const button = screen.getByRole("button", {
@@ -164,7 +164,9 @@ describe("UnifiedSkillCard platform toggles", () => {
     });
 
     expect(button).toBeDisabled();
-    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button).toHaveClass("text-muted-foreground/40");
+    expect(button.querySelector("svg")).toHaveClass("opacity-40", "grayscale");
   });
 
   it("opens the platform manager for hidden coding platforms", () => {
@@ -174,5 +176,21 @@ describe("UnifiedSkillCard platform toggles", () => {
 
     expect(onManagePlatforms).toHaveBeenCalledTimes(1);
     expect(screen.getByText("+3")).toBeInTheDocument();
+  });
+});
+
+describe("UnifiedSkillCard localized description", () => {
+  it("translation 메타가 있는 클릭형 카드에 중첩 버튼을 만들지 않는다", () => {
+    const { container } = render(
+      <UnifiedSkillCard
+        name="demo-skill"
+        description="Demo skill"
+        onClick={vi.fn()}
+        translation={{ resourceId: "skill:demo", sourceLocale: "en" }}
+      />
+    );
+
+    expect(container.querySelector("button button")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "查看技能 demo-skill" })).toBeInTheDocument();
   });
 });

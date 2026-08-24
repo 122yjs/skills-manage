@@ -17,6 +17,8 @@ interface SkillDetailState {
   installingAgentId: string | null;
   error: string | null;
   explanation: string | null;
+  /** 현재 언어 캐시가 없을 때 무료 번역에 사용할 영어 해설 원문. */
+  fallbackExplanation: string | null;
   isExplanationLoading: boolean;
   isExplanationStreaming: boolean;
   explanationError: string | null;
@@ -100,6 +102,7 @@ function startExplanationRequest(set: (fn: Partial<SkillDetailState>) => void) {
   cleanupExplanationListeners();
   set({
     explanation: null,
+    fallbackExplanation: null,
     isExplanationLoading: true,
     isExplanationStreaming: false,
     explanationError: null,
@@ -119,6 +122,7 @@ function failExplanationRequest(
   cleanupExplanationListeners();
   set({
     explanation: null,
+    fallbackExplanation: null,
     explanationError: String(error),
     explanationErrorInfo: null,
     isExplanationLoading: false,
@@ -183,6 +187,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   installingAgentId: null,
   error: null,
   explanation: null,
+  fallbackExplanation: null,
   isExplanationLoading: false,
   isExplanationStreaming: false,
   explanationError: null,
@@ -226,6 +231,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     if (!isTauriRuntime()) {
       set({
         explanation: null,
+        fallbackExplanation: null,
         isExplanationLoading: false,
         isExplanationStreaming: false,
         explanationError: null,
@@ -236,8 +242,17 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     try {
       const explanation = await invoke<string | null>("get_skill_explanation", { skillId, lang });
       if (requestId !== activeExplanationRequestId) return;
+      const baseLanguage = lang.trim().replace(/_/g, "-").toLowerCase().split("-")[0];
+      let fallbackExplanation: string | null = null;
+      if (!explanation && baseLanguage !== "en") {
+        fallbackExplanation = await invoke<string | null>("get_english_skill_explanation_fallback", {
+          skillId,
+        });
+      }
+      if (requestId !== activeExplanationRequestId) return;
       set({
         explanation,
+        fallbackExplanation,
         isExplanationLoading: false,
         isExplanationStreaming: false,
         explanationError: null,
@@ -253,6 +268,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     if (!isTauriRuntime()) {
       set({
         explanation: null,
+        fallbackExplanation: null,
         isExplanationLoading: false,
         isExplanationStreaming: false,
         explanationError: "AI explanation requires the Tauri desktop runtime.",
@@ -273,6 +289,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     if (!isTauriRuntime()) {
       set({
         explanation: null,
+        fallbackExplanation: null,
         isExplanationLoading: false,
         isExplanationStreaming: false,
         explanationError: "AI explanation requires the Tauri desktop runtime.",
@@ -384,6 +401,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       installingAgentId: null,
       error: null,
       explanation: null,
+      fallbackExplanation: null,
       isExplanationLoading: false,
       isExplanationStreaming: false,
       explanationError: null,

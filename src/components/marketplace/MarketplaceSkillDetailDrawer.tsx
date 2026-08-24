@@ -24,6 +24,7 @@ import i18n from "@/i18n";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { buildSkillDirectoryTree } from "@/lib/fileTree";
 import type { SelectedSkillFile, SkillsShFileEntry } from "@/types";
+import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 
 export interface MarketplaceSkillDetail {
   id: string;
@@ -270,9 +271,16 @@ export function MarketplaceSkillDetailDrawer({
                 ) : null}
               </div>
               {skill.description ? (
-                <p className="text-xs text-muted-foreground truncate mt-0.5">
-                  {skill.description}
-                </p>
+                <LocalizedSkillDescription
+                  resourceId={`marketplace:${skill.downloadUrl}`}
+                  description={skill.description}
+                  sourceLocale="en"
+                  immediate
+                  className="mt-0.5"
+                  renderText={(text) => (
+                    <p className="text-xs text-muted-foreground truncate">{text}</p>
+                  )}
+                />
               ) : null}
             </div>
             <div className="flex border border-border rounded-lg p-0.5 gap-0.5 bg-muted/40">

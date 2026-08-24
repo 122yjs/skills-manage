@@ -134,6 +134,52 @@ export interface SkillWithLinks {
   read_only_agents?: string[];
 }
 
+// ─── Skill Description Translation Types ────────────────────────────────────
+
+/** 저장소의 SKILL.md 또는 README가 직접 제공한 언어별 설명. */
+export type LocalizedSkillDescriptions = Record<string, string>;
+
+export type SkillDescriptionResolutionSource =
+  | "requested-locale"
+  | "english-fallback"
+  | "original-fallback";
+
+export interface ResolvedSkillDescription {
+  text: string;
+  /** 저장소 제공 설명에서 고른 실제 언어. 원문 fallback은 알 수 없을 수 있다. */
+  locale?: string;
+  source: SkillDescriptionResolutionSource;
+}
+
+export type SkillDescriptionTranslationEngine = "apple" | "api";
+
+export interface SkillDescriptionTranslation {
+  resource_id: string;
+  source_hash: string;
+  source_text: string;
+  source_locale?: string | null;
+  target_locale: string;
+  engine: SkillDescriptionTranslationEngine | string;
+  translated_text: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 카드와 상세 화면이 저장소 설명 및 번역 캐시를 찾을 때 쓰는 안정적인 식별 정보. */
+export interface SkillDescriptionTranslationMeta {
+  resourceId: string;
+  filePath?: string;
+  sourceLocale?: string;
+  localizedDescriptions?: LocalizedSkillDescriptions;
+}
+
+export interface SkillDescriptionTranslationResult {
+  translatedText: string;
+  engine: SkillDescriptionTranslationEngine | string;
+  targetLocale: string;
+  cached: boolean;
+}
+
 export interface BatchInstallResult {
   succeeded: string[];
   failed: Array<{ agent_id: string; error: string }>;

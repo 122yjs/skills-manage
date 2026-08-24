@@ -45,4 +45,13 @@ describe("parseFrontmatter", () => {
     );
     expect(parsed.frontmatterData.version).toBe("1.1.9");
   });
+
+  it("keeps Korean localized descriptions in malformed frontmatter fallback", () => {
+    const parsed = parseFrontmatter(
+      "---\nname: broken-localized\ndescription_ko: 한국어 설명\nmetadata: [oops\n---\n\n# Broken\n"
+    );
+
+    expect(parsed.frontmatterData.description_ko).toBe("한국어 설명");
+    expect(parsed.frontmatterData.description).toBe("한국어 설명");
+  });
 });

@@ -393,6 +393,10 @@ export function CollectionView() {
                 key={skill.id}
                 name={skill.name}
                 description={skill.description}
+                translation={{
+                  resourceId: `local:${skill.file_path}`,
+                  filePath: skill.file_path,
+                }}
                 onDetail={() =>
                   navigate(`/skill/${skill.id}`, {
                     state: {

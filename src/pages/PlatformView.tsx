@@ -550,6 +550,10 @@ export function PlatformView() {
                       key={getSkillRowKey(skill)}
                       name={skill.name}
                       description={skill.description}
+                      translation={{
+                        resourceId: `local:${skill.file_path}`,
+                        filePath: skill.file_path,
+                      }}
                       sourceType={skill.link_type as "symlink" | "copy" | "native"}
                       originKind={skill.source_kind ?? null}
                       isReadOnly={skill.is_read_only ?? false}

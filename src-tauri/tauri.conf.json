@@ -33,7 +33,7 @@
     "shortDescription": "AI Agent Skills Manager",
     "longDescription": "Manage, discover, and install AI agent skills across local platforms from a Tauri desktop app.",
     "macOS": {
-      "minimumSystemVersion": "10.13"
+      "minimumSystemVersion": "11.0"
     },
     "windows": {
       "allowDowngrades": false,

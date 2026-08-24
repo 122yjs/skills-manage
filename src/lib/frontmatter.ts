@@ -21,6 +21,7 @@ const FALLBACK_SUMMARY_KEYS = new Set([
   "description",
   "description_zh",
   "description_en",
+  "description_ko",
   "version",
 ]);
 
@@ -115,9 +116,10 @@ function extractFallbackFrontmatterData(frontmatterRaw: string): Record<string, 
 
   if (typeof extracted.description !== "string" || !extracted.description.trim()) {
     const localizedDescription =
-      (typeof extracted.description_zh === "string" && extracted.description_zh.trim())
-      || (typeof extracted.description_en === "string" && extracted.description_en.trim())
-      || null;
+      (typeof extracted.description_en === "string" && extracted.description_en.trim()) ||
+      (typeof extracted.description_ko === "string" && extracted.description_ko.trim()) ||
+      (typeof extracted.description_zh === "string" && extracted.description_zh.trim()) ||
+      null;
 
     if (localizedDescription) {
       extracted.description = localizedDescription;

@@ -70,6 +70,7 @@ pub fn run() {
             commands::skills::get_skill_detail,
             commands::skills::read_skill_content,
             commands::skills::read_file_by_path,
+            commands::repository_descriptions::get_repository_skill_descriptions,
             commands::skills::list_skill_directory,
             commands::skills::open_in_file_manager,
             // Collections
@@ -125,10 +126,14 @@ pub fn run() {
             commands::marketplace::read_skills_sh_file,
             commands::marketplace::install_from_skills_sh,
             commands::marketplace::get_skill_explanation,
+            commands::marketplace::get_english_skill_explanation_fallback,
             commands::marketplace::explain_skill_stream,
             commands::marketplace::refresh_skill_explanation,
             commands::marketplace::test_ai_connection,
             commands::marketplace::list_ai_models,
+            commands::skill_translation::get_cached_skill_description_translation,
+            commands::skill_translation::translate_skill_description_on_device,
+            commands::skill_translation::translate_skill_description_with_api,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

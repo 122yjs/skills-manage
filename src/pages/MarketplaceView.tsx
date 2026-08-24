@@ -510,6 +510,10 @@ export function MarketplaceView() {
                       key={skill.name}
                       name={skill.name}
                       description={skill.description}
+                      translation={{
+                        resourceId: `marketplace:${downloadUrl}`,
+                        sourceLocale: "en",
+                      }}
                       publisher={skill.publisher}
                       tags={skill.tags.slice(0, 2).map((tag) => ({
                         key: tag,

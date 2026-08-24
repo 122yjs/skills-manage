@@ -33,11 +33,11 @@ import {
   SkillInstallation,
 } from "@/types";
 import { cn } from "@/lib/utils";
-import { getAgentDisplayName } from "@/lib/agents";
+import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
+import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import { isInstallTargetAgent } from "@/lib/agents";
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 
@@ -131,15 +131,15 @@ function PlatformToggleIcon({
     <button
       className={cn(
         "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer",
-        isInstalled
+        isInstalled && !isReadOnly
           ? "text-primary hover:bg-primary/10"
           : "text-muted-foreground/40 hover:bg-muted/60 hover:text-muted-foreground",
         isReadOnly && "cursor-default hover:bg-transparent",
         isLoading && "animate-pulse pointer-events-none"
       )}
-      title={`${displayName}${isInstalled ? ` — ${t("central.linked")}` : ""}`}
+      title={`${displayName}${isInstalled && !isReadOnly ? ` — ${t("central.linked")}` : ""}`}
       aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
-      aria-pressed={isInstalled}
+      aria-pressed={isInstalled && !isReadOnly}
       disabled={isLoading || isReadOnly}
       onClick={onToggle}
     >
@@ -147,7 +147,7 @@ function PlatformToggleIcon({
         agentId={agent.id}
         className={cn(
           "size-4 shrink-0 transition-all",
-          isInstalled ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
+          isInstalled && !isReadOnly ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
         )}
         size={16}
       />
@@ -355,6 +355,7 @@ export function SkillDetailView({
   const uninstallSkill = useSkillDetailStore((s) => s.uninstallSkill);
   const refreshInstallations = useSkillDetailStore((s) => s.refreshInstallations);
   const storeExplanation = useSkillDetailStore((s) => s.explanation);
+  const fallbackExplanation = useSkillDetailStore((s) => s.fallbackExplanation);
   const storeIsExplanationLoading = useSkillDetailStore((s) => s.isExplanationLoading);
   const isExplanationStreaming = useSkillDetailStore((s) => s.isExplanationStreaming);
   const explanationError = useSkillDetailStore((s) => s.explanationError);
@@ -390,6 +391,7 @@ export function SkillDetailView({
   const skillContent = isFileMode ? fileContent : storeContent;
   const isLoading = isFileMode ? fileIsLoading : storeIsLoading;
   const explanation = storeExplanation;
+  const displayedExplanation = explanation ?? fallbackExplanation;
   const isExplanationLoading = storeIsExplanationLoading;
 
   // Local UI state
@@ -542,7 +544,7 @@ export function SkillDetailView({
 
   // ── Derived values ───────────────────────────────────────────────────────
 
-  const targetAgents = agents.filter(isInstallTargetAgent);
+  const targetAgents = getDistinctInstallTargetAgents(agents);
   const lobsterAgents = targetAgents.filter((a) => a.category === "lobster");
   const codingAgents = targetAgents.filter((a) => a.category !== "lobster");
 
@@ -662,10 +664,17 @@ export function SkillDetailView({
           <h1 id={titleId} className="text-lg font-semibold truncate">
             {isLoading ? (skillId ?? discoverMetadata?.name ?? "") : effectiveName}
           </h1>
-          {effectiveDescription && (
-            <p className="text-xs text-muted-foreground truncate mt-0.5">
-              {effectiveDescription}
-            </p>
+          {(effectiveDescription || skillFilePath) && (
+            <LocalizedSkillDescription
+              resourceId={`description:${skillFilePath ?? explanationRequestKey ?? effectiveName}`}
+              filePath={skillFilePath ?? undefined}
+              description={effectiveDescription}
+              immediate
+              className="mt-0.5"
+              renderText={(text) => (
+                <p className="text-xs text-muted-foreground truncate">{text}</p>
+              )}
+            />
           )}
         </div>
         <TabToggle activeTab={activeTab} onChange={setActiveTab} previewLabel={previewLabel} />
@@ -831,23 +840,37 @@ export function SkillDetailView({
                     </div>
                   )}
 
-                  {isExplanationLoading && !explanation ? (
+                  {isExplanationLoading && !displayedExplanation ? (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
                       <Loader2 className="size-4 animate-spin" />
                       {t("detail.explanationLoading")}
                     </div>
-                  ) : explanation ? (
-                    <div className={cn("markdown-body rounded-lg border border-border bg-card p-4", detailTypographyClassName)}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                        {explanation}
-                      </ReactMarkdown>
-                      {isExplanationStreaming && (
-                        <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                          <Loader2 className="size-3.5 animate-spin" />
-                          {t("detail.explanationStreaming")}
-                        </div>
-                      )}
-                    </div>
+                  ) : displayedExplanation ? (
+                    explanation ? (
+                      <div className={cn("markdown-body rounded-lg border border-border bg-card p-4", detailTypographyClassName)}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {explanation}
+                        </ReactMarkdown>
+                        {isExplanationStreaming && (
+                          <div className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
+                            <Loader2 className="size-3.5 animate-spin" />
+                            {t("detail.explanationStreaming")}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <LocalizedSkillDescription
+                        resourceId={`explanation:${explanationRequestKey ?? effectiveName}`}
+                        description={displayedExplanation}
+                        sourceLocale="en"
+                        immediate
+                        renderText={(text) => (
+                          <div className={cn("markdown-body rounded-lg border border-border bg-card p-4", detailTypographyClassName)}>
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+                          </div>
+                        )}
+                      />
+                    )
                   ) : (
                     <div className="rounded-lg border border-dashed border-border p-8 text-center space-y-3">
                       <Bot className="size-8 mx-auto text-muted-foreground/60" />

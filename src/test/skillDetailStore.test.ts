@@ -118,6 +118,7 @@ describe("skillDetailStore", () => {
       installingAgentId: null,
       error: null,
       explanation: null,
+      fallbackExplanation: null,
       isExplanationLoading: false,
       isExplanationStreaming: false,
       explanationError: null,
@@ -311,6 +312,7 @@ describe("skillDetailStore", () => {
       installingAgentId: null,
       error: null,
       explanation: null,
+      fallbackExplanation: null,
       isExplanationLoading: false,
       isExplanationStreaming: false,
       explanationError: null,
@@ -652,6 +654,28 @@ describe("skillDetailStore", () => {
     });
     expect(useSkillDetailStore.getState().explanation).toBe(
       "Plugin-specific explanation"
+    );
+  });
+
+  it("loads an English explanation only as a free translation fallback", async () => {
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce("English cached explanation");
+
+    await useSkillDetailStore
+      .getState()
+      .loadCachedExplanation("frontend-design", "ko-KR");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_skill_explanation", {
+      skillId: "frontend-design",
+      lang: "ko-KR",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_english_skill_explanation_fallback", {
+      skillId: "frontend-design",
+    });
+    expect(useSkillDetailStore.getState().explanation).toBeNull();
+    expect(useSkillDetailStore.getState().fallbackExplanation).toBe(
+      "English cached explanation"
     );
   });
 

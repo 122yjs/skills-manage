@@ -18,9 +18,10 @@ import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
-import type { AgentWithStatus, ClaudeSourceKind } from "@/types";
+import type { AgentWithStatus, ClaudeSourceKind, SkillDescriptionTranslationMeta } from "@/types";
 import { cn } from "@/lib/utils";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
+import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 
 const FEATURED_CODING_AGENT_IDS = [
   "cursor",
@@ -55,7 +56,7 @@ function PlatformToggleIcon({
       type="button"
       className={cn(
         "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer",
-        isLinked
+        isLinked && !isReadOnly
           ? "text-primary hover:bg-primary/10"
           : "text-muted-foreground/40 hover:bg-muted/60 hover:text-muted-foreground",
         isReadOnly && "cursor-default hover:bg-transparent",
@@ -63,7 +64,7 @@ function PlatformToggleIcon({
       )}
       title={displayName}
       aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
-      aria-pressed={isLinked}
+      aria-pressed={isLinked && !isReadOnly}
       disabled={isToggling || isReadOnly}
       onClick={onToggle}
     >
@@ -71,7 +72,7 @@ function PlatformToggleIcon({
         agentId={agent.id}
         className={cn(
           "size-4 shrink-0 transition-all",
-          isLinked ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
+          isLinked && !isReadOnly ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
         )}
         size={16}
       />
@@ -86,6 +87,8 @@ export interface UnifiedSkillCardProps {
   name: string;
   description?: string;
   className?: string;
+  /** 설명 다국어 선택 및 번역에 필요한 스킬별 식별 정보. */
+  translation?: SkillDescriptionTranslationMeta;
 
   /** Click the card itself (platform variant navigates to detail). */
   onClick?: () => void;
@@ -144,6 +147,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     name,
     description,
     className,
+    translation,
     onClick,
     checkbox,
     isCentral,
@@ -205,6 +209,31 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
   // ── Platform variant: clickable card style ──
   if (onClick && !hasActions && !hasCheckbox && !hasPlatformIcons) {
+    if (translation) {
+      return (
+        <div
+          className={cn(
+            "w-full h-full rounded-xl bg-card ring-1 ring-border shadow-sm p-3 flex flex-col gap-2 transition-all hover:ring-primary/25 hover:bg-accent/30",
+            className
+          )}
+        >
+          <button
+            type="button"
+            onClick={onClick}
+            className="flex flex-1 items-start justify-between gap-3 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md"
+            aria-label={t("platform.searchSkillLabel", { name })}
+          >
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="font-medium text-sm text-foreground truncate">{name}</div>
+              {sourceType && <SourceIndicator sourceType={sourceType} />}
+            </div>
+            <ChevronRight className="size-4 text-muted-foreground shrink-0 mt-0.5" />
+          </button>
+          <LocalizedSkillDescription {...translation} description={description} />
+        </div>
+      );
+    }
+
     return (
       <button
         role="button"
@@ -385,9 +414,11 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           </div>
 
           {/* Row 2: Description — full width, not compressed by actions */}
-          {description && (
+          {translation ? (
+            <LocalizedSkillDescription {...translation} description={description} />
+          ) : description ? (
             <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
-          )}
+          ) : null}
 
           {/* Row 3: Info badges */}
           <div className="flex flex-wrap items-center gap-1.5 empty:hidden">

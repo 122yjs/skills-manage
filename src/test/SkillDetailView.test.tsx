@@ -231,6 +231,7 @@ function buildDetailStoreState(overrides = {}) {
     installingAgentId: null,
     error: null,
     explanation: null,
+    fallbackExplanation: null,
     isExplanationLoading: false,
     isExplanationStreaming: false,
     explanationError: null,
@@ -559,7 +560,7 @@ describe("SkillDetailView", () => {
     expect(cursorToggle.querySelector("img")).toHaveClass("opacity-40", "grayscale");
   });
 
-  it("marks read-only universal platform icons as available but disabled", () => {
+  it("marks read-only universal platform icons as shared but not directly installed", () => {
     applyStoreMocks({
       detail: {
         ...mockDetail,
@@ -572,8 +573,10 @@ describe("SkillDetailView", () => {
       name: /切换 frontend-design 在 Cursor 的链接状态/i,
     });
 
-    expect(cursorToggle).toHaveAttribute("aria-pressed", "true");
+    expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
     expect(cursorToggle).toBeDisabled();
+    expect(cursorToggle).toHaveClass("text-muted-foreground/40");
+    expect(cursorToggle.querySelector("img")).toHaveClass("opacity-40", "grayscale");
     fireEvent.click(cursorToggle);
     expect(mockInstallSkill).not.toHaveBeenCalled();
   });

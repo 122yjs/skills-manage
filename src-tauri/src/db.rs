@@ -12,6 +12,12 @@ use uuid::Uuid;
 
 use crate::path_utils::{default_central_skills_dir, path_to_string, resolve_home_dir};
 
+#[path = "description_translation.rs"]
+mod description_translation;
+pub use description_translation::{
+    description_source_hash, normalize_description_locale, SkillDescriptionTranslation,
+};
+
 pub type DbPool = SqlitePool;
 
 pub const CENTRAL_SKILLS_PATH_SETTING: &str = "central_skills_path";
@@ -370,6 +376,26 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             created_at  TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (skill_id, lang)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 번역 캐시는 리소스 ID와 원문 해시를 함께 기준으로 잡는다. 같은 스킬이라도
+    // 원문이 바뀌면 해시가 달라져 예전 번역이 자동으로 조회되지 않는다.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS skill_description_translations (
+            resource_id    TEXT NOT NULL,
+            source_hash    TEXT NOT NULL,
+            source_text    TEXT NOT NULL,
+            source_locale  TEXT,
+            target_locale  TEXT NOT NULL,
+            engine         TEXT NOT NULL,
+            translated_text TEXT NOT NULL,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (resource_id, source_hash, target_locale, engine)
         )",
     )
     .execute(pool)
@@ -1487,6 +1513,96 @@ pub async fn delete_central_skill_records(
         .map_err(|e| e.to_string())
 }
 
+// ─── Skill Description Translations ─────────────────────────────────────────
+
+/// 원문, 대상 언어, 번역 엔진이 모두 같은 경우에만 캐시를 반환한다.
+/// 원문이 바뀌면 해시가 달라져 이전 번역은 자동으로 조회되지 않는다.
+pub async fn get_skill_description_translation(
+    pool: &DbPool,
+    resource_id: &str,
+    source_text: &str,
+    target_locale: &str,
+    engine: &str,
+) -> Result<Option<SkillDescriptionTranslation>, String> {
+    let source_hash = description_source_hash(source_text);
+    let target_locale = normalize_description_locale(target_locale);
+
+    sqlx::query_as::<_, SkillDescriptionTranslation>(
+        "SELECT resource_id, source_hash, source_text, source_locale, target_locale, engine,
+                translated_text, created_at, updated_at
+         FROM skill_description_translations
+         WHERE resource_id = ? AND source_hash = ? AND source_text = ?
+           AND target_locale = ? AND engine = ?",
+    )
+    .bind(resource_id)
+    .bind(source_hash)
+    .bind(source_text)
+    .bind(target_locale)
+    .bind(engine)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 스킬 설명 번역을 저장한다. 같은 캐시 키를 다시 저장하면 번역문만 갱신하고
+/// 최초 생성 시각은 보존한다.
+#[allow(clippy::too_many_arguments)]
+pub async fn upsert_skill_description_translation(
+    pool: &DbPool,
+    resource_id: &str,
+    source_text: &str,
+    source_locale: Option<&str>,
+    target_locale: &str,
+    engine: &str,
+    translated_text: &str,
+) -> Result<SkillDescriptionTranslation, String> {
+    let source_hash = description_source_hash(source_text);
+    let source_locale = source_locale.map(normalize_description_locale);
+    let target_locale = normalize_description_locale(target_locale);
+    let now = Utc::now().to_rfc3339();
+
+    sqlx::query(
+        "INSERT INTO skill_description_translations
+         (resource_id, source_hash, source_text, source_locale, target_locale, engine,
+          translated_text, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(resource_id, source_hash, target_locale, engine) DO UPDATE SET
+           source_text = excluded.source_text,
+           source_locale = excluded.source_locale,
+           translated_text = excluded.translated_text,
+           updated_at = excluded.updated_at",
+    )
+    .bind(resource_id)
+    .bind(&source_hash)
+    .bind(source_text)
+    .bind(&source_locale)
+    .bind(&target_locale)
+    .bind(engine)
+    .bind(translated_text)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    get_skill_description_translation(pool, resource_id, source_text, &target_locale, engine)
+        .await?
+        .ok_or_else(|| "저장한 스킬 설명 번역을 다시 읽지 못했습니다.".to_string())
+}
+
+/// 리소스가 삭제되거나 다시 가져와질 때 연결된 번역 캐시를 정리한다.
+pub async fn delete_skill_description_translations(
+    pool: &DbPool,
+    resource_id: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM skill_description_translations WHERE resource_id = ?")
+        .bind(resource_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 // ─── Skill Installations ──────────────────────────────────────────────────────
 
 /// Insert or update a skill installation record.
@@ -2221,6 +2337,7 @@ mod tests {
             "collection_skills",
             "scan_directories",
             "settings",
+            "skill_description_translations",
         ];
         for table in &tables {
             let result = sqlx::query(&format!("SELECT COUNT(*) as cnt FROM {}", table))
@@ -2236,6 +2353,133 @@ mod tests {
         // Calling init_database again should not fail
         let result = init_database(&pool).await;
         assert!(result.is_ok(), "Second init should be idempotent");
+    }
+
+    #[tokio::test]
+    async fn test_description_translation_cache_requires_same_source() {
+        let pool = setup_test_db().await;
+
+        let saved = upsert_skill_description_translation(
+            &pool,
+            "marketplace::translate-me",
+            "Original description",
+            Some("en-US"),
+            "ko-KR",
+            "apple",
+            "원래 설명",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(saved.resource_id, "marketplace::translate-me");
+        assert_eq!(saved.source_locale.as_deref(), Some("en-us"));
+        assert_eq!(saved.target_locale, "ko-kr");
+        assert_eq!(saved.translated_text, "원래 설명");
+
+        let cached = get_skill_description_translation(
+            &pool,
+            "marketplace::translate-me",
+            "Original description",
+            "ko_KR",
+            "apple",
+        )
+        .await
+        .unwrap();
+        assert_eq!(cached.unwrap().translated_text, "원래 설명");
+
+        let stale = get_skill_description_translation(
+            &pool,
+            "marketplace::translate-me",
+            "Updated description",
+            "ko-KR",
+            "apple",
+        )
+        .await
+        .unwrap();
+        assert!(
+            stale.is_none(),
+            "원문이 바뀌면 기존 번역을 반환하면 안 된다"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_description_translation_cache_separates_engine_and_resource() {
+        let pool = setup_test_db().await;
+
+        upsert_skill_description_translation(
+            &pool,
+            "skill-a",
+            "Same source",
+            Some("en"),
+            "ko",
+            "api",
+            "API 번역",
+        )
+        .await
+        .unwrap();
+        upsert_skill_description_translation(
+            &pool,
+            "skill-a",
+            "Same source",
+            Some("en"),
+            "ko",
+            "apple",
+            "Apple 번역",
+        )
+        .await
+        .unwrap();
+        upsert_skill_description_translation(
+            &pool,
+            "skill-b",
+            "Same source",
+            Some("en"),
+            "ko",
+            "api",
+            "다른 스킬의 API 번역",
+        )
+        .await
+        .unwrap();
+
+        let apple =
+            get_skill_description_translation(&pool, "skill-a", "Same source", "ko", "apple")
+                .await
+                .unwrap()
+                .unwrap();
+        let other_resource =
+            get_skill_description_translation(&pool, "skill-b", "Same source", "ko", "api")
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(apple.translated_text, "Apple 번역");
+        assert_eq!(other_resource.translated_text, "다른 스킬의 API 번역");
+    }
+
+    #[tokio::test]
+    async fn test_delete_description_translation_cache_for_resource() {
+        let pool = setup_test_db().await;
+        upsert_skill_description_translation(
+            &pool,
+            "delete-me",
+            "Original",
+            None,
+            "ko",
+            "api",
+            "원문",
+        )
+        .await
+        .unwrap();
+
+        delete_skill_description_translations(&pool, "delete-me")
+            .await
+            .unwrap();
+
+        assert!(
+            get_skill_description_translation(&pool, "delete-me", "Original", "ko", "api",)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
