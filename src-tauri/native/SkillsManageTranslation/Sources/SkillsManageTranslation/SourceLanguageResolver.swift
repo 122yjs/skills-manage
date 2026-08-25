@@ -3,6 +3,9 @@ import NaturalLanguage
 
 struct SourceLanguageResolver {
     private static let minimumConfidence = 0.5
+    /// 짧은 문장은 오탐이 많다. 스킬 설명 한 줄이 엉뚱한 언어로 인식되어
+    /// 쓰지 않는 언어 팩 다운로드를 요구하지 않도록 최소 길이를 둔다.
+    private static let minimumCharacterCount = 12
 
     static func resolve(
         sourceText: String,
@@ -14,8 +17,13 @@ struct SourceLanguageResolver {
             return requested.replacingOccurrences(of: "_", with: "-")
         }
 
+        let trimmed = sourceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= minimumCharacterCount else {
+            return nil
+        }
+
         let recognizer = NLLanguageRecognizer()
-        recognizer.processString(sourceText)
+        recognizer.processString(trimmed)
 
         guard let hypothesis = recognizer
             .languageHypotheses(withMaximum: 1)

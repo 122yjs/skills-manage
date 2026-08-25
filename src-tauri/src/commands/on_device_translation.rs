@@ -54,6 +54,9 @@ fn message_for_code(code: &'static str) -> &'static str {
         "unsupported_source_language" => "원문 언어를 Apple 번역이 지원하지 않습니다.",
         "unsupported_target_language" => "대상 언어를 Apple 번역이 지원하지 않습니다.",
         "unsupported_language_pairing" => "이 언어 조합은 Apple 번역에서 지원하지 않습니다.",
+        "language_not_downloaded" => {
+            "이 언어 조합의 번역 언어 팩이 아직 내려받아지지 않았습니다."
+        }
         "unable_to_identify_language" => "원문의 언어를 확인하지 못했습니다.",
         "source_matches_target" => "원문과 대상 언어가 같아 번역하지 않았습니다.",
         "empty_text" => "번역할 설명이 없습니다.",
@@ -231,6 +234,7 @@ mod macos {
                     "unsupported_source_language" => "unsupported_source_language",
                     "unsupported_target_language" => "unsupported_target_language",
                     "unsupported_language_pairing" => "unsupported_language_pairing",
+                    "language_not_downloaded" => "language_not_downloaded",
                     "unable_to_identify_language" => "unable_to_identify_language",
                     "source_matches_target" => "source_matches_target",
                     "empty_text" => "empty_text",
@@ -259,6 +263,7 @@ mod tests {
             "unsupported_source_language",
             "unsupported_target_language",
             "unsupported_language_pairing",
+            "language_not_downloaded",
             "unable_to_identify_language",
             "source_matches_target",
             "empty_text",

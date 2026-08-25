@@ -48,6 +48,38 @@ function normalizeLocale(locale: string): string {
   return locale.trim().replace(/_/g, "-").toLowerCase();
 }
 
+/**
+ * 기기 번역이 언어 팩 부족 등으로 실패한 언어 조합을 기억한다.
+ * 카드가 화면에 보일 때마다 같은 요청을 반복하면 macOS가 언어 다운로드
+ * 창을 계속 띄우기 때문에, 한 번 실패한 조합은 다시 시도하지 않는다.
+ */
+const unavailableOnDevicePairs = new Set<string>();
+
+/**
+ * 같은 언어 조합의 첫 기기 번역 요청만 실제로 보내고, 동시에 보이는 다른
+ * 카드들은 그 결과를 기다린다. 화면에 카드가 여러 개 있어도 macOS 언어
+ * 다운로드 창이 한 번만 뜨게 한다.
+ */
+const inFlightOnDevicePairs = new Map<string, Promise<unknown>>();
+
+/**
+ * 표시 언어가 실제로 바뀌면 이전 언어 조합의 실패 기록은 의미가 없다.
+ * 카드가 새로 생길 때가 아니라 언어가 바뀐 순간에만 기록을 비운다.
+ */
+let lastKnownTargetLocale: string | undefined;
+
+function languagePairKey(sourceLocale: string | null | undefined, targetLocale: string): string {
+  const source = sourceLocale ? normalizeLocale(sourceLocale).split("-")[0] : "auto";
+  return `${source}->${targetLocale.split("-")[0]}`;
+}
+
+/** 테스트와 언어 팩 설치 후 재시도를 위해 차단 기록을 비운다. */
+export function resetUnavailableOnDeviceTranslations(): void {
+  unavailableOnDevicePairs.clear();
+  inFlightOnDevicePairs.clear();
+  lastKnownTargetLocale = undefined;
+}
+
 export function useSkillDescriptionTranslation({
   resourceId,
   filePath,
@@ -58,6 +90,16 @@ export function useSkillDescriptionTranslation({
 }: UseSkillDescriptionTranslationOptions): SkillDescriptionTranslationState {
   const { i18n } = useTranslation();
   const targetLocale = normalizeLocale(i18n.resolvedLanguage ?? i18n.language ?? "en");
+
+  // 사용자가 언어 팩을 설치한 뒤 표시 언어를 다시 고르면 자동 번역이 되살아난다.
+  if (lastKnownTargetLocale !== targetLocale) {
+    if (lastKnownTargetLocale !== undefined) {
+      unavailableOnDevicePairs.clear();
+      inFlightOnDevicePairs.clear();
+    }
+    lastKnownTargetLocale = targetLocale;
+  }
+
   const [repositoryDescriptions, setRepositoryDescriptions] = useState<RepositoryDescriptionsResult>();
   const [resolvedRepositoryKey, setResolvedRepositoryKey] = useState<string>();
   const [translation, setTranslation] = useState<TranslationResult>();
@@ -197,14 +239,36 @@ export function useSkillDescriptionTranslation({
           return;
         }
 
+        const pairKey = languagePairKey(
+          translationRequest.sourceLocale,
+          translationRequest.targetLocale
+        );
+        if (unavailableOnDevicePairs.has(pairKey)) return;
+
+        // 같은 언어 조합이 이미 진행 중이면 그 결과를 기다렸다가,
+        // 실패한 조합이면 새 요청을 보내지 않는다.
+        const pending = inFlightOnDevicePairs.get(pairKey);
+        if (pending) {
+          await pending.catch(() => undefined);
+          if (unavailableOnDevicePairs.has(pairKey)) return;
+        }
+
         try {
-          const onDevice = await invoke<TranslationResult>(
+          const onDeviceRequest = invoke<TranslationResult>(
             "translate_skill_description_on_device",
             { request: translationRequest }
           );
+          inFlightOnDevicePairs.set(pairKey, onDeviceRequest);
+          const onDevice = await onDeviceRequest.finally(() => {
+            if (inFlightOnDevicePairs.get(pairKey) === onDeviceRequest) {
+              inFlightOnDevicePairs.delete(pairKey);
+            }
+          });
           if (translationRequestRef.current === requestId) setTranslation(onDevice);
         } catch {
           // macOS 15가 아니거나 번역 언어 팩이 없으면 원문을 조용히 유지한다.
+          // 같은 언어 조합은 이번 세션에서 다시 시도하지 않는다.
+          unavailableOnDevicePairs.add(pairKey);
         }
       })
       .catch(() => {

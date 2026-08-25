@@ -104,6 +104,43 @@ private final class TranslationCoordinator {
         let target = Locale.Language(identifier: targetLanguage)
         let source = Locale.Language(identifier: resolvedSourceLanguage)
 
+        // 번역을 바로 시작하면 언어 팩이 없을 때 macOS가 시스템 다운로드 창을 띄운다.
+        // 이미 내려받은 언어일 때만 진행해 화면 로딩 중 창이 뜨지 않게 한다.
+        Task { @MainActor in
+            let status = await LanguageAvailability().status(from: source, to: target)
+            guard status == .installed else {
+                self.invoke(
+                    callback,
+                    context: context,
+                    result: .failure(
+                        status == .supported
+                            ? BridgeError.languageNotDownloaded
+                            : BridgeError.unsupportedLanguagePair
+                    )
+                )
+                return
+            }
+
+            self.beginTranslation(
+                sourceText: sourceText,
+                sourceLanguage: source,
+                targetLanguage: target,
+                parentView: parentView,
+                callback: callback,
+                context: context
+            )
+        }
+    }
+
+    @available(macOS 15.0, *)
+    private func beginTranslation(
+        sourceText: String,
+        sourceLanguage source: Locale.Language,
+        targetLanguage target: Locale.Language,
+        parentView: NSView,
+        callback: @escaping TranslationCallback,
+        context: UnsafeMutableRawPointer?
+    ) {
         let requestID = nextRequestID
         nextRequestID &+= 1
 
@@ -177,6 +214,8 @@ private enum BridgeError: Error {
     case sourceMatchesTarget
     case cancelled
     case timedOut
+    case languageNotDownloaded
+    case unsupportedLanguagePair
 
     static func code(for error: Error) -> String {
         if let error = error as? BridgeError {
@@ -193,6 +232,10 @@ private enum BridgeError: Error {
                 return "cancelled"
             case .timedOut:
                 return "translation_timeout"
+            case .languageNotDownloaded:
+                return "language_not_downloaded"
+            case .unsupportedLanguagePair:
+                return "unsupported_language_pairing"
             }
         }
 

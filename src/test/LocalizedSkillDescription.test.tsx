@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
+import { resetUnavailableOnDeviceTranslations } from "@/hooks/useSkillDescriptionTranslation";
 
 const { mockInvoke, mockIsTauriRuntime } = vi.hoisted(() => ({
   mockInvoke: vi.fn(),
@@ -20,6 +21,7 @@ const disconnect = vi.fn();
 beforeEach(() => {
   mockInvoke.mockReset();
   mockIsTauriRuntime.mockReturnValue(true);
+  resetUnavailableOnDeviceTranslations();
   observerCallback = undefined;
   observe.mockReset();
   disconnect.mockReset();
@@ -192,5 +194,41 @@ describe("LocalizedSkillDescription", () => {
     expect(screen.getByText("English legacy description")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "使用 API 翻译" })).not.toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("기기 번역이 실패한 언어 조합은 다른 카드에서 다시 호출하지 않는다", async () => {
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "get_cached_skill_description_translation") return Promise.resolve(null);
+      if (command === "translate_skill_description_on_device") {
+        return Promise.reject("language_not_downloaded");
+      }
+      return Promise.reject(new Error(`unexpected command: ${command}`));
+    });
+
+    renderDescription({ immediate: true, sourceLocale: "en" });
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "translate_skill_description_on_device",
+        expect.anything()
+      );
+    });
+
+    mockInvoke.mockClear();
+    renderDescription({
+      immediate: true,
+      sourceLocale: "en",
+      resourceId: "skill:another",
+    });
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith(
+        "get_cached_skill_description_translation",
+        expect.anything()
+      );
+    });
+
+    expect(mockInvoke).not.toHaveBeenCalledWith(
+      "translate_skill_description_on_device",
+      expect.anything()
+    );
   });
 });
