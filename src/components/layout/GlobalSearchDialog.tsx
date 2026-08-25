@@ -23,6 +23,7 @@ import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { usePlatformStore } from "@/stores/platformStore";
+import { useSkillStore } from "@/stores/skillStore";
 import { useHotkey } from "@/hooks/useHotkey";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { formatPathForDisplay } from "@/lib/path";
@@ -39,12 +40,13 @@ type SearchItem = {
   id: string;
   label: string;
   description?: string;
-  groupKey: "central" | "discovered" | "collections" | "platforms" | "actions";
+  groupKey: "skills" | "discovered" | "collections" | "platforms" | "actions";
   groupLabel: string;
   icon: React.ReactNode;
   searchText: string;
   labelText: string;
   descriptionText: string;
+  badges?: string[];
   onSelect: () => void;
 };
 
@@ -61,6 +63,9 @@ export function GlobalSearchDialog({
   const discoveredProjects = useDiscoverStore((s) => s.discoveredProjects);
   const collections = useCollectionStore((s) => s.collections);
   const agents = usePlatformStore((s) => s.agents);
+  const scanGeneration = usePlatformStore((s) => s.scanGeneration);
+  const skillsByAgent = useSkillStore((s) => s.skillsByAgent);
+  const getSkillsByAgent = useSkillStore((s) => s.getSkillsByAgent);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
   const normalizedQuery = useMemo(
@@ -72,9 +77,9 @@ export function GlobalSearchDialog({
   const groupMeta = useMemo(
     () => [
       {
-        key: "central" as const,
-        label: t("globalSearch.centralSkills"),
-        initialLimit: 8,
+        key: "skills" as const,
+        label: t("globalSearch.skills"),
+        initialLimit: 12,
       },
       {
         key: "discovered" as const,
@@ -106,29 +111,98 @@ export function GlobalSearchDialog({
     }
   }, [open]);
 
+  const platformAgents = useMemo(
+    () =>
+      agents.filter(
+        (agent) => isEnabledInstallTargetAgent(agent) && agent.is_detected
+      ),
+    [agents]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    for (const agent of platformAgents) {
+      void getSkillsByAgent(agent.id);
+    }
+  }, [getSkillsByAgent, open, platformAgents, scanGeneration]);
+
   // Build flat search items
   const items = useMemo<SearchItem[]>(() => {
     if (!open) return [];
 
     const result: SearchItem[] = [];
 
-    // Central Skills
+    const skills = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        description?: string;
+        centralId?: string;
+        agentIds: Set<string>;
+        sources: Set<string>;
+      }
+    >();
+
+    // Central and platform skills share one result per normalized skill name.
     for (const skill of centralSkills) {
-      const labelText = skill.name.toLowerCase();
+      const key = normalizeSearchQuery(skill.name);
+      skills.set(key, {
+        id: skill.id,
+        name: skill.name,
+        description: skill.description,
+        centralId: skill.id,
+        agentIds: new Set(),
+        sources: new Set([t("globalSearch.centralSkills")]),
+      });
+    }
+
+    for (const agent of platformAgents) {
+      for (const skill of skillsByAgent[agent.id] ?? []) {
+        const key = normalizeSearchQuery(skill.name);
+        const existing = skills.get(key) ?? {
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          agentIds: new Set<string>(),
+          sources: new Set<string>(),
+        };
+        existing.agentIds.add(agent.id);
+        const source = skill.source_label ?? skill.source_root;
+        if (source) {
+          existing.sources.add(formatPathForDisplay(source));
+        }
+        skills.set(key, existing);
+      }
+    }
+
+    for (const skill of skills.values()) {
+      const skillAgents = platformAgents.filter((agent) =>
+        skill.agentIds.has(agent.id)
+      );
+      const badges = [
+        ...skillAgents.map((agent) => agent.display_name),
+        ...skill.sources,
+      ];
       const descriptionText = (skill.description ?? "").toLowerCase();
       result.push({
-        id: `central-${skill.id}`,
+        id: `skill-${normalizeSearchQuery(skill.name)}`,
         label: skill.name,
         description: skill.description,
-        groupKey: "central",
-        groupLabel: t("globalSearch.centralSkills"),
+        groupKey: "skills",
+        groupLabel: t("globalSearch.skills"),
         icon: <Blocks className="size-4 shrink-0 text-primary/70" />,
-        searchText: buildSearchText([skill.name, skill.description]),
-        labelText,
+        searchText: buildSearchText([skill.name, skill.description, ...badges]),
+        labelText: skill.name.toLowerCase(),
         descriptionText,
+        badges,
         onSelect: () => {
           close();
-          navigate(`/skill/${skill.id}`);
+          if (skill.centralId) {
+            navigate(`/skill/${skill.centralId}`);
+          } else if (skillAgents[0]) {
+            navigate(`/platform/${skillAgents[0].id}`);
+          }
         },
       });
     }
@@ -174,9 +248,6 @@ export function GlobalSearchDialog({
     }
 
     // Platform Views
-    const platformAgents = agents.filter(
-      (agent) => isEnabledInstallTargetAgent(agent) && agent.is_detected
-    );
     for (const agent of platformAgents) {
       const displayPath = formatPathForDisplay(agent.global_skills_dir);
       result.push({
@@ -249,7 +320,8 @@ export function GlobalSearchDialog({
     centralSkills,
     discoveredProjects,
     collections,
-    agents,
+    platformAgents,
+    skillsByAgent,
     navigate,
     close,
     open,
@@ -336,6 +408,18 @@ export function GlobalSearchDialog({
                       <span className="truncate text-xs text-muted-foreground">
                         {item.description}
                       </span>
+                    )}
+                    {item.badges && item.badges.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {item.badges.map((badge) => (
+                          <span
+                            key={badge}
+                            className="rounded bg-muted px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground"
+                          >
+                            {badge}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </div>
                 </CommandItem>

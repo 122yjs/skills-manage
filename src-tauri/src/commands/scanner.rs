@@ -116,6 +116,18 @@ struct ClaudeInstalledPluginInstall {
     last_updated: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct CodexSettingsFile {
+    #[serde(default)]
+    plugins: HashMap<String, CodexPluginSettings>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CodexPluginSettings {
+    #[serde(default)]
+    enabled: bool,
+}
+
 // ─── Core Functions ───────────────────────────────────────────────────────────
 
 /// Read a SKILL.md file and extract the YAML frontmatter fields `name` and
@@ -395,6 +407,11 @@ fn read_json_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
     serde_json::from_str(&content).ok()
 }
 
+fn read_toml_file<T: DeserializeOwned>(path: &Path) -> Option<T> {
+    let content = std::fs::read_to_string(path).ok()?;
+    toml::from_str(&content).ok()
+}
+
 fn claude_runtime_root(global_skills_dir: &Path) -> Option<PathBuf> {
     global_skills_dir.parent().map(Path::to_path_buf)
 }
@@ -490,6 +507,103 @@ fn claude_plugin_roots(global_skills_dir: &Path) -> Vec<AgentScanRoot> {
     roots
 }
 
+fn plugin_skill_paths(install_root: &Path) -> Vec<PathBuf> {
+    [
+        install_root.join("skills"),
+        install_root.join(".codex/skills"),
+    ]
+    .into_iter()
+    .filter(|path| path.exists())
+    .collect()
+}
+
+fn latest_cached_plugin_install(plugin_cache_root: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(plugin_cache_root)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && !plugin_skill_paths(path).is_empty())
+        .max_by(|left, right| {
+            let modified = |path: &Path| path.metadata().and_then(|meta| meta.modified()).ok();
+            modified(left)
+                .cmp(&modified(right))
+                .then_with(|| left.cmp(right))
+        })
+}
+
+fn codex_plugin_scan_roots(codex_root: &Path) -> Vec<AgentScanRoot> {
+    let cache_root = codex_root.join("plugins/cache");
+    let settings =
+        read_toml_file::<CodexSettingsFile>(&codex_root.join("config.toml")).unwrap_or_default();
+    let mut roots = Vec::new();
+
+    let mut enabled_plugin_ids: Vec<String> = settings
+        .plugins
+        .into_iter()
+        .filter_map(|(plugin_id, settings)| settings.enabled.then_some(plugin_id))
+        .collect();
+    enabled_plugin_ids.sort();
+
+    for plugin_id in enabled_plugin_ids {
+        let Some((plugin_name, marketplace_name)) = plugin_id.rsplit_once('@') else {
+            continue;
+        };
+        let plugin_cache_root = cache_root.join(marketplace_name).join(plugin_name);
+        let Some(install_root) = latest_cached_plugin_install(&plugin_cache_root) else {
+            continue;
+        };
+        for path in plugin_skill_paths(&install_root) {
+            push_unique_scan_root(
+                &mut roots,
+                AgentScanRoot {
+                    path,
+                    source_root: Some(install_root.clone()),
+                    source_label: Some(plugin_id.clone()),
+                    source_kind: Some(AgentSkillSourceKind::Plugin),
+                },
+            );
+        }
+    }
+
+    let Ok(marketplaces) = std::fs::read_dir(&cache_root) else {
+        return roots;
+    };
+    for marketplace in marketplaces.flatten() {
+        let marketplace_root = marketplace.path();
+        let marketplace_name = marketplace.file_name().to_string_lossy().into_owned();
+        let Ok(plugins) = std::fs::read_dir(&marketplace_root) else {
+            continue;
+        };
+        for plugin in plugins.flatten() {
+            let plugin_cache_root = plugin.path();
+            if !plugin_cache_root
+                .join(".codex-remote-plugin-install.json")
+                .is_file()
+            {
+                continue;
+            }
+            let Some(install_root) = latest_cached_plugin_install(&plugin_cache_root) else {
+                continue;
+            };
+            let plugin_name = plugin.file_name().to_string_lossy().into_owned();
+            let plugin_id = format!("{plugin_name}@{marketplace_name}");
+            for path in plugin_skill_paths(&install_root) {
+                push_unique_scan_root(
+                    &mut roots,
+                    AgentScanRoot {
+                        path,
+                        source_root: Some(install_root.clone()),
+                        source_label: Some(plugin_id.clone()),
+                        source_kind: Some(AgentSkillSourceKind::Plugin),
+                    },
+                );
+            }
+        }
+    }
+
+    roots
+}
+
 fn agents_skills_compatibility_root(primary_root: &Path) -> Option<PathBuf> {
     primary_root
         .parent()
@@ -503,6 +617,15 @@ fn compatibility_scan_root(path: PathBuf) -> AgentScanRoot {
         source_root: Some(path),
         source_label: None,
         source_kind: Some(AgentSkillSourceKind::Compatibility),
+    }
+}
+
+fn user_scan_root(path: PathBuf) -> AgentScanRoot {
+    AgentScanRoot {
+        path: path.clone(),
+        source_root: Some(path),
+        source_label: None,
+        source_kind: Some(AgentSkillSourceKind::User),
     }
 }
 
@@ -532,36 +655,23 @@ fn scan_roots_for_agent(
         }];
     }
 
-    if universal_root.is_some_and(|universal_root| universal_root == primary_root) {
-        return vec![compatibility_scan_root(primary_root)];
-    }
-
     let compatibility_root = universal_root
         .map(Path::to_path_buf)
         .or_else(|| agents_skills_compatibility_root(&primary_root));
-    if db::agent_supports_universal_agents_skills(&agent.id)
-        && compatibility_root
-            .as_ref()
-            .is_some_and(|root| root == &primary_root)
-    {
-        return compatibility_root
-            .map(compatibility_scan_root)
-            .into_iter()
-            .collect();
-    }
+    let primary_is_compatibility = universal_root.is_some_and(|root| root == primary_root)
+        || (db::agent_supports_universal_agents_skills(&agent.id)
+            && compatibility_root
+                .as_ref()
+                .is_some_and(|root| root == &primary_root));
 
-    let mut roots = match agent.id.as_str() {
-        "claude-code" => {
-            let mut roots = vec![AgentScanRoot {
-                path: primary_root.clone(),
-                source_root: Some(primary_root.clone()),
-                source_label: None,
-                source_kind: Some(AgentSkillSourceKind::User),
-            }];
+    let mut roots = match (agent.id.as_str(), primary_is_compatibility) {
+        (_, true) => vec![compatibility_scan_root(primary_root.clone())],
+        ("claude-code", false) => {
+            let mut roots = vec![user_scan_root(primary_root.clone())];
             roots.extend(claude_plugin_roots(&primary_root));
             roots
         }
-        _ => vec![AgentScanRoot {
+        (_, false) => vec![AgentScanRoot {
             path: primary_root.clone(),
             source_root: None,
             source_label: None,
@@ -570,9 +680,35 @@ fn scan_roots_for_agent(
     };
 
     if agent.id == "factory-droid" || db::agent_supports_universal_agents_skills(&agent.id) {
-        if let Some(compatibility_root) = compatibility_root {
-            if compatibility_root != primary_root {
-                push_unique_scan_root(&mut roots, compatibility_scan_root(compatibility_root));
+        if let Some(compatibility_root) = compatibility_root.as_ref() {
+            if compatibility_root != &primary_root {
+                push_unique_scan_root(
+                    &mut roots,
+                    compatibility_scan_root(compatibility_root.clone()),
+                );
+            }
+        }
+    }
+
+    let home_root = compatibility_root
+        .as_deref()
+        .and_then(Path::parent)
+        .and_then(Path::parent);
+    if let Some(home_root) = home_root {
+        if agent.id == "cursor" {
+            for path in [
+                home_root.join(".claude/skills"),
+                home_root.join(".codex/skills"),
+            ] {
+                push_unique_scan_root(&mut roots, compatibility_scan_root(path));
+            }
+        }
+
+        if agent.id == "codex" {
+            let codex_root = home_root.join(".codex");
+            push_unique_scan_root(&mut roots, user_scan_root(codex_root.join("skills")));
+            for root in codex_plugin_scan_roots(&codex_root) {
+                push_unique_scan_root(&mut roots, root);
             }
         }
     }
@@ -763,7 +899,11 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 .await?;
         }
 
-        let count = scanned.len();
+        let count = scanned
+            .iter()
+            .map(|skill| skill.id.as_str())
+            .collect::<HashSet<_>>()
+            .len();
         total_skills += count;
         skills_by_agent.insert(agent.id.clone(), count);
     }
@@ -1288,12 +1428,238 @@ mod tests {
 
     // ── scan_all_skills_impl ──────────────────────────────────────────────────
 
+    #[test]
+    fn test_cursor_scan_roots_include_all_supported_user_locations() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".cursor/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let claude_root = tmp.path().join(".claude/skills");
+        let codex_root = tmp.path().join(".codex/skills");
+        for root in [&primary_root, &universal_root, &claude_root, &codex_root] {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        let agent = db::Agent {
+            id: "cursor".to_string(),
+            display_name: "Cursor".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: primary_root.to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: Some("cursor".to_string()),
+            is_detected: true,
+            is_builtin: true,
+            is_enabled: true,
+        };
+
+        let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+
+        assert_eq!(
+            paths,
+            HashSet::from([primary_root, universal_root, claude_root, codex_root])
+        );
+    }
+
+    #[test]
+    fn test_omp_scan_roots_include_agents_user_location() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".omp/agent/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        fs::create_dir_all(&primary_root).unwrap();
+        fs::create_dir_all(&universal_root).unwrap();
+
+        let agent = db::Agent {
+            id: "omp".to_string(),
+            display_name: "Oh My Pi".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: primary_root.to_string_lossy().into_owned(),
+            project_skills_dir: Some(".omp/skills".to_string()),
+            icon_name: Some("omp".to_string()),
+            is_detected: true,
+            is_builtin: true,
+            is_enabled: true,
+        };
+
+        let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+
+        assert_eq!(paths, HashSet::from([primary_root, universal_root]));
+    }
+
+    #[test]
+    fn test_codex_scan_roots_include_direct_and_enabled_plugin_skills_only() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".agents/skills");
+        let codex_root = tmp.path().join(".codex");
+        let direct_root = codex_root.join("skills");
+        let enabled_root = codex_root.join("plugins/cache/test-market/enabled-plugin/1.0.0/skills");
+        let disabled_root =
+            codex_root.join("plugins/cache/test-market/disabled-plugin/1.0.0/skills");
+        let remote_plugin_cache = codex_root.join("plugins/cache/remote-market/remote-plugin");
+        let remote_root = remote_plugin_cache.join("1.0.0/skills");
+        for root in [
+            &primary_root,
+            &direct_root,
+            &enabled_root,
+            &disabled_root,
+            &remote_root,
+        ] {
+            fs::create_dir_all(root).unwrap();
+        }
+        fs::write(
+            remote_plugin_cache.join(".codex-remote-plugin-install.json"),
+            "{}",
+        )
+        .unwrap();
+        fs::write(
+            codex_root.join("config.toml"),
+            r#"
+[plugins."enabled-plugin@test-market"]
+enabled = true
+
+[plugins."disabled-plugin@test-market"]
+enabled = false
+"#,
+        )
+        .unwrap();
+
+        let agent = db::Agent {
+            id: "codex".to_string(),
+            display_name: "Codex CLI".to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: primary_root.to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: Some("codex".to_string()),
+            is_detected: true,
+            is_builtin: true,
+            is_enabled: true,
+        };
+
+        let roots = scan_roots_for_agent(&agent, Some(&primary_root), None);
+        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+
+        assert!(paths.contains(&primary_root));
+        assert!(paths.contains(&direct_root));
+        assert!(paths.contains(&enabled_root));
+        assert!(paths.contains(&remote_root));
+        assert!(!paths.contains(&disabled_root));
+    }
+
     async fn setup_test_db() -> DbPool {
         use crate::db;
         use sqlx::SqlitePool;
         let pool = SqlitePool::connect(":memory:").await.expect("in-memory DB");
         db::init_database(&pool).await.expect("init");
         pool
+    }
+
+    #[tokio::test]
+    async fn test_omp_count_includes_agents_user_skills() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('omp', 'universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let primary_root = tmp.path().join(".omp/agent/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let central_root = tmp.path().join(".skillsmanage/skills");
+        mark_builtin_agent_installed(&primary_root);
+        create_skill_dir(
+            &universal_root,
+            "shared-skill",
+            &valid_skill_md("Shared Skill", "Loaded through enableAgentsUser"),
+        );
+
+        for (agent_id, root) in [
+            ("omp", &primary_root),
+            ("universal", &universal_root),
+            ("central", &central_root),
+        ] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.skills_by_agent.get("omp").copied(), Some(1));
+
+        let observations = db::get_agent_skill_observations(&pool, "omp")
+            .await
+            .unwrap();
+        assert_eq!(observations.len(), 1);
+        assert_eq!(observations[0].source_kind, "compatibility");
+        assert!(observations[0].is_read_only);
+    }
+
+    #[tokio::test]
+    async fn test_codex_count_includes_direct_and_enabled_plugin_skills() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        sqlx::query("DELETE FROM agents WHERE id NOT IN ('codex', 'universal', 'central')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let universal_root = tmp.path().join(".agents/skills");
+        let central_root = tmp.path().join(".skillsmanage/skills");
+        let codex_root = tmp.path().join(".codex");
+        let direct_root = codex_root.join("skills");
+        let plugin_install = codex_root.join("plugins/cache/ponytail/ponytail/4.9.0");
+        let plugin_root = plugin_install.join("skills");
+        fs::create_dir_all(&universal_root).unwrap();
+        create_skill_dir(
+            &direct_root,
+            "grill-me",
+            &valid_skill_md("grill-me", "Direct Codex user skill"),
+        );
+        create_skill_dir(
+            &plugin_root,
+            "ponytail",
+            &valid_skill_md("ponytail", "Enabled Codex plugin skill"),
+        );
+        fs::write(
+            codex_root.join("config.toml"),
+            "[plugins.\"ponytail@ponytail\"]\nenabled = true\n",
+        )
+        .unwrap();
+
+        for (agent_id, root) in [
+            ("codex", &universal_root),
+            ("universal", &universal_root),
+            ("central", &central_root),
+        ] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(root.to_string_lossy().to_string())
+                .bind(agent_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+        assert_eq!(result.skills_by_agent.get("codex").copied(), Some(2));
+
+        let skills = db::get_skills_for_agent(&pool, "codex").await.unwrap();
+        assert!(skills.iter().any(|skill| skill.id == "grill-me"));
+        let ponytail = skills
+            .iter()
+            .find(|skill| skill.id == "ponytail")
+            .expect("enabled plugin skill should be visible");
+        assert_eq!(ponytail.source_label.as_deref(), Some("ponytail@ponytail"));
+        assert!(ponytail.is_read_only);
     }
 
     #[tokio::test]

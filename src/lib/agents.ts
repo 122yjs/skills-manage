@@ -18,6 +18,7 @@ const UNIVERSAL_COMPATIBLE_AGENT_IDS = new Set([
   "copilot",
   "kimi-code-cli",
   "opencode",
+  "omp",
   "warp",
 ]);
 

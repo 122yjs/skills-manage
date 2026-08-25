@@ -670,6 +670,7 @@ pub const UNIVERSAL_AGENTS_SKILLS_AGENT_IDS: &[&str] = &[
     "copilot",
     "kimi-code-cli",
     "opencode",
+    "omp",
     "warp",
 ];
 
@@ -730,8 +731,8 @@ pub fn builtin_agents() -> Vec<Agent> {
             "antigravity",
             "Antigravity",
             "coding",
-            ".agents/skills",
-            None,
+            ".gemini/config/skills",
+            Some(".agents/skills"),
             "antigravity",
         ),
         agent("cline", "Cline", "coding", ".agents/skills", None, "cline"),
@@ -2556,6 +2557,24 @@ mod tests {
         assert!(ids.contains(&"workbuddy"));
         // Central
         assert!(ids.contains(&"central"));
+    }
+
+    #[test]
+    fn test_antigravity_uses_official_global_and_project_skill_roots() {
+        let home = resolve_home_dir();
+        let antigravity = builtin_agents()
+            .into_iter()
+            .find(|agent| agent.id == "antigravity")
+            .expect("Antigravity should be a built-in agent");
+
+        assert_eq!(
+            antigravity.global_skills_dir,
+            path_to_string(&home.join(".gemini/config/skills"))
+        );
+        assert_eq!(
+            antigravity.project_skills_dir.as_deref(),
+            Some(".agents/skills")
+        );
     }
 
     #[test]

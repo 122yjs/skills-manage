@@ -661,6 +661,7 @@
     "trigger": "스킬 검색...",
     "placeholder": "스킬, 컬렉션, 작업 검색...",
     "noResults": "검색 결과가 없습니다.",
+    "skills": "스킬",
     "centralSkills": "스킬 보관함",
     "discovered": "발견된 스킬",
     "collections": "컬렉션",

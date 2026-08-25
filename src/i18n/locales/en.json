@@ -661,6 +661,7 @@
     "trigger": "Search skills...",
     "placeholder": "Search skills, collections, actions...",
     "noResults": "No results found.",
+    "skills": "Skills",
     "centralSkills": "Skill Library",
     "discovered": "Discovered",
     "collections": "Collections",

@@ -661,6 +661,7 @@
     "trigger": "搜索技能...",
     "placeholder": "搜索技能、技能集、操作...",
     "noResults": "未找到结果。",
+    "skills": "技能",
     "centralSkills": "技能仓库",
     "discovered": "项目技能库",
     "collections": "技能集合",
