@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use tauri::State;
 
 use crate::db::{self, DbPool, ScanDirectory};
@@ -10,18 +8,20 @@ use crate::AppState;
 
 /// Return all scan directories, built-in first then custom ordered by added_at.
 pub async fn get_scan_directories_impl(pool: &DbPool) -> Result<Vec<ScanDirectory>, String> {
-    let enabled_builtin_paths = db::get_all_agents(pool)
+    // 도구 표시 상태와 스캔 디렉터리 목록은 독립적이다. 숨긴 도구의
+    // 기본 디렉터리도 설정에서 계속 보여야 스캔 대상을 확인할 수 있다.
+    let builtin_paths = db::get_all_agents(pool)
         .await?
         .into_iter()
-        .filter(|agent| agent.is_enabled)
+        .filter(|agent| agent.is_builtin)
         .map(|agent| agent.global_skills_dir)
-        .collect::<HashSet<_>>();
+        .collect::<std::collections::HashSet<_>>();
     let directories = db::get_scan_directories(pool).await?;
 
     Ok(directories
         .into_iter()
         .filter(|directory| {
-            !directory.is_builtin || enabled_builtin_paths.contains(&directory.path)
+            !directory.is_builtin || builtin_paths.contains(&directory.path)
         })
         .collect())
 }
@@ -174,6 +174,24 @@ mod tests {
                 dir.path
             );
         }
+    }
+
+    #[tokio::test]
+    async fn hidden_builtin_agent_keeps_its_scan_directory_in_settings() {
+        let pool = setup_test_db().await;
+        let hidden_agent = db::builtin_agents()
+            .into_iter()
+            .find(|agent| agent.id == "claude-code")
+            .unwrap();
+        db::update_agent_enabled(&pool, &hidden_agent.id, false)
+            .await
+            .unwrap();
+
+        let directories = get_scan_directories_impl(&pool).await.unwrap();
+
+        assert!(directories.iter().any(|directory| {
+            directory.is_builtin && directory.path == hidden_agent.global_skills_dir
+        }));
     }
 
     #[tokio::test]

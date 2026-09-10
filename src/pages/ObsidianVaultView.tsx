@@ -11,7 +11,7 @@ import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { useObsidianStore } from "@/stores/obsidianStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { usePlatformStore } from "@/stores/platformStore";
-import { isEnabledInstallTargetAgent } from "@/lib/agents";
+import { isInstallTargetAgent } from "@/lib/agents";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
 import { DiscoveredSkill, SkillWithLinks } from "@/types";
 
@@ -88,7 +88,7 @@ export function ObsidianVaultView() {
     );
   }, [normalizedSearch, skills]);
   const platformAgents = useMemo(
-    () => agents.filter(isEnabledInstallTargetAgent),
+    () => agents.filter(isInstallTargetAgent),
     [agents]
   );
 

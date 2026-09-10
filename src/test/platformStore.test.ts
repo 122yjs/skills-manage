@@ -41,6 +41,20 @@ const mockScanResult: ScanResult = {
   },
 };
 
+const bulkAgents: AgentWithStatus[] = [
+  ...mockAgents,
+  ...[
+    { id: "cursor", category: "coding", is_enabled: false, is_detected: false },
+    { id: "custom-tool", category: "other", is_enabled: true, is_builtin: false },
+    { id: "lobster-tool", category: "lobster", is_enabled: false },
+    { id: "universal", category: "shared" },
+    { id: "obsidian", category: "other" },
+    { id: "custom-shared", category: "shared", is_enabled: false },
+    { id: "custom-central", category: "central" },
+  ].map((overrides) => ({ ...mockAgents[0], ...overrides })),
+];
+const toggleableIds = ["claude-code", "cursor", "custom-tool", "lobster-tool"];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("platformStore", () => {
@@ -206,7 +220,7 @@ describe("platformStore", () => {
     expect(state.scanGeneration).toBe(2);
   });
 
-  it("setAgentEnabled persists the platform state and refreshes the scan", async () => {
+  it("setAgentVisibility stores only the list visibility without scanning", async () => {
     usePlatformStore.setState({
       agents: mockAgents,
       skillsByAgent: mockScanResult.skills_by_agent,
@@ -219,30 +233,72 @@ describe("platformStore", () => {
     const disabledAgents = mockAgents.map((agent) =>
       agent.id === "claude-code" ? { ...agent, is_enabled: false } : agent
     );
-    const disabledScanResult: ScanResult = {
-      total_skills: 3,
-      agents_scanned: 1,
-      skills_by_agent: { central: 3 },
-    };
+    vi.mocked(invoke).mockResolvedValueOnce(disabledAgents[0]);
 
-    vi.mocked(invoke)
-      .mockResolvedValueOnce(disabledAgents[0])
-      .mockResolvedValueOnce(disabledAgents)
-      .mockResolvedValueOnce(disabledScanResult);
-
-    await usePlatformStore.getState().setAgentEnabled("claude-code", false);
+    await usePlatformStore.getState().setAgentVisibility("claude-code", false);
 
     expect(invoke).toHaveBeenNthCalledWith(1, "set_agent_enabled", {
       agentId: "claude-code",
       enabled: false,
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "get_agents");
-    expect(invoke).toHaveBeenNthCalledWith(3, "scan_all_skills");
+    expect(invoke).toHaveBeenCalledTimes(1);
     expect(
       usePlatformStore.getState().agents.find((agent) => agent.id === "claude-code")
         ?.is_enabled
     ).toBe(false);
-    expect(usePlatformStore.getState().skillsByAgent).toEqual({ central: 3 });
+    expect(usePlatformStore.getState().skillsByAgent).toEqual(mockScanResult.skills_by_agent);
+    expect(usePlatformStore.getState().scanGeneration).toBe(1);
+    expect(usePlatformStore.getState().updatingAgentIds).toEqual({});
+  });
+
+  it.each([false, true])("전체 표시 상태를 %s로 저장하고 스캔하지 않는다", async (visible) => {
+    usePlatformStore.setState({ agents: bulkAgents });
+    const updated = bulkAgents.map((agent) =>
+      toggleableIds.includes(agent.id) ? { ...agent, is_enabled: visible } : agent
+    );
+    let resolveUpdate!: (agents: AgentWithStatus[]) => void;
+    vi.mocked(invoke).mockReturnValueOnce(
+      new Promise<AgentWithStatus[]>((resolve) => {
+        resolveUpdate = resolve;
+      })
+    );
+
+    const pending = usePlatformStore.getState().setAllAgentsVisibility(visible);
+    expect(Object.keys(usePlatformStore.getState().updatingAgentIds)).toEqual(toggleableIds);
+    // 저장이 끝나기 전에 반대 방향의 일괄 변경이나 개별 변경을 보내지 않는다.
+    await usePlatformStore.getState().setAllAgentsVisibility(!visible);
+    await usePlatformStore.getState().setAgentVisibility("cursor", !visible);
+    resolveUpdate(updated);
+    await pending;
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(invoke).toHaveBeenCalledWith("set_all_agents_enabled", { enabled: visible });
+    expect(usePlatformStore.getState().agents).toEqual(updated);
+    expect(usePlatformStore.getState().skillsByAgent).toEqual({});
+    expect(usePlatformStore.getState().scanGeneration).toBe(0);
+    expect(usePlatformStore.getState().updatingAgentIds).toEqual({});
+  });
+
+  it("일괄 저장 실패 시 기존 상태를 유지하고 다시 시도할 수 있다", async () => {
+    usePlatformStore.setState({ agents: bulkAgents });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("저장 실패"));
+
+    await expect(usePlatformStore.getState().setAllAgentsVisibility(false)).rejects.toThrow("저장 실패");
+
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(usePlatformStore.getState().agents).toEqual(bulkAgents);
+    expect(usePlatformStore.getState().updatingAgentIds).toEqual({});
+    expect(usePlatformStore.getState().error).toContain("저장 실패");
+  });
+
+  it("변경할 플랫폼이 없거나 스캔 중이면 일괄 표시 저장을 생략한다", async () => {
+    await usePlatformStore.getState().setAllAgentsVisibility(false);
+    usePlatformStore.setState({ agents: mockAgents });
+    await usePlatformStore.getState().setAllAgentsVisibility(true);
+    usePlatformStore.setState({ isRefreshing: true });
+    await usePlatformStore.getState().setAllAgentsVisibility(false);
+
+    expect(invoke).not.toHaveBeenCalled();
     expect(usePlatformStore.getState().updatingAgentIds).toEqual({});
   });
 });

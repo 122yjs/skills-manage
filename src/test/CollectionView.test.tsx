@@ -140,7 +140,8 @@ function buildPlatformStoreState(overrides = {}) {
     initialize: vi.fn(),
     rescan: vi.fn(),
     refreshCounts: vi.fn(),
-    setAgentEnabled: vi.fn(),
+    setAgentVisibility: vi.fn(),
+    setAllAgentsVisibility: vi.fn(),
     ...overrides,
   };
 }

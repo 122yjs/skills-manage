@@ -1,5 +1,6 @@
 import "@testing-library/jest-dom";
 import zh from "../i18n/locales/zh.json";
+import { recoveryResources } from "../i18n/recoveryResources";
 
 // ─── react-i18next mock ───────────────────────────────────────────────────────
 // Resolves translation keys against zh.json so existing assertions on Chinese
@@ -33,7 +34,7 @@ function resolveKey(obj: TranslationObj, key: string, options?: Record<string, u
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: Record<string, unknown>) =>
-      resolveKey(zh as unknown as TranslationObj, key, options),
+      resolveKey({ ...zh, ...recoveryResources.zh } as unknown as TranslationObj, key, options),
     i18n: {
       changeLanguage: vi.fn(),
       language: "zh",

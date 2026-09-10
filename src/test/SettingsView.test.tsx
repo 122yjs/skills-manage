@@ -130,7 +130,8 @@ function setupMocks({
       initialize: vi.fn(),
       rescan,
       refreshCounts,
-      setAgentEnabled: vi.fn(),
+      setAgentVisibility: vi.fn(),
+      setAllAgentsVisibility: vi.fn(),
     })
   );
 

@@ -28,7 +28,7 @@ import { useHotkey } from "@/hooks/useHotkey";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { formatPathForDisplay } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery, scoreSearchMatch } from "@/lib/search";
-import { isEnabledInstallTargetAgent } from "@/lib/agents";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 interface GlobalSearchDialogProps {
   open: boolean;
@@ -114,7 +114,7 @@ export function GlobalSearchDialog({
   const platformAgents = useMemo(
     () =>
       agents.filter(
-        (agent) => isEnabledInstallTargetAgent(agent) && agent.is_detected
+        (agent) => isInstallTargetAgent(agent) && agent.is_detected
       ),
     [agents]
   );

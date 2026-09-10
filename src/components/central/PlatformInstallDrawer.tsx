@@ -130,6 +130,9 @@ export function PlatformInstallDrawer({
                   <XIcon />
                 </DialogClose>
               </div>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                {t("detail.applicationScopeHelp")}
+              </p>
               <div className="mt-4 flex items-center gap-2">
                 <div className="relative flex-1">
                   <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

@@ -12,6 +12,7 @@ use crate::AppState;
 use super::linker::{
     batch_install_skills_to_agents_impl, uninstall_skill_from_agent_impl, SkillBundleInstallResult,
 };
+use super::recovery;
 use super::scanner::{scan_skill_root, ScanDirectoryOptions};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1128,6 +1129,14 @@ pub async fn delete_central_skill_bundle_impl(
         ));
     }
 
+    // 파일과 DB를 먼저 보존해야 원본 삭제를 진행할 수 있습니다.
+    recovery::backup_vault_before_removal(
+        pool,
+        &target.delete_path,
+        format!("보관함 묶음 휴지통: {}", target.relative_path),
+    )
+    .await?;
+
     let mut uninstalled_agents = BTreeSet::new();
     if options.cascade_uninstall {
         for skill in &skills {
@@ -1218,6 +1227,14 @@ pub async fn delete_central_skill_impl(
             .join(", ");
         return Err(format!("Skill is installed on agents: {}", agents));
     }
+
+    // 파일과 DB를 먼저 보존해야 원본 삭제를 진행할 수 있습니다.
+    recovery::backup_vault_before_removal(
+        pool,
+        &delete_target,
+        format!("보관함 스킬 휴지통: {}", skill.name),
+    )
+    .await?;
 
     let skipped_read_only_agents = read_only_agent_ids_for_skill(pool, skill_id, true).await?;
     let mut uninstalled_agents = Vec::new();

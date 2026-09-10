@@ -725,11 +725,9 @@ fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
 /// Core scanning logic, separated from the Tauri command layer so it can be
 /// unit-tested without a running Tauri runtime.
 pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
-    let agents = db::get_all_agents(pool)
-        .await?
-        .into_iter()
-        .filter(|agent| agent.is_enabled)
-        .collect::<Vec<_>>();
+    // `is_enabled`은 화면 목록 표시 상태다. 숨긴 플랫폼도 스캔하여
+    // 설치 기록과 스킬 상태를 최신으로 유지한다.
+    let agents = db::get_all_agents(pool).await?;
     let custom_dirs = db::get_scan_directories(pool).await?;
     let universal_root = agents
         .iter()
@@ -1705,6 +1703,45 @@ enabled = false
         assert_eq!(r.total_skills, 0);
         assert_eq!(r.agents_scanned, 1);
         assert_eq!(r.skills_by_agent.get("empty-agent").copied(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn hidden_agent_still_scans_skills_and_keeps_installation_state() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        sqlx::query("DELETE FROM agents")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let skill_root = tmp.path().join("hidden-tool/skills");
+        create_skill_dir(&skill_root, "visible-skill", &valid_skill_md("Visible Skill", "Kept"));
+        db::insert_custom_agent(
+            &pool,
+            &db::Agent {
+                id: "hidden-tool".to_string(),
+                display_name: "Hidden Tool".to_string(),
+                category: "coding".to_string(),
+                global_skills_dir: skill_root.to_string_lossy().into_owned(),
+                project_skills_dir: None,
+                icon_name: None,
+                is_detected: false,
+                is_builtin: false,
+                is_enabled: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(result.agents_scanned, 1);
+        assert_eq!(result.skills_by_agent.get("hidden-tool"), Some(&1));
+        assert_eq!(db::get_skills_for_agent(&pool, "hidden-tool").await.unwrap().len(), 1);
     }
 
     #[tokio::test]

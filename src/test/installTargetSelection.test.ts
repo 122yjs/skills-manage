@@ -56,4 +56,22 @@ describe("getDistinctInstallTargetAgents", () => {
       UNIVERSAL_AGENT_ID,
     ]);
   });
+
+  it("숨긴 감지된 도구도 적용 대상으로 유지한다", () => {
+    const agents: AgentWithStatus[] = [
+      {
+        id: "cursor",
+        display_name: "Cursor",
+        category: "coding",
+        global_skills_dir: "~/.cursor/skills",
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: false,
+      },
+    ];
+
+    expect(getDistinctInstallTargetAgents(agents).map((agent) => agent.id)).toEqual([
+      "cursor",
+    ]);
+  });
 });

@@ -10,9 +10,13 @@ vi.mock("../stores/platformStore", () => ({
       agents: [],
       skillsByAgent: {},
       isLoading: false,
+      isRefreshing: false,
+      updatingAgentIds: {},
       error: null,
       initialize: vi.fn(),
       rescan: vi.fn(),
+      setAgentVisibility: vi.fn(),
+      setAllAgentsVisibility: vi.fn(),
     };
     if (typeof selector === "function") {
       return selector(state);

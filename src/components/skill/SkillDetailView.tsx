@@ -1077,6 +1077,9 @@ export function SkillDetailView({
                   {/* Install Status — compact icon grid */}
                   <section aria-label={t("detail.installStatusRegion")}>
                     <SectionLabel>{t("detail.installStatus")}</SectionLabel>
+                    <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+                      {t("detail.applicationScopeHelp")}
+                    </p>
                     <div className="space-y-1.5">
                       {detail.is_read_only ? (
                         <p className="text-xs leading-relaxed text-muted-foreground">

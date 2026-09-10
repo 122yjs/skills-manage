@@ -235,7 +235,7 @@ pub async fn detect_agents_impl(pool: &DbPool) -> Result<Vec<AgentWithStatus>, S
     Ok(result)
 }
 
-/// 개별 플랫폼의 스캔·설치 대상 포함 여부를 바꾼다.
+/// 개별 플랫폼의 목록 표시 상태를 바꾼다.
 pub async fn set_agent_enabled_impl(
     pool: &DbPool,
     agent_id: &str,
@@ -248,7 +248,7 @@ pub async fn set_agent_enabled_impl(
     if matches!(agent.id.as_str(), "central" | "universal" | "obsidian")
         || matches!(agent.category.as_str(), "central" | "shared")
     {
-        return Err(format!("활성 상태를 바꿀 수 없는 플랫폼입니다: {agent_id}"));
+        return Err(format!("표시 상태를 바꿀 수 없는 플랫폼입니다: {agent_id}"));
     }
 
     db::update_agent_enabled(pool, agent_id, enabled).await?;
@@ -257,6 +257,15 @@ pub async fn set_agent_enabled_impl(
         .ok_or_else(|| format!("플랫폼을 다시 읽을 수 없습니다: {agent_id}"))?;
 
     Ok(agent_to_with_status(updated))
+}
+
+/// 개별 스위치로 관리하는 모든 플랫폼의 목록 표시 상태를 함께 바꾼다.
+pub async fn set_all_agents_enabled_impl(
+    pool: &DbPool,
+    enabled: bool,
+) -> Result<Vec<AgentWithStatus>, String> {
+    db::update_all_agents_enabled(pool, enabled).await?;
+    get_agents_impl(pool).await
 }
 
 /// Insert a new user-defined agent and return its representation.
@@ -362,6 +371,14 @@ pub async fn set_agent_enabled(
     enabled: bool,
 ) -> Result<AgentWithStatus, String> {
     set_agent_enabled_impl(&state.db, &agent_id, enabled).await
+}
+
+#[tauri::command]
+pub async fn set_all_agents_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<Vec<AgentWithStatus>, String> {
+    set_all_agents_enabled_impl(&state.db, enabled).await
 }
 
 /// Tauri command: refresh detection status for all agents and return them.
@@ -598,6 +615,92 @@ mod tests {
         assert!(set_agent_enabled_impl(&pool, "universal", false)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_set_all_agents_enabled_preserves_managed_roots() {
+        let pool = setup_test_db().await;
+        for (id, category) in [
+            ("custom-tool", "other"),
+            ("custom-shared", "shared"),
+            ("custom-central", "central"),
+        ] {
+            add_custom_agent_impl(
+                &pool,
+                CustomAgentConfig {
+                    id: Some(id.to_string()),
+                    display_name: id.to_string(),
+                    category: Some(category.to_string()),
+                    global_skills_dir: "/tmp/skills-manage-bulk-test/skills".to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let protected_ids = [
+            "central",
+            "universal",
+            "obsidian",
+            "custom-shared",
+            "custom-central",
+        ];
+        // 이미 꺼진 보호 대상도 전체 활성화로 바뀌지 않아야 한다.
+        db::update_agent_enabled(&pool, "custom-shared", false)
+            .await
+            .unwrap();
+        let before = db::get_all_agents(&pool).await.unwrap();
+
+        for enabled in [false, true] {
+            let agents = set_all_agents_enabled_impl(&pool, enabled).await.unwrap();
+            assert_eq!(agents.len(), before.len());
+            for agent in agents {
+                let expected = if protected_ids.contains(&agent.id.as_str()) {
+                    before
+                        .iter()
+                        .find(|original| original.id == agent.id)
+                        .unwrap()
+                        .is_enabled
+                } else {
+                    enabled
+                };
+                assert_eq!(agent.is_enabled, expected, "{}", agent.id);
+                assert_eq!(
+                    db::get_agent_by_id(&pool, &agent.id)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_enabled,
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_set_all_agents_enabled_rolls_back_on_write_failure() {
+        let pool = setup_test_db().await;
+        let before = db::get_all_agents(&pool).await.unwrap();
+        sqlx::query(
+            "CREATE TRIGGER fail_bulk_update BEFORE UPDATE OF is_enabled ON agents
+             WHEN NEW.id = 'claude-code' AND NEW.is_enabled = 0
+             BEGIN SELECT RAISE(ABORT, 'test write failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(set_all_agents_enabled_impl(&pool, false).await.is_err());
+        let after = db::get_all_agents(&pool).await.unwrap();
+        for agent in after {
+            assert_eq!(
+                agent.is_enabled,
+                before
+                    .iter()
+                    .find(|original| original.id == agent.id)
+                    .unwrap()
+                    .is_enabled
+            );
+        }
     }
 
     // ── add_custom_agent_impl ─────────────────────────────────────────────────

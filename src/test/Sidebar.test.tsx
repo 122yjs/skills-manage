@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/layout/Sidebar";
+import { toast } from "sonner";
 import { usePlatformStore } from "../stores/platformStore";
 import type { DiscoveredProject, DiscoveredSkill, ObsidianVault } from "../types";
 import {
@@ -27,6 +28,8 @@ vi.mock("../stores/discoverStore", () => ({
 vi.mock("../stores/obsidianStore", () => ({
   useObsidianStore: vi.fn(),
 }));
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 import { useCollectionStore } from "../stores/collectionStore";
 import { useDiscoverStore } from "../stores/discoverStore";
@@ -76,7 +79,8 @@ const defaultStoreState = {
   initialize: vi.fn(),
   rescan: vi.fn(),
   refreshCounts: vi.fn(),
-  setAgentEnabled: vi.fn().mockResolvedValue(undefined),
+  setAgentVisibility: vi.fn().mockResolvedValue(undefined),
+  setAllAgentsVisibility: vi.fn().mockResolvedValue(undefined),
 };
 
 type SidebarPlatformState = Omit<typeof defaultStoreState, "skillsByAgent"> & {
@@ -408,12 +412,12 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
   });
 
-  it("모든 플랫폼 표시에서 처음 선택하지 않은 플랫폼을 활성화할 수 있다", async () => {
-    const setAgentEnabled = vi.fn().mockResolvedValue(undefined);
+  it("모든 플랫폼 표시에서 숨긴 플랫폼을 다시 표시할 수 있다", async () => {
+    const setAgentVisibility = vi.fn().mockResolvedValue(undefined);
     renderSidebar("/central", {
       platformState: {
         ...defaultStoreState,
-        setAgentEnabled,
+        setAgentVisibility,
         agents: [
           ...mockAgents,
           {
@@ -434,32 +438,99 @@ describe("Sidebar", () => {
     fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
 
     expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
-    const enableSwitch = screen.getByRole("switch", { name: "启用 Continue" });
-    expect(enableSwitch).not.toBeChecked();
-    fireEvent.click(enableSwitch);
+    const visibilitySwitch = screen.getByRole("switch", { name: "显示 Continue" });
+    expect(visibilitySwitch).not.toBeChecked();
+    fireEvent.click(visibilitySwitch);
 
     await waitFor(() =>
-      expect(setAgentEnabled).toHaveBeenCalledWith("continue", true)
+      expect(setAgentVisibility).toHaveBeenCalledWith("continue", true)
     );
   });
 
-  it("모든 플랫폼 표시에서 활성 플랫폼을 비활성화할 수 있다", async () => {
-    const setAgentEnabled = vi.fn().mockResolvedValue(undefined);
+  it("모든 플랫폼 표시에서 표시 중인 플랫폼을 숨길 수 있다", async () => {
+    const setAgentVisibility = vi.fn().mockResolvedValue(undefined);
     renderSidebar("/central", {
       platformState: {
         ...defaultStoreState,
-        setAgentEnabled,
+        setAgentVisibility,
       },
     });
 
     fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    const disableSwitch = screen.getByRole("switch", { name: "停用 Claude Code" });
-    expect(disableSwitch).toBeChecked();
-    fireEvent.click(disableSwitch);
+    const visibilitySwitch = screen.getByRole("switch", { name: "隐藏 Claude Code" });
+    expect(visibilitySwitch).toBeChecked();
+    fireEvent.click(visibilitySwitch);
 
     await waitFor(() =>
-      expect(setAgentEnabled).toHaveBeenCalledWith("claude-code", false)
+      expect(setAgentVisibility).toHaveBeenCalledWith("claude-code", false)
     );
+  });
+
+  it("모든 플랫폼을 표시하면 전체 숨기기를 요청해도 현재 화면을 유지한다", async () => {
+    renderSidebar("/platform/claude-code");
+    expect(screen.queryByRole("button", { name: "全部隐藏" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+
+    expect(screen.getByRole("button", { name: "全部显示" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "全部隐藏" }));
+
+    await waitFor(() => expect(defaultStoreState.setAllAgentsVisibility).toHaveBeenCalledWith(false));
+    expect(defaultStoreState.setAgentVisibility).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByTestId("location-path")).toHaveTextContent("/platform/claude-code"));
+  });
+
+  it("모두 숨긴 플랫폼도 목록을 표시해 전체 표시할 수 있다", async () => {
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        agents: mockAgents.map((agent) => agent.id === "central" ? agent : { ...agent, is_enabled: false }),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+
+    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "全部显示" }));
+    await waitFor(() => expect(defaultStoreState.setAllAgentsVisibility).toHaveBeenCalledWith(true));
+  });
+
+  it("일부만 표시 중인 경우 두 전체 버튼을 모두 사용할 수 있다", () => {
+    renderSidebar("/central", {
+      platformState: {
+        ...defaultStoreState,
+        agents: mockAgents.map((agent) => agent.id === "cursor" ? { ...agent, is_enabled: false } : agent),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+    expect(screen.getByRole("button", { name: "全部显示" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeEnabled();
+  });
+
+  it("표시 상태를 저장하는 동안 전체 버튼과 개별 스위치를 잠근다", () => {
+    renderSidebar("/central", {
+      platformState: { ...defaultStoreState, updatingAgentIds: { "claude-code": true } },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+    expect(screen.getByRole("button", { name: "全部显示" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeDisabled();
+    for (const toggle of screen.getAllByRole("switch")) {
+      expect(toggle).toHaveAttribute("aria-disabled", "true");
+      fireEvent.click(toggle);
+    }
+    expect(defaultStoreState.setAgentVisibility).not.toHaveBeenCalled();
+  });
+
+  it("전체 변경 실패를 알리고 현재 페이지를 유지한다", async () => {
+    renderSidebar("/platform/claude-code", {
+      platformState: {
+        ...defaultStoreState,
+        setAllAgentsVisibility: vi.fn().mockRejectedValue(new Error("저장 실패")),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
+    fireEvent.click(screen.getByRole("button", { name: "全部隐藏" }));
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("无法完成所有平台的显示状态更新。"));
+    expect(screen.getByTestId("location-path")).toHaveTextContent("/platform/claude-code");
   });
 
   // ── Navigation ────────────────────────────────────────────────────────────

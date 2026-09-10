@@ -5,15 +5,16 @@ import LanguageDetector from "i18next-browser-languagedetector";
 import zh from "./locales/zh.json";
 import en from "./locales/en.json";
 import ko from "./locales/ko.json";
+import { recoveryResources } from "./recoveryResources";
 
 i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources: {
-      zh: { translation: zh },
-      en: { translation: en },
-      ko: { translation: ko },
+      zh: { translation: { ...zh, ...recoveryResources.zh } },
+      en: { translation: { ...en, ...recoveryResources.en } },
+      ko: { translation: { ...ko, ...recoveryResources.ko } },
     },
     // 저장된 선택이 없으면 WebView의 navigator 언어(OS 언어)를 사용한다.
     // 지원하지 않는 OS 언어는 영어로 표시한다.

@@ -479,7 +479,7 @@ describe("CentralSkillsView", () => {
     );
 
     expect(
-      await screen.findByRole("dialog", { name: /删除 frontend-design/i })
+      await screen.findByRole("dialog", { name: /将 frontend-design 移到回收站/i })
     ).toBeInTheDocument();
     expect(screen.getByText(/Claude Code/)).toBeInTheDocument();
 
@@ -545,7 +545,7 @@ describe("CentralSkillsView", () => {
     fireEvent.click(screen.getByRole("button", { name: /删除套件 Superpowers/i }));
 
     expect(
-      await screen.findByRole("dialog", { name: /删除套件 Superpowers/i })
+      await screen.findByRole("dialog", { name: /将套件 Superpowers 移到回收站/i })
     ).toBeInTheDocument();
     expect(mockPreviewDeleteCentralBundle).toHaveBeenCalledWith("Superpowers");
     expect(mockLoadCentralBundleDetail).not.toHaveBeenCalled();
@@ -641,7 +641,7 @@ describe("CentralSkillsView", () => {
 
     expect(mockPreviewDeleteCentralBundle).toHaveBeenCalledWith("Superpowers");
     expect(
-      await screen.findByRole("dialog", { name: /删除套件 Superpowers/i })
+      await screen.findByRole("dialog", { name: /将套件 Superpowers 移到回收站/i })
     ).toBeInTheDocument();
     expect(screen.getByText(/using-superpowers/)).toBeInTheDocument();
     expect(screen.getByText(/Claude Code/)).toBeInTheDocument();

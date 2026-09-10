@@ -12,13 +12,14 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useCollectionStore } from "@/stores/collectionStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useObsidianStore } from "@/stores/obsidianStore";
 import { cn } from "@/lib/utils";
-import { isInstallTargetAgent, UNIVERSAL_AGENT_ID } from "@/lib/agents";
+import { isToggleableAgent, UNIVERSAL_AGENT_ID } from "@/lib/agents";
 import type { AgentWithStatus } from "@/types";
 import {
   DashboardNavItem,
@@ -36,18 +37,18 @@ function ManagedPlatformNavItem({
   count,
   isActive,
   isUpdating,
-  toggleLabel,
+  visibilityLabel,
   onOpen,
-  onEnabledChange,
+  onVisibilityChange,
 }: {
   agent: AgentWithStatus;
   expanded: boolean;
   count?: number;
   isActive: boolean;
   isUpdating: boolean;
-  toggleLabel: string;
+  visibilityLabel: string;
   onOpen: () => void;
-  onEnabledChange: (enabled: boolean) => void;
+  onVisibilityChange: (visible: boolean) => void;
 }) {
   return (
     <div
@@ -60,9 +61,9 @@ function ManagedPlatformNavItem({
     >
       <button
         type="button"
-        onClick={agent.is_enabled ? onOpen : () => onEnabledChange(true)}
+        onClick={onOpen}
         disabled={isUpdating}
-        title={agent.is_enabled ? agent.display_name : toggleLabel}
+        title={agent.display_name}
         aria-label={agent.display_name}
         aria-current={isActive ? "page" : undefined}
         className={cn(
@@ -92,9 +93,9 @@ function ManagedPlatformNavItem({
         <Switch
           checked={agent.is_enabled}
           disabled={isUpdating}
-          onCheckedChange={onEnabledChange}
-          aria-label={toggleLabel}
-          title={toggleLabel}
+          onCheckedChange={onVisibilityChange}
+          aria-label={visibilityLabel}
+          title={visibilityLabel}
           className="mr-2 scale-75"
         />
       )}
@@ -132,8 +133,10 @@ export function Sidebar() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const { t } = useTranslation();
-  const { agents, skillsByAgent, isLoading, updatingAgentIds, setAgentEnabled } =
-    usePlatformStore();
+  const {
+    agents, skillsByAgent, isLoading, isRefreshing, updatingAgentIds,
+    setAgentVisibility, setAllAgentsVisibility,
+  } = usePlatformStore();
 
   const collections = useCollectionStore((s) => s.collections);
   const loadCollections = useCollectionStore((s) => s.loadCollections);
@@ -170,12 +173,8 @@ export function Sidebar() {
     });
   }
 
-  const catalogAgents = agents.filter(
-    (agent) =>
-      isInstallTargetAgent(agent) &&
-      agent.id !== UNIVERSAL_AGENT_ID &&
-      agent.category !== "shared"
-  );
+  const catalogAgents = agents.filter(isToggleableAgent);
+  const isUpdatingPlatforms = Object.values(updatingAgentIds).some(Boolean);
   const platformAgents = catalogAgents.filter(
     (agent) =>
       showAllPlatforms ||
@@ -192,18 +191,23 @@ export function Sidebar() {
     navigate("/collections");
   }
 
-  async function handleAgentEnabledChange(agent: AgentWithStatus, enabled: boolean) {
+  async function handleAgentVisibilityChange(agent: AgentWithStatus, visible: boolean) {
     try {
-      await setAgentEnabled(agent.id, enabled);
-      if (!enabled && pathname === `/platform/${agent.id}`) {
-        navigate("/central");
-      }
+      await setAgentVisibility(agent.id, visible);
     } catch {
       toast.error(
         t("sidebar.platformToggleError", {
           name: agent.display_name,
         })
       );
+    }
+  }
+
+  async function handleAllAgentsVisibilityChange(visible: boolean) {
+    try {
+      await setAllAgentsVisibility(visible);
+    } catch {
+      toast.error(t("sidebar.allPlatformsToggleError"));
     }
   }
 
@@ -223,8 +227,8 @@ export function Sidebar() {
       );
     }
 
-    const toggleLabel = t(
-      agent.is_enabled ? "sidebar.disablePlatform" : "sidebar.enablePlatform",
+    const visibilityLabel = t(
+      agent.is_enabled ? "sidebar.hidePlatform" : "sidebar.showPlatform",
       { name: agent.display_name }
     );
     return (
@@ -233,11 +237,11 @@ export function Sidebar() {
         agent={agent}
         expanded={expanded}
         count={skillsByAgent[agent.id]}
-        isActive={isActive && agent.is_enabled}
-        isUpdating={!!updatingAgentIds[agent.id]}
-        toggleLabel={toggleLabel}
+        isActive={isActive}
+        isUpdating={isUpdatingPlatforms || isRefreshing}
+        visibilityLabel={visibilityLabel}
         onOpen={() => navigate(`/platform/${agent.id}`)}
-        onEnabledChange={(enabled) => void handleAgentEnabledChange(agent, enabled)}
+        onVisibilityChange={(visible) => void handleAgentVisibilityChange(agent, visible)}
       />
     );
   }
@@ -353,6 +357,29 @@ export function Sidebar() {
                   );
                 })}
               </>
+            )}
+
+            {expanded && showAllPlatforms && catalogAgents.length > 0 && (
+              <div className="flex gap-1 px-1 pt-2" aria-busy={isUpdatingPlatforms}>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="min-w-0 flex-1"
+                  disabled={isUpdatingPlatforms || isRefreshing || catalogAgents.every((agent) => agent.is_enabled)}
+                  onClick={() => void handleAllAgentsVisibilityChange(true)}
+                >
+                  {t("sidebar.showAllPlatformEntries")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="min-w-0 flex-1"
+                  disabled={isUpdatingPlatforms || isRefreshing || catalogAgents.every((agent) => !agent.is_enabled)}
+                  onClick={() => void handleAllAgentsVisibilityChange(false)}
+                >
+                  {t("sidebar.hideAllPlatformEntries")}
+                </Button>
+              </div>
             )}
 
             {/* Lobster agents */}

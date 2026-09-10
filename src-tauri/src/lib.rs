@@ -30,6 +30,9 @@ pub fn run() {
                     .expect("Failed to open SQLite database")
             });
             tauri::async_runtime::block_on(async {
+                commands::recovery::snapshot_before_startup(&pool)
+                    .await
+                    .expect("Failed to back up the database before initialization");
                 db::init_database(&pool)
                     .await
                     .expect("Failed to initialize database schema");
@@ -48,6 +51,7 @@ pub fn run() {
             commands::agents::get_agents,
             commands::agents::detect_agents,
             commands::agents::set_agent_enabled,
+            commands::agents::set_all_agents_enabled,
             commands::agents::add_custom_agent,
             commands::agents::update_custom_agent,
             commands::agents::remove_custom_agent,
@@ -91,6 +95,10 @@ pub fn run() {
             commands::settings::set_scan_directory_active,
             commands::settings::get_setting,
             commands::settings::set_setting,
+            commands::recovery::list_recovery_entries,
+            commands::recovery::restore_recovery_entry,
+            commands::recovery::delete_recovery_entry,
+            commands::recovery::create_database_backup,
             commands::storage::get_central_vault_status,
             commands::storage::preview_legacy_migration,
             commands::storage::defer_legacy_migration,

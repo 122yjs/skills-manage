@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import { usePlatformStore } from "@/stores/platformStore";
 import type { AgentWithStatus, DevToolSetupState } from "@/types";
 
 type LoadStatus = "idle" | "loading" | "ready" | "error";
@@ -64,6 +65,14 @@ export const useDevToolSetupStore = create<DevToolSetupStore>((set) => ({
       const state = await invoke<DevToolSetupState>("save_dev_tool_selection", {
         agentIds,
       });
+      // 도구 선택은 목록 표시 상태만 바꾼다. 전체 스캔을 다시 실행하지 않고
+      // 저장 결과를 현재 플랫폼 메타데이터에 반영한다.
+      const toolsById = new Map(state.tools.map((tool) => [tool.id, tool]));
+      usePlatformStore.setState((platformState) => ({
+        agents: platformState.agents.map(
+          (agent) => toolsById.get(agent.id) ?? agent
+        ),
+      }));
       set({
         status: "ready",
         completed: state.completed,

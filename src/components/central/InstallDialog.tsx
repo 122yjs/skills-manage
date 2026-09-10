@@ -145,6 +145,9 @@ export function InstallDialog({
           <DialogDescription>
             {t("installDialog.choosePlatforms")}
           </DialogDescription>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            {t("installDialog.applicationScopeHelp")}
+          </p>
 
           {/* Platform checkboxes */}
           <div className="grid grid-cols-2 gap-x-4 gap-y-2" role="group" aria-label={t("installDialog.selectPlatforms")}>

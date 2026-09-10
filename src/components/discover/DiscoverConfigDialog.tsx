@@ -15,7 +15,7 @@ import { useDiscoverStore } from "@/stores/discoverStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { ScanRoot } from "@/types";
 import { describeSkillsPattern } from "@/lib/path";
-import { isEnabledInstallTargetAgent } from "@/lib/agents";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 const OBSIDIAN_VAULT_PATTERNS = [
   ".skills/<skill>/SKILL.md",
@@ -51,7 +51,7 @@ export function DiscoverConfigDialog({ open, onOpenChange }: DiscoverConfigDialo
 
   // Get platform skill directory patterns for display.
   const platformPatterns = agents
-    .filter(isEnabledInstallTargetAgent)
+    .filter(isInstallTargetAgent)
     .map((a) => ({
       name: a.display_name,
       pattern: describeSkillsPattern(a.global_skills_dir),

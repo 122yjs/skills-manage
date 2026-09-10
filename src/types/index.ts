@@ -262,6 +262,8 @@ export interface CollectionBatchInstallResult {
 
 // ─── Settings Types ───────────────────────────────────────────────────────────
 
+export type { RecoveryEntry } from "./recovery";
+
 export interface ScanDirectory {
   id: number;
   path: string;

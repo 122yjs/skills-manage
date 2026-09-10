@@ -6,6 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::State;
 use uuid::Uuid;
 
+use crate::commands::recovery;
 use crate::db::{self, DbPool};
 use crate::path_utils::{
     default_central_skills_dir, expand_home_path, legacy_central_skills_dir, path_to_string,
@@ -900,6 +901,8 @@ async fn change_central_path_impl(
         return Err("Pending migration source is not the legacy Central path".to_string());
     }
     let recreate_universal = migration_state != MIGRATION_COMPLETED && current == legacy_path;
+    // 파일과 DB 경로를 바꾸기 전에 WAL까지 포함한 일관된 DB 스냅샷을 남깁니다.
+    recovery::snapshot_database(pool, "보관함 위치 변경 전 데이터베이스 백업").await?;
     let applied = apply_storage_move_impl(
         &current,
         destination,

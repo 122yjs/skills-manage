@@ -132,6 +132,34 @@ describe("InstallDialog", () => {
     expect(screen.queryByLabelText("Obsidian")).not.toBeInTheDocument();
   });
 
+  it("keeps a hidden platform selectable without changing its existing application", async () => {
+    mockOnInstall.mockResolvedValueOnce(undefined);
+    render(
+      <InstallDialog
+        open
+        onOpenChange={mockOnOpenChange}
+        skill={mockSkill}
+        agents={mockAgents.map((agent) => ({ ...agent, is_enabled: false }))}
+        onInstall={mockOnInstall}
+      />
+    );
+
+    const existingTarget = screen.getByRole("checkbox", { name: "Claude Code" });
+    expect(existingTarget).toBeChecked();
+    expect(existingTarget).not.toHaveAttribute("aria-disabled", "true");
+    expect(mockOnInstall).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Cursor" }));
+    fireEvent.click(screen.getByRole("button", { name: /安装到 2 个平台/i }));
+    await waitFor(() => {
+      expect(mockOnInstall).toHaveBeenCalledWith(
+        mockSkill.id,
+        expect.arrayContaining(["claude-code", "cursor"]),
+        "auto"
+      );
+    });
+  });
+
   it("shows 'already linked' badge for linked agents", () => {
     renderDialog();
     // Claude Code is in linked_agents

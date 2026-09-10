@@ -1850,6 +1850,20 @@ pub async fn update_agent_enabled(
         .map_err(|e| e.to_string())
 }
 
+/// 보관함과 공용 경로를 유지하면서 모든 플랫폼의 목록 표시 상태를 한 번에 저장한다.
+pub async fn update_all_agents_enabled(pool: &DbPool, is_enabled: bool) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE agents SET is_enabled = ?
+         WHERE id NOT IN ('central', 'universal', 'obsidian')
+           AND category NOT IN ('central', 'shared')",
+    )
+    .bind(is_enabled)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
 /// Insert a new custom agent (non-builtin).
 pub async fn insert_custom_agent(pool: &DbPool, agent: &Agent) -> Result<(), String> {
     sqlx::query(

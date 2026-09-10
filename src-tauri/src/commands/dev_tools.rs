@@ -87,7 +87,8 @@ pub async fn save_dev_tool_selection_impl(
 
     let mut transaction = pool.begin().await.map_err(|error| error.to_string())?;
 
-    // 기존 대형 내장 카탈로그는 데이터 보존을 위해 삭제하지 않고 비활성화한다.
+    // 선택하지 않은 도구도 스캔과 적용 대상 관리에는 남긴다. 여기서는
+    // 사이드바 표시 상태만 바꾼다.
     sqlx::query("UPDATE agents SET is_enabled = 0 WHERE is_builtin = 1 AND category = 'coding'")
         .execute(&mut *transaction)
         .await

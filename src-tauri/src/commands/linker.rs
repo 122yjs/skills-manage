@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::commands::agents::is_agent_detected;
+use crate::commands::recovery;
 use crate::db::{self, DbPool, SkillInstallation};
 use crate::AppState;
 
@@ -1072,8 +1073,14 @@ pub async fn uninstall_skill_from_agent_impl(
         .map(|r| PathBuf::from(&r.installed_path))
         .unwrap_or_else(|| PathBuf::from(&agent.global_skills_dir).join(skill_id));
     let link_type = record.map(|r| r.link_type.as_str()).unwrap_or("symlink");
+    // 복사 설치는 백업 생성부터 DB 기록 정리까지 하나의 복구 잠금으로 처리합니다.
+    let _recovery_guard = if link_type == "copy" {
+        Some(recovery::recovery_lock().await)
+    } else {
+        None
+    };
 
-    // 3. Inspect the entry at that path and remove it appropriately.
+    // 3. 검사한 항목만 제거합니다. 복사 설치는 먼저 전체를 백업합니다.
     match std::fs::symlink_metadata(&install_path) {
         Ok(meta) if meta.file_type().is_symlink() => {
             // Always safe to remove symlinks.
@@ -1083,6 +1090,10 @@ pub async fn uninstall_skill_from_agent_impl(
         Ok(meta) if meta.is_dir() => {
             // Only remove real directories that were explicitly installed as copies.
             if link_type == "copy" {
+                let installation = record.ok_or_else(|| {
+                    "복사 설치 기록이 없어 안전하게 제거할 수 없습니다".to_string()
+                })?;
+                recovery::backup_copy_installation_locked(pool, installation).await?;
                 std::fs::remove_dir_all(&install_path)
                     .map_err(|e| format!("Failed to remove copied skill directory: {}", e))?;
             } else {

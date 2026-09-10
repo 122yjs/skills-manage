@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import { isToggleableAgent } from "@/lib/agents";
 import { AgentWithStatus, ScanResult } from "@/types";
 
 const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
@@ -67,12 +68,13 @@ interface PlatformState {
   initialize: () => Promise<void>;
   rescan: () => Promise<void>;
   refreshCounts: () => Promise<void>;
-  setAgentEnabled: (agentId: string, enabled: boolean) => Promise<void>;
+  setAgentVisibility: (agentId: string, visible: boolean) => Promise<void>;
+  setAllAgentsVisibility: (visible: boolean) => Promise<void>;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
-export const usePlatformStore = create<PlatformState>((set) => ({
+export const usePlatformStore = create<PlatformState>((set, get) => ({
   agents: [],
   skillsByAgent: {},
   isLoading: false,
@@ -172,7 +174,9 @@ export const usePlatformStore = create<PlatformState>((set) => ({
     }
   },
 
-  setAgentEnabled: async (agentId, enabled) => {
+  setAgentVisibility: async (agentId, visible) => {
+    if (Object.keys(get().updatingAgentIds).length > 0) return;
+
     set((state) => ({
       updatingAgentIds: { ...state.updatingAgentIds, [agentId]: true },
       error: null,
@@ -184,7 +188,7 @@ export const usePlatformStore = create<PlatformState>((set) => ({
         delete updatingAgentIds[agentId];
         return {
           agents: state.agents.map((agent) =>
-            agent.id === agentId ? { ...agent, is_enabled: enabled } : agent
+            agent.id === agentId ? { ...agent, is_enabled: visible } : agent
           ),
           updatingAgentIds,
         };
@@ -193,19 +197,18 @@ export const usePlatformStore = create<PlatformState>((set) => ({
     }
 
     try {
-      await invoke<AgentWithStatus>("set_agent_enabled", { agentId, enabled });
-      const [agents, scanResult] = await Promise.all([
-        invoke<AgentWithStatus[]>("get_agents"),
-        invoke<ScanResult>("scan_all_skills"),
-      ]);
+      const updated = await invoke<AgentWithStatus>("set_agent_enabled", {
+        agentId,
+        enabled: visible,
+      });
       set((state) => {
         const updatingAgentIds = { ...state.updatingAgentIds };
         delete updatingAgentIds[agentId];
         return {
-          agents,
-          skillsByAgent: scanResult.skills_by_agent,
+          agents: state.agents.map((agent) =>
+            agent.id === agentId ? updated : agent
+          ),
           updatingAgentIds,
-          scanGeneration: (state.scanGeneration ?? 0) + 1,
           error: null,
         };
       });
@@ -216,6 +219,37 @@ export const usePlatformStore = create<PlatformState>((set) => ({
         return { updatingAgentIds, error: String(error) };
       });
       throw error;
+    }
+  },
+
+  setAllAgentsVisibility: async (visible) => {
+    const state = get();
+    if (state.isLoading || state.isRefreshing || Object.keys(state.updatingAgentIds).length > 0) return;
+    const targets = state.agents.filter(isToggleableAgent);
+    if (!targets.some((agent) => agent.is_enabled !== visible)) return;
+
+    set({
+      updatingAgentIds: Object.fromEntries(targets.map((agent) => [agent.id, true])),
+      error: null,
+    });
+
+    try {
+      if (!isTauriRuntime()) {
+        set((current) => ({
+          agents: current.agents.map((agent) =>
+            isToggleableAgent(agent) ? { ...agent, is_enabled: visible } : agent
+          ),
+        }));
+        return;
+      }
+
+      const agents = await invoke<AgentWithStatus[]>("set_all_agents_enabled", { enabled: visible });
+      set({ agents });
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set({ updatingAgentIds: {} });
     }
   },
 }));

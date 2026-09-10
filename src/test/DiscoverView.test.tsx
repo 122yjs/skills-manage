@@ -329,7 +329,8 @@ function buildPlatformStoreState(overrides = {}) {
     initialize: vi.fn(),
     rescan: mockRescan,
     refreshCounts: mockRefreshPlatformCounts,
-    setAgentEnabled: vi.fn(),
+    setAgentVisibility: vi.fn(),
+    setAllAgentsVisibility: vi.fn(),
     ...overrides,
   };
 }

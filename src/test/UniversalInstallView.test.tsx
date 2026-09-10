@@ -66,7 +66,8 @@ describe("UniversalInstallView", () => {
         initialize: vi.fn(),
         rescan: vi.fn(),
         refreshCounts,
-        setAgentEnabled: vi.fn(),
+        setAgentVisibility: vi.fn(),
+        setAllAgentsVisibility: vi.fn(),
       })
     );
     vi.mocked(useSkillStore).mockImplementation((selector) =>

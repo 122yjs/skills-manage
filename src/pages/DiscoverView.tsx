@@ -28,7 +28,7 @@ import { consumeScrollPosition } from "@/lib/scrollRestoration";
 import { VirtualizedList } from "@/components/ui/virtualized-list";
 import { getPathBasename } from "@/lib/path";
 import { buildSearchText, normalizeSearchQuery } from "@/lib/search";
-import { isEnabledInstallTargetAgent } from "@/lib/agents";
+import { isInstallTargetAgent } from "@/lib/agents";
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
@@ -282,7 +282,7 @@ export function DiscoverView() {
 
   // Available platform agents for install dialog.
   const platformAgents = useMemo(
-    () => agents.filter(isEnabledInstallTargetAgent),
+    () => agents.filter(isInstallTargetAgent),
     [agents]
   );
 

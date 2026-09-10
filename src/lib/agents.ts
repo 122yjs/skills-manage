@@ -31,17 +31,24 @@ export function isInstallTargetAgent(agent: Pick<AgentWithStatus, "id">): boolea
   return !NON_INSTALL_TARGET_AGENT_IDS.has(agent.id);
 }
 
-export function isEnabledInstallTargetAgent(
-  agent: Pick<AgentWithStatus, "id" | "is_enabled">
+/** 보관함과 공용 경로를 제외하고 목록에서 표시하거나 숨길 수 있는 플랫폼이다. */
+export function isToggleableAgent(
+  agent: Pick<AgentWithStatus, "id" | "category">
 ): boolean {
-  return isInstallTargetAgent(agent) && agent.is_enabled;
+  return (
+    isInstallTargetAgent(agent) && agent.id !== UNIVERSAL_AGENT_ID &&
+    agent.category !== "central" && agent.category !== "shared"
+  );
 }
 
 function normalizeSkillsPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
-/** 같은 공용 경로를 가리키는 플랫폼을 합쳐 실제 설치 대상만 반환한다. */
+/** 같은 공용 경로를 가리키는 플랫폼을 합쳐 실제 적용 대상만 반환한다.
+ *
+ * `is_enabled`는 목록 표시 상태이므로 적용 대상을 고를 때 사용하지 않는다.
+ */
 export function getDistinctInstallTargetAgents(
   agents: AgentWithStatus[]
 ): AgentWithStatus[] {
@@ -54,7 +61,6 @@ export function getDistinctInstallTargetAgents(
     .filter(
       (agent) =>
         isInstallTargetAgent(agent) &&
-        agent.is_enabled &&
         (agent.id === UNIVERSAL_AGENT_ID || agent.is_detected) &&
         (agent.id === UNIVERSAL_AGENT_ID ||
           normalizeSkillsPath(agent.global_skills_dir) !== universalPath)
