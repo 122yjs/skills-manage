@@ -139,13 +139,13 @@ describe("UnifiedSkillCard platform toggles", () => {
     expect(screen.getByText("编程类")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "管理 demo-skill 的平台安装" })).toBeInTheDocument();
 
-    expect(screen.getByRole("button", { name: "切换 demo-skill (OpenClaw) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill (Kiro) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill (Cursor) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill (Trae) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (OpenClaw) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Kiro) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Cursor) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Trae) 的激活状态" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "切换 demo-skill (Gemini CLI) 的使用状态" })
+      screen.queryByRole("button", { name: "切换 demo-skill (Gemini CLI) 的激活状态" })
     ).not.toBeInTheDocument();
   });
 
@@ -153,7 +153,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     const { onToggle } = renderCard([]);
 
     const button = screen.getByRole("button", {
-      name: "切换 demo-skill (Cursor) 的使用状态",
+      name: "切换 demo-skill (Cursor) 的激活状态",
     });
 
     expect(button).toHaveAttribute("aria-pressed", "false");
@@ -165,7 +165,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     renderCard(["cursor"], ["claude-code"]);
 
     const button = screen.getByRole("button", {
-      name: "切换 demo-skill (Claude Code) 的使用状态",
+      name: "切换 demo-skill (Claude Code) 的激活状态",
     });
 
     expect(button).toBeDisabled();
@@ -180,7 +180,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     });
 
     const button = screen.getByRole("button", {
-      name: "切换 demo-skill (Cursor) 的使用状态",
+      name: "切换 demo-skill (Cursor) 的激活状态",
     });
     expect(button).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(button);

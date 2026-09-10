@@ -20,7 +20,7 @@ export const recoveryResources = {
       expiresAt: "만료 시각",
       neverExpires: "자동 만료 없음",
       kind: {
-        copy_backup: "복사 설치 백업",
+        copy_backup: "설치 백업",
         vault_trash: "보관함 휴지통",
         database: "데이터베이스 백업",
       },
@@ -48,7 +48,7 @@ export const recoveryResources = {
       expiresAt: "Expires",
       neverExpires: "Does not expire automatically",
       kind: {
-        copy_backup: "Copy-install backup",
+        copy_backup: "Installation backup",
         vault_trash: "Library trash",
         database: "Database backup",
       },
@@ -76,7 +76,7 @@ export const recoveryResources = {
       expiresAt: "过期时间",
       neverExpires: "不会自动过期",
       kind: {
-        copy_backup: "复制安装备份",
+        copy_backup: "安装备份",
         vault_trash: "技能库回收站",
         database: "数据库备份",
       },

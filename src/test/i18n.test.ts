@@ -48,4 +48,16 @@ describe("i18n 기본 언어", () => {
     expect(i18n.resolvedLanguage).toBe("zh");
     expect(i18n.t("settings.title")).toBe("设置");
   });
+
+  it("플랫폼 배포 문구는 설치와 설치 삭제를 구분한다", async () => {
+    setOsLanguage("ko-KR");
+
+    const i18n = await loadI18n();
+
+    expect(i18n.t("central.installLabel", { name: "스킬" })).toBe("스킬을 플랫폼에 설치");
+    expect(i18n.t("central.deleteCascadeLabel")).toBe("설치 삭제 후 원본 삭제");
+    expect(i18n.t("platformDrawer.title", { name: "demo" })).toBe("demo의 플랫폼 설치 관리");
+    expect(i18n.t("installDialog.confirmInstall", { count: 2 })).toBe("2개 플랫폼에 설치");
+    expect(i18n.t("detail.applicationScopeHelp")).toContain("설치 삭제");
+  });
 });

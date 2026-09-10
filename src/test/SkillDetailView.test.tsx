@@ -458,7 +458,7 @@ describe("SkillDetailView", () => {
       screen.getByText(/不可调整技能集|Collection management is unavailable/i)
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /切换 .* 的使用状态/i })
+      screen.queryByRole("button", { name: /切换 .* 的激活状态/i })
     ).toBeNull();
     expect(
       screen.queryByRole("button", { name: /加入技能集/i })
@@ -487,7 +487,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByText("~/.claude/skills/frontend-design/SKILL.md")).toBeInTheDocument();
     expect(screen.getByText("~/.claude/skills")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的使用状态/i })
+      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的激活状态/i })
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /加入技能集/i })
@@ -508,7 +508,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Each non-central agent should have a toggle icon button
     const toggleButtons = screen.getAllByRole("button", {
-      name: /切换 .* 的使用状态/i,
+      name: /切换 .* 的激活状态/i,
     });
     // 2 non-central agents (claude-code, cursor)
     expect(toggleButtons).toHaveLength(2);
@@ -554,7 +554,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Claude Code is installed — tooltip includes linked status
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
     });
     expect(claudeToggle).toHaveAttribute("title", expect.stringContaining("Claude Code"));
   });
@@ -563,7 +563,7 @@ describe("SkillDetailView", () => {
     renderView();
 
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
     });
 
     expect(claudeToggle).toHaveAttribute("aria-pressed", "true");
@@ -575,7 +575,7 @@ describe("SkillDetailView", () => {
     renderView();
 
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
+      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
     });
 
     expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
@@ -593,7 +593,7 @@ describe("SkillDetailView", () => {
     renderView("frontend-design", "page", { skipMockSetup: true });
 
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
+      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
     });
 
     expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
@@ -608,7 +608,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Cursor is NOT installed
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
+      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
     });
     fireEvent.click(cursorToggle);
     await waitFor(() => {
@@ -622,7 +622,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Claude Code IS installed
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
     });
     fireEvent.click(claudeToggle);
     await waitFor(() => {
@@ -655,7 +655,7 @@ describe("SkillDetailView", () => {
     renderView("frontend-design", "page", { skipMockSetup: true });
 
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
     });
     expect(claudeToggle).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(claudeToggle);
@@ -1267,7 +1267,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByTestId("react-markdown")).toHaveTextContent("# User Frontend Design");
     expect(screen.getByRole("button", { name: /加入技能集/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的使用状态/i })
+      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的激活状态/i })
     ).toBeInTheDocument();
     expect(screen.queryByText(/只读来源|Read-only source/i)).toBeNull();
   });
@@ -1318,7 +1318,7 @@ describe("SkillDetailView", () => {
       </MemoryRouter>
     );
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
+      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
     });
     expect(cursorToggle).toBeDisabled();
   });

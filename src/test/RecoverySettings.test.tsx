@@ -73,6 +73,7 @@ describe("RecoverySettings", () => {
 
     expect(loadEntries).toHaveBeenCalled();
     expect(screen.getByText("review skill")).toBeTruthy();
+    expect(screen.getByText("安装备份")).toBeTruthy();
     expect(screen.getByText("/Users/test/.skillsmanage/recovery/copy-1")).toBeTruthy();
   });
 

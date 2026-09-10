@@ -320,6 +320,8 @@ const mockRefreshCounts = vi.fn();
 const mockLoadUsageStatus = vi.fn();
 const mockSetSkillUsage = vi.fn();
 const mockSetPlatformUsage = vi.fn();
+const mockDeleteSkillFromAgent = vi.fn();
+const mockDeletePlatformInstallations = vi.fn();
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseSkillStore = vi.mocked(useSkillStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
@@ -406,6 +408,8 @@ describe("PlatformView", () => {
     mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
     mockSetSkillUsage.mockReset().mockResolvedValue(undefined);
     mockSetPlatformUsage.mockReset().mockResolvedValue(undefined);
+    mockDeleteSkillFromAgent.mockReset().mockResolvedValue(undefined);
+    mockDeletePlatformInstallations.mockReset().mockResolvedValue({ deleted: [], failed: [] });
     useSkillUsageStore.setState({
       statuses: [
         {
@@ -426,6 +430,8 @@ describe("PlatformView", () => {
       loadUsageStatus: mockLoadUsageStatus,
       setSkillUsage: mockSetSkillUsage,
       setPlatformUsage: mockSetPlatformUsage,
+      deleteSkillFromAgent: mockDeleteSkillFromAgent,
+      deletePlatformInstallations: mockDeletePlatformInstallations,
     });
     installDefaultStoreMocks();
   });
@@ -794,7 +800,7 @@ describe("PlatformView", () => {
     ).toBeInTheDocument();
     expect(
       within(userCard as HTMLElement).getByRole("switch", {
-        name: /切换 shared-skill 的使用状态/i,
+        name: /切换 shared-skill 的激活状态/i,
       })
     ).toBeInTheDocument();
     expect(
@@ -804,7 +810,7 @@ describe("PlatformView", () => {
     ).not.toBeInTheDocument();
     expect(
       within(pluginCard as HTMLElement).queryByRole("switch", {
-        name: /切换 shared-skill 的使用状态/i,
+        name: /切换 shared-skill 的激活状态/i,
       })
     ).not.toBeInTheDocument();
   });
@@ -813,10 +819,10 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     expect(
-      screen.getByRole("switch", { name: /切换 frontend-design 的使用状态/i })
+      screen.getByRole("switch", { name: /切换 frontend-design 的激活状态/i })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("switch", { name: /切换 code-reviewer 的使用状态/i })
+      screen.getByRole("switch", { name: /切换 code-reviewer 的激活状态/i })
     ).toBeInTheDocument();
   });
 
@@ -824,7 +830,7 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     fireEvent.click(
-      screen.getByRole("switch", { name: /切换 frontend-design 的使用状态/i })
+      screen.getByRole("switch", { name: /切换 frontend-design 的激活状态/i })
     );
 
     await waitFor(() => {
@@ -854,10 +860,10 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     const platformSwitch = screen.getByRole("switch", {
-      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+      name: /切换 Claude Code 中全部受管理技能的激活状态/i,
     });
     expect(platformSwitch).toBeChecked();
-    expect(screen.getByText(/使用受管理技能: 部分使用中/)).toBeInTheDocument();
+    expect(screen.getByText(/受管理技能: 部分激活/)).toBeInTheDocument();
 
     fireEvent.click(platformSwitch);
 
@@ -883,11 +889,11 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     const platformSwitch = screen.getByRole("switch", {
-      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+      name: /切换 Claude Code 中全部受管理技能的激活状态/i,
     });
     expect(platformSwitch).not.toBeChecked();
     expect(platformSwitch).not.toBeDisabled();
-    expect(screen.getByText("恢复到全部暂停前的状态。")).toBeInTheDocument();
+    expect(screen.getByText("恢复到全部设为未激活前的状态。")).toBeInTheDocument();
 
     fireEvent.click(platformSwitch);
 
@@ -913,10 +919,10 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     const platformSwitch = screen.getByRole("switch", {
-      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+      name: /切换 Claude Code 中全部受管理技能的激活状态/i,
     });
     expect(platformSwitch).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("所有受管理技能均已单独暂停。")).toBeInTheDocument();
+    expect(screen.getByText("所有受管理技能均已单独设为未激活。")).toBeInTheDocument();
 
     fireEvent.click(platformSwitch);
     expect(mockSetPlatformUsage).not.toHaveBeenCalled();
@@ -948,7 +954,7 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     const usageSwitch = screen.getByRole("switch", {
-      name: /切换 ponytail-audit 的使用状态/i,
+      name: /切换 ponytail-audit 的激活状态/i,
     });
     expect(usageSwitch).not.toBeChecked();
     expect(screen.getByText(/仍有 1 个外部提供的技能可用/)).toBeInTheDocument();
@@ -964,6 +970,93 @@ describe("PlatformView", () => {
     });
   });
 
+  it("deletes a paused managed row even when only a read-only plugin copy remains", async () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": mockPluginBundleSkills },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 1,
+        external_count: 1,
+        skills: [{
+          skill_id: "ponytail-audit",
+          name: "ponytail-audit",
+          enabled: false,
+          paused_by_bulk: false,
+        }],
+      }],
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "从 Claude Code 删除 ponytail-audit 安装" })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(mockDeleteSkillFromAgent).toHaveBeenCalledWith("ponytail-audit", "claude-code");
+    });
+  });
+
+  it("confirms whole-platform deletion and explains that external skills remain", async () => {
+    mockDeletePlatformInstallations.mockResolvedValue({
+      deleted: ["frontend-design"],
+      failed: [{ skill_id: "code-reviewer", error: "preserve failed" }],
+    });
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 1,
+        paused_count: 1,
+        external_count: 1,
+        skills: [
+          { skill_id: "frontend-design", name: "frontend-design", enabled: true, paused_by_bulk: false },
+          { skill_id: "code-reviewer", name: "code-reviewer", enabled: false, paused_by_bulk: false },
+        ],
+      }],
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "删除 Claude Code 的全部受管理安装" })
+    );
+
+    expect(screen.getByRole("dialog", { name: "删除 Claude Code 的受管理安装？" })).toBeInTheDocument();
+    expect(screen.getByText("技能仓库中的原件会保留。")).toBeInTheDocument();
+    expect(screen.getByText("仍有 1 个外部提供的技能可用。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除受管理安装" }));
+
+    await waitFor(() => {
+      expect(mockDeletePlatformInstallations).toHaveBeenCalledWith("claude-code");
+    });
+  });
+
+  it("disables whole-platform deletion when there are no managed installs", () => {
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 0,
+        external_count: 1,
+        skills: [],
+      }],
+    });
+
+    renderPlatformView();
+
+    expect(
+      screen.getByRole("button", { name: "删除 Claude Code 的全部受管理安装" })
+    ).toBeDisabled();
+  });
   it("shows Claude-only source tabs with 全部 selected by default", () => {
     mockUseSkillStore.mockImplementation((selector?: unknown) => {
       const state = buildSkillStoreState({

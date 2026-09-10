@@ -13,6 +13,7 @@ import { UniversalInstallView } from "@/pages/UniversalInstallView";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useStorageStore } from "@/stores/storageStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 import type { AgentWithStatus, ScannedSkill } from "@/types";
 
 const universalAgent: AgentWithStatus = {
@@ -50,10 +51,35 @@ const universalSkills = [managedSkill, unmanagedSkill];
 const getSkillsByAgent = vi.fn().mockResolvedValue(undefined);
 const uninstallSkillFromAgent = vi.fn().mockResolvedValue(undefined);
 const refreshCounts = vi.fn().mockResolvedValue(undefined);
+const loadUsageStatus = vi.fn().mockResolvedValue(undefined);
+const deleteSkillFromAgent = vi.fn().mockResolvedValue(undefined);
+const deletePlatformInstallations = vi.fn().mockResolvedValue({
+  deleted: ["managed", "paused"],
+  failed: [],
+});
 
 describe("UniversalInstallView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "universal",
+        active_count: 1,
+        paused_count: 1,
+        external_count: 1,
+        skills: [
+          { skill_id: "managed", name: "Managed skill", enabled: true, paused_by_bulk: false },
+          { skill_id: "paused", name: "Paused skill", enabled: false, paused_by_bulk: false },
+        ],
+      }],
+      isLoading: false,
+      updatingSkillKeys: {},
+      updatingAgentIds: {},
+      error: null,
+      loadUsageStatus,
+      deleteSkillFromAgent,
+      deletePlatformInstallations,
+    });
     vi.mocked(usePlatformStore).mockImplementation((selector) =>
       selector({
         agents: [universalAgent],
@@ -100,22 +126,70 @@ describe("UniversalInstallView", () => {
 
     expect(screen.getByRole("heading", { name: "共享安装 (.agents)" })).toBeInTheDocument();
     expect(screen.getByText("手动管理")).toBeInTheDocument();
-    expect(screen.getAllByRole("checkbox")).toHaveLength(2);
-    expect(screen.queryByRole("button", { name: /卸载 Manual skill 的共享安装/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("checkbox")).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: /删除 Manual skill 的共享安装/ })).not.toBeInTheDocument();
   });
 
-  it("selects and removes only app-managed entries while keeping the custom library path", async () => {
+  it("selects and deletes active and inactive managed entries while keeping the custom library path", async () => {
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 
     fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
-    fireEvent.click(screen.getByRole("button", { name: "卸载选中的 1 项" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除选中的 2 项安装" }));
 
     expect(screen.getByText("/Volumes/My Skill Library")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "卸载共享安装" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除共享安装" }));
 
     await waitFor(() => {
-      expect(uninstallSkillFromAgent).toHaveBeenCalledWith("managed", "universal");
+      expect(deleteSkillFromAgent).toHaveBeenCalledWith("managed", "universal");
     });
-    expect(uninstallSkillFromAgent).not.toHaveBeenCalledWith("manual", "universal");
+    expect(deleteSkillFromAgent).toHaveBeenCalledWith("paused", "universal");
+    expect(deleteSkillFromAgent).not.toHaveBeenCalledWith("manual", "universal");
+  });
+
+  it("deletes selected managed entries one at a time", async () => {
+    let finishFirstDelete: (() => void) | undefined;
+    deleteSkillFromAgent.mockImplementation((skillId: string) => {
+      if (skillId === "managed") {
+        return new Promise<void>((resolve) => {
+          finishFirstDelete = resolve;
+        });
+      }
+      return Promise.resolve();
+    });
+
+    render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除选中的 2 项安装" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除共享安装" }));
+
+    await waitFor(() => {
+      expect(deleteSkillFromAgent).toHaveBeenCalledWith("managed", "universal");
+    });
+    expect(deleteSkillFromAgent).not.toHaveBeenCalledWith("paused", "universal");
+
+    finishFirstDelete?.();
+
+    await waitFor(() => {
+      expect(deleteSkillFromAgent).toHaveBeenCalledWith("paused", "universal");
+    });
+  });
+
+  it("confirms whole-platform deletion, keeps external skills visible, and calls the shared action", async () => {
+    render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "删除 共享安装 (.agents) 的全部受管理安装" })
+    );
+
+    expect(screen.getByRole("dialog", { name: "删除 共享安装 (.agents) 的受管理安装？" })).toBeInTheDocument();
+    expect(screen.getByText("技能仓库中的原件会保留。")).toBeInTheDocument();
+    expect(screen.getByText("仍有 1 个外部提供的技能可用。")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "删除受管理安装" }));
+
+    await waitFor(() => {
+      expect(deletePlatformInstallations).toHaveBeenCalledWith("universal");
+    });
   });
 });

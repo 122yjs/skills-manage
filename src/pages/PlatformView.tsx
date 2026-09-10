@@ -1,14 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Search, Blocks, FolderOpen } from "lucide-react";
+import { Search, Blocks, FolderOpen, Loader2, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
-import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import { isSkillUsageBusyError, useSkillUsageStore } from "@/stores/skillUsageStore";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import {
@@ -80,6 +90,10 @@ export function PlatformView() {
   const usageUpdatingAgentIds = useSkillUsageStore((state) => state.updatingAgentIds);
   const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
   const setPlatformUsage = useSkillUsageStore((state) => state.setPlatformUsage);
+  const deleteSkillFromAgent = useSkillUsageStore((state) => state.deleteSkillFromAgent);
+  const deletePlatformInstallations = useSkillUsageStore(
+    (state) => state.deletePlatformInstallations
+  );
   const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
 
   const [searchQuery, setSearchQuery] = useState("");
@@ -96,6 +110,7 @@ export function PlatformView() {
     useState<PluginBundleTarget | null>(null);
   const [isPluginBundleDialogOpen, setIsPluginBundleDialogOpen] = useState(false);
   const [returnFocusRowKey, setReturnFocusRowKey] = useState<string | null>(null);
+  const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const detailButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -168,6 +183,23 @@ export function PlatformView() {
     }
   }
 
+  async function handleDeleteSkill(skillId: string) {
+    if (!agentId) return;
+    try {
+      await deleteSkillFromAgent(skillId, agentId);
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      toast.success(
+        t("skillUsage.deleteSkillSuccess", {
+          name: skillId,
+          platform: agent?.display_name ?? agentId,
+        })
+      );
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.deleteError", { error: String(error) }));
+    }
+  }
+
   const isLoading = agentId ? (loadingByAgent[agentId] ?? false) : false;
 
   // Memoize skills to avoid changing dependency reference on every render
@@ -200,6 +232,40 @@ export function PlatformView() {
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
     } catch (error) {
       toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  const managedInstallCount = usageStatus?.skills.length ?? 0;
+  const canDeletePlatform = managedInstallCount > 0;
+
+  async function handlePlatformDelete() {
+    if (!agentId || !canDeletePlatform) return;
+    try {
+      const result = await deletePlatformInstallations(agentId);
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      setIsPlatformDeleteDialogOpen(false);
+
+      const externalCount = usageStatus?.external_count ?? 0;
+      const failed = result.failed.length;
+      const messageKey = failed > 0
+        ? externalCount > 0
+          ? "skillUsage.deletePlatformPartialExternal"
+          : "skillUsage.deletePlatformPartial"
+        : externalCount > 0
+          ? "skillUsage.deletePlatformSuccessExternal"
+          : "skillUsage.deletePlatformSuccess";
+      toast[failed > 0 ? "error" : "success"](
+        t(messageKey, {
+          name: agent?.display_name ?? agentId,
+          count: result.deleted.length,
+          deleted: result.deleted.length,
+          failed,
+          external: externalCount,
+        })
+      );
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.deleteError", { error: String(error) }));
     }
   }
   const managedSkills = useMemo(() => {
@@ -450,6 +516,19 @@ export function PlatformView() {
   ];
   const activeSourceLabel = sourceTabs.find((tab) => tab.id === sourceFilter)?.label ?? sourceTabs[0].label;
   const activeInstallSourceLabel = t(`platform.installSourceFilter.${installSourceFilter}`);
+  const platformDeleteButton = (
+    <Button
+      type="button"
+      variant="destructive"
+      size="sm"
+      disabled={!canDeletePlatform || isPlatformUsageUpdating}
+      onClick={() => setIsPlatformDeleteDialogOpen(true)}
+      aria-label={t("skillUsage.deletePlatformAria", { name: agent.display_name })}
+    >
+      <Trash2 className="size-3.5" />
+      {t("skillUsage.deletePlatform")}
+    </Button>
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -485,6 +564,7 @@ export function PlatformView() {
                   <span className="text-xs text-muted-foreground">
                     {t("skillUsage.platformSwitchLabel")}: {platformUsageState}
                   </span>
+                  {platformDeleteButton}
                 </div>
                 {!canPausePlatform && (
                   <p className="basis-full text-xs text-muted-foreground">
@@ -495,7 +575,10 @@ export function PlatformView() {
                 )}
               </>
             ) : (
-              <p className="text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+              <>
+                <p className="text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+                {platformDeleteButton}
+              </>
             )}
             {usageStatus.external_count > 0 && (
               <p className="text-xs text-amber-700 dark:text-amber-300">
@@ -684,7 +767,9 @@ export function PlatformView() {
                           externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
                           isLoading={
                             agentId
-                              ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
+                              ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false) ||
+                                (usageUpdatingSkillKeys[`${agentId}::${skill.id}`] ?? false) ||
+                                (usageUpdatingAgentIds[agentId] ?? false)
                               : false
                           }
                           onDetail={() => handleOpenDrawer(skill)}
@@ -696,6 +781,15 @@ export function PlatformView() {
                           onManageUniversal={
                             isUniversalSource(skill) ? () => navigate("/universal") : undefined
                           }
+                          onUninstallFromPlatform={
+                            usage && !skill.is_read_only
+                              ? () => void handleDeleteSkill(skill.id)
+                              : undefined
+                          }
+                          uninstallFromLabel={t("skillUsage.deleteSkill", {
+                            name: skill.name,
+                            platform: agent.display_name,
+                          })}
                           detailButtonRef={(node) => setDetailButtonRef(getSkillRowKey(skill), node)}
                         />
                       );
@@ -716,6 +810,54 @@ export function PlatformView() {
         agents={centralAgents}
         onInstall={handleInstall}
       />
+
+      <Dialog
+        open={isPlatformDeleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!isPlatformUsageUpdating) setIsPlatformDeleteDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("skillUsage.deletePlatformTitle", { name: agent.display_name })}</DialogTitle>
+            <DialogDescription>
+              {t("skillUsage.deletePlatformDescription", {
+                active: usageStatus?.active_count ?? 0,
+                paused: usageStatus?.paused_count ?? 0,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-2 text-sm text-muted-foreground">
+            <p>{t("skillUsage.deletePlatformOriginalKept")}</p>
+            {(usageStatus?.external_count ?? 0) > 0 && (
+              <p className="text-amber-700 dark:text-amber-300">
+                {t("skillUsage.deletePlatformExternal", {
+                  count: usageStatus?.external_count ?? 0,
+                })}
+              </p>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsPlatformDeleteDialogOpen(false)}
+              disabled={isPlatformUsageUpdating}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handlePlatformDelete()}
+              disabled={!canDeletePlatform || isPlatformUsageUpdating}
+            >
+              {isPlatformUsageUpdating && <Loader2 className="size-4 animate-spin" />}
+              {t("skillUsage.confirmDeletePlatform")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <SkillDetailDrawer
         open={isDrawerOpen}

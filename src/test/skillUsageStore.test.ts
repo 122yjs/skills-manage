@@ -5,7 +5,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { useSkillUsageStore } from "../stores/skillUsageStore";
+import {
+  isSkillUsageBusyError,
+  SkillUsageBusyError,
+  useSkillUsageStore,
+} from "../stores/skillUsageStore";
 import type { UsageStatus } from "../types";
 
 const usageStatus: UsageStatus = {
@@ -92,5 +96,72 @@ describe("skillUsageStore", () => {
 
     expect(invoke).not.toHaveBeenCalled();
     expect(useSkillUsageStore.getState().updatingAgentIds).toEqual({});
+  });
+
+  it("deletes one managed install with camel-case arguments and reloads usage state", async () => {
+    const refreshed = {
+      ...usageStatus,
+      active_count: 0,
+      paused_count: 1,
+      skills: [usageStatus.skills[1]],
+    };
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([refreshed]);
+
+    await useSkillUsageStore.getState().deleteSkillFromAgent("frontend-design", "claude-code");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "delete_skill_from_agent", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skill_usage_status");
+    expect(useSkillUsageStore.getState().statuses).toEqual([refreshed]);
+  });
+
+  it("returns partial platform deletion details and reloads usage state", async () => {
+    const result = {
+      deleted: ["frontend-design"],
+      failed: [{ skill_id: "code-reviewer", error: "preserve failed" }],
+    };
+    const refreshed = {
+      ...usageStatus,
+      active_count: 0,
+      paused_count: 1,
+      skills: [usageStatus.skills[1]],
+    };
+    vi.mocked(invoke)
+      .mockResolvedValueOnce(result)
+      .mockResolvedValueOnce([refreshed]);
+
+    await expect(
+      useSkillUsageStore.getState().deletePlatformInstallations("claude-code")
+    ).resolves.toEqual(result);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "delete_platform_installations", {
+      agentId: "claude-code",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skill_usage_status");
+    expect(useSkillUsageStore.getState().statuses).toEqual([refreshed]);
+  });
+
+  it("rejects duplicate deletion requests instead of returning a false success", async () => {
+    useSkillUsageStore.setState({
+      updatingSkillKeys: { "claude-code::frontend-design": true },
+    });
+
+    await expect(
+      useSkillUsageStore.getState().deleteSkillFromAgent("frontend-design", "claude-code")
+    ).rejects.toThrow("already in progress");
+    await expect(
+      useSkillUsageStore.getState().deletePlatformInstallations("claude-code")
+    ).rejects.toThrow("already in progress");
+
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("marks duplicate deletion errors so views can avoid showing a false failure toast", () => {
+    expect(isSkillUsageBusyError(new SkillUsageBusyError())).toBe(true);
+    expect(isSkillUsageBusyError(new Error("delete failed"))).toBe(false);
   });
 });

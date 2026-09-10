@@ -711,16 +711,16 @@ describe("CentralSkillsView", () => {
     expect(screen.getAllByText("龙虾类").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("编程类").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole("button", { name: /管理 .* 的平台安装/i })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "切换 frontend-design (Claude Code) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的使用状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 frontend-design (OpenClaw) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (Claude Code) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的激活状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (OpenClaw) 的激活状态" })).toBeInTheDocument();
   });
 
   it("toggles featured coding platforms directly from the card", async () => {
     mockTogglePlatformLink.mockResolvedValue(undefined);
     renderCentralSkillsView();
 
-    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的使用状态" }));
+    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的激活状态" }));
 
     await waitFor(() => {
       expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor");
@@ -753,7 +753,7 @@ describe("CentralSkillsView", () => {
     renderCentralSkillsView();
 
     const pausedButton = screen.getByRole("button", {
-      name: "切换 frontend-design (Claude Code) 的使用状态",
+      name: "切换 frontend-design (Claude Code) 的激活状态",
     });
     expect(pausedButton).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(pausedButton);

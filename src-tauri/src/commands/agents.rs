@@ -345,7 +345,7 @@ pub async fn update_custom_agent_impl(
                 .is_empty()
         {
             return Err(
-                "중지된 설치가 있어 플랫폼 스킬 폴더를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+                "비활성 설치가 있어 플랫폼 스킬 폴더를 바꿀 수 없습니다. 먼저 모두 복원하세요."
                     .to_string(),
             );
         }
@@ -369,7 +369,7 @@ pub async fn remove_custom_agent_impl(pool: &DbPool, agent_id: &str) -> Result<(
         .await?
         .is_empty()
     {
-        return Err("중지된 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요."
+        return Err("비활성 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요."
             .to_string());
     }
     db::delete_custom_agent(pool, agent_id).await

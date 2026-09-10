@@ -864,7 +864,7 @@ async fn preview_central_path_change_impl(
     preview.conflicts.extend(link_conflicts);
     if db::has_paused_installations(pool).await? {
         preview.conflicts.push(
-            "중지된 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+            "비활성 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
                 .to_string(),
         );
     }
@@ -898,7 +898,7 @@ async fn change_central_path_impl(
     preview.conflicts.extend(link_conflicts);
     if db::has_paused_installations(pool).await? {
         preview.conflicts.push(
-            "중지된 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+            "비활성 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
                 .to_string(),
         );
     }

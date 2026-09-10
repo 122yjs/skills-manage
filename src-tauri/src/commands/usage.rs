@@ -7,6 +7,8 @@ use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
+use crate::commands::recovery;
+use crate::commands::linker::uninstall_skill_from_agent_impl;
 use crate::db::{self, DbPool, PausedInstallation, SkillInstallation};
 use crate::AppState;
 
@@ -33,6 +35,19 @@ pub struct UsageSkill {
     pub paused_by_bulk: bool,
 }
 
+/// 플랫폼 전체 삭제에서 실제로 제거한 관리 설치와 실패 항목입니다.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletePlatformInstallationsResult {
+    pub deleted: Vec<String>,
+    pub failed: Vec<DeleteInstallationFailure>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeleteInstallationFailure {
+    pub skill_id: String,
+    pub error: String,
+}
+
 async fn usage_lock() -> MutexGuard<'static, ()> {
     USAGE_LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
@@ -49,7 +64,7 @@ async fn database_parent_dir(pool: &DbPool) -> Result<PathBuf, String> {
         .unwrap_or_default();
 
     if file.is_empty() || file == ":memory:" {
-        return Err("중지 설치는 파일 기반 데이터베이스에서만 사용할 수 있습니다".to_string());
+        return Err("비활성 설치는 파일 기반 데이터베이스에서만 사용할 수 있습니다".to_string());
     }
 
     let database_path = PathBuf::from(file);
@@ -69,42 +84,42 @@ async fn database_parent_dir(pool: &DbPool) -> Result<PathBuf, String> {
 fn ensure_real_directory(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "심볼릭 링크를 중지 설치 보관소로 사용할 수 없습니다: {}",
+            "심볼릭 링크를 비활성 설치 보관소로 사용할 수 없습니다: {}",
             path.display()
         )),
         Ok(metadata) if metadata.is_dir() => Ok(()),
         Ok(_) => Err(format!(
-            "중지 설치 보관소가 폴더가 아닙니다: {}",
+            "비활성 설치 보관소가 폴더가 아닙니다: {}",
             path.display()
         )),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let parent = path.parent().ok_or_else(|| {
                 format!(
-                    "중지 설치 보관소의 상위 폴더가 없습니다: {}",
+                    "비활성 설치 보관소의 상위 폴더가 없습니다: {}",
                     path.display()
                 )
             })?;
             let parent_metadata = fs::symlink_metadata(parent).map_err(|parent_error| {
                 format!(
-                    "중지 설치 보관소의 상위 폴더를 확인할 수 없습니다 '{}': {parent_error}",
+                    "비활성 설치 보관소의 상위 폴더를 확인할 수 없습니다 '{}': {parent_error}",
                     parent.display()
                 )
             })?;
             if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
                 return Err(format!(
-                    "안전하지 않은 중지 설치 보관소 상위 경로입니다: {}",
+                    "안전하지 않은 비활성 설치 보관소 상위 경로입니다: {}",
                     parent.display()
                 ));
             }
             fs::create_dir(path).map_err(|create_error| {
                 format!(
-                    "중지 설치 보관소를 만들 수 없습니다 '{}': {create_error}",
+                    "비활성 설치 보관소를 만들 수 없습니다 '{}': {create_error}",
                     path.display()
                 )
             })
         }
         Err(error) => Err(format!(
-            "중지 설치 보관소를 확인할 수 없습니다 '{}': {error}",
+            "비활성 설치 보관소를 확인할 수 없습니다 '{}': {error}",
             path.display()
         )),
     }
@@ -154,7 +169,7 @@ fn validate_installation_path(agent_root: &Path, installed_path: &Path) -> Resul
     })?;
     if !canonical_parent.starts_with(&root) || installed_path == root {
         return Err(format!(
-            "플랫폼 스킬 폴더 밖의 설치는 중지할 수 없습니다: {}",
+            "플랫폼 스킬 폴더 밖의 설치는 비활성화할 수 없습니다: {}",
             installed_path.display()
         ));
     }
@@ -164,13 +179,13 @@ fn validate_installation_path(agent_root: &Path, installed_path: &Path) -> Resul
 fn validate_paused_path(root: &Path, paused_path: &Path) -> Result<(), String> {
     let parent = paused_path.parent().ok_or_else(|| {
         format!(
-            "중지 설치 경로의 상위 폴더가 없습니다: {}",
+            "비활성 설치 경로의 상위 폴더가 없습니다: {}",
             paused_path.display()
         )
     })?;
     if parent != root || paused_path.file_name().is_none() {
         return Err(format!(
-            "중지 설치 보관소 밖의 경로는 복원할 수 없습니다: {}",
+            "비활성 설치 보관소 밖의 경로는 복원할 수 없습니다: {}",
             paused_path.display()
         ));
     }
@@ -201,7 +216,7 @@ fn rollback_move(source: &Path, destination: &Path) -> Result<(), String> {
     }
     fs::rename(source, destination).map_err(|error| {
         format!(
-            "중지 설치 파일을 원래 위치로 되돌릴 수 없습니다 '{}': {error}",
+            "비활성 설치 파일을 원래 위치로 되돌릴 수 없습니다 '{}': {error}",
             source.display()
         )
     })
@@ -289,7 +304,7 @@ async fn ensure_pause_does_not_move_shared_source(
         }
         if same_install_entry(installed_path, Path::new(&other.installed_path)) {
             return Err(format!(
-                "다른 플랫폼과 같은 설치 경로를 공유하므로 중지할 수 없습니다: {}",
+                "다른 플랫폼과 같은 설치 경로를 공유하므로 비활성화할 수 없습니다: {}",
                 installed_path.display()
             ));
         }
@@ -301,7 +316,89 @@ async fn ensure_pause_does_not_move_shared_source(
             })
         {
             return Err(format!(
-                "다른 플랫폼의 심볼릭 링크 원본이므로 중지할 수 없습니다: {}",
+                "다른 플랫폼의 심볼릭 링크 원본이므로 비활성화할 수 없습니다: {}",
+                installed_path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    left == right
+        || left
+            .canonicalize()
+            .ok()
+            .zip(right.canonicalize().ok())
+            .is_some_and(|(left, right)| left == right)
+}
+
+async fn ensure_not_shared_universal_root(pool: &DbPool, agent: &db::Agent) -> Result<(), String> {
+    if agent.id == "universal" {
+        return Ok(());
+    }
+    if let Some(universal) = db::get_agent_by_id(pool, "universal").await? {
+        if paths_refer_to_same_location(
+            Path::new(&agent.global_skills_dir),
+            Path::new(&universal.global_skills_dir),
+        ) {
+            return Err(
+                "공용 설치 경로를 공유하는 플랫폼의 관리 설치는 여기서 삭제할 수 없습니다"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn resolved_paused_link_target(paused: &PausedInstallation) -> Option<PathBuf> {
+    let target = PathBuf::from(paused.symlink_target.as_ref()?);
+    let target = if target.is_absolute() {
+        target
+    } else {
+        Path::new(&paused.installed_path).parent()?.join(target)
+    };
+    target.canonicalize().ok()
+}
+
+async fn ensure_delete_does_not_remove_shared_source(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+) -> Result<(), String> {
+    let installed_path = Path::new(&installation.installed_path);
+    let installed_target = installed_path.canonicalize().map_err(|error| {
+        format!(
+            "관리 설치 원본을 확인할 수 없습니다 '{}': {error}",
+            installed_path.display()
+        )
+    })?;
+
+    for other in db::get_skill_installations(pool, &installation.skill_id).await? {
+        if other.agent_id == installation.agent_id {
+            continue;
+        }
+        if same_install_entry(installed_path, Path::new(&other.installed_path))
+            || (other.link_type == "symlink"
+                && resolved_link_target(Path::new(&other.installed_path))
+                    .is_some_and(|target| target == installed_target))
+        {
+            return Err(format!(
+                "다른 플랫폼이 이 설치 원본을 사용하므로 삭제할 수 없습니다: {}",
+                installed_path.display()
+            ));
+        }
+    }
+    for paused in db::get_paused_installations(pool, &installation.skill_id).await? {
+        if paused.agent_id == installation.agent_id {
+            continue;
+        }
+        if same_install_entry(installed_path, Path::new(&paused.installed_path))
+            || (paused.link_type == "symlink"
+                && resolved_paused_link_target(&paused)
+                    .is_some_and(|target| target == installed_target))
+        {
+            return Err(format!(
+                "다른 플랫폼의 비활성 설치가 이 원본을 사용하므로 삭제할 수 없습니다: {}",
                 installed_path.display()
             ));
         }
@@ -319,7 +416,7 @@ async fn pause_active_installation_locked(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 스킬은 사용 중지할 수 없습니다".to_string());
+        return Err("중앙 보관함 스킬은 비활성화할 수 없습니다".to_string());
     }
     let installation = db::get_skill_installation(pool, skill_id, agent_id)
         .await?
@@ -328,7 +425,7 @@ async fn pause_active_installation_locked(
         .await?
         .is_some()
     {
-        return Err("활성 설치와 중지 설치 기록이 함께 있어 파일을 옮기지 않습니다".to_string());
+        return Err("활성 설치와 비활성 설치 기록이 함께 있어 파일을 옮기지 않습니다".to_string());
     }
     let raw_symlink_target =
         validate_active_installation(Path::new(&agent.global_skills_dir), &installation)?;
@@ -376,7 +473,7 @@ async fn restore_paused_installation_locked(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 스킬은 사용 전환 대상이 아닙니다".to_string());
+        return Err("중앙 보관함 스킬은 활성/비활성 전환 대상이 아닙니다".to_string());
     }
     if db::get_skill_installation(pool, skill_id, agent_id)
         .await?
@@ -386,7 +483,7 @@ async fn restore_paused_installation_locked(
     }
     let paused = db::get_paused_installation(pool, skill_id, agent_id)
         .await?
-        .ok_or_else(|| format!("중지된 관리 설치를 찾을 수 없습니다: {}", skill_id))?;
+        .ok_or_else(|| format!("비활성 관리 설치를 찾을 수 없습니다: {}", skill_id))?;
     let root = paused_root(pool).await?;
     let paused_path = Path::new(&paused.paused_path);
     validate_paused_path(&root, paused_path)?;
@@ -394,17 +491,17 @@ async fn restore_paused_installation_locked(
     if metadata.file_type().is_symlink() {
         let target = fs::read_link(paused_path).map_err(|error| {
             format!(
-                "중지된 심볼릭 링크를 읽을 수 없습니다 '{}': {error}",
+                "비활성 심볼릭 링크를 읽을 수 없습니다 '{}': {error}",
                 paused_path.display()
             )
         })?;
         let target_text = target.to_string_lossy().into_owned();
         if paused.symlink_target.as_deref() != Some(target_text.as_str()) {
-            return Err("중지된 심볼릭 링크 대상이 기록과 달라 복원을 중단했습니다".to_string());
+            return Err("비활성 심볼릭 링크 대상이 기록과 달라 복원을 중단했습니다".to_string());
         }
     } else if !metadata.is_dir() || !matches!(paused.link_type.as_str(), "copy" | "native") {
         return Err(format!(
-            "중지된 관리 설치 파일 형식을 확인할 수 없습니다: {}",
+            "비활성 관리 설치 파일 형식을 확인할 수 없습니다: {}",
             paused_path.display()
         ));
     }
@@ -458,12 +555,194 @@ fn rollback_error(error: String, rollback: Result<(), String>) -> String {
 fn rollback_errors(error: String, db_error: Option<String>, move_error: Option<String>) -> String {
     let mut errors = vec![error];
     if let Some(db_error) = db_error {
-        errors.push(format!("중지 기록 되돌리기 실패: {db_error}"));
+        errors.push(format!("비활성 기록 되돌리기 실패: {db_error}"));
     }
     if let Some(move_error) = move_error {
         errors.push(move_error);
     }
     errors.join("; ")
+}
+
+async fn delete_active_installation_locked(
+    pool: &DbPool,
+    agent: &db::Agent,
+    installation: SkillInstallation,
+) -> Result<(), String> {
+    let installed_path = Path::new(&installation.installed_path);
+    let metadata = match fs::symlink_metadata(installed_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "관리 설치 경로를 확인할 수 없습니다 '{}': {error}",
+                installed_path.display()
+            ))
+        }
+    };
+
+    if metadata.is_none() {
+        return db::delete_skill_installation(pool, &installation.skill_id, &installation.agent_id)
+            .await;
+    }
+
+    let symlink_target =
+        validate_active_installation(Path::new(&agent.global_skills_dir), &installation)?;
+    if symlink_target.is_some() {
+        uninstall_skill_from_agent_impl(
+            pool,
+            &installation.skill_id,
+            &installation.agent_id,
+        )
+        .await?;
+        if db::get_skill_installation(pool, &installation.skill_id, &installation.agent_id)
+            .await?
+            .is_some()
+        {
+            return Err("공용 설치 경로의 관리 기록은 여기서 삭제할 수 없습니다".to_string());
+        }
+        return Ok(());
+    }
+
+    ensure_delete_does_not_remove_shared_source(pool, &installation).await?;
+    let _recovery_guard = recovery::recovery_lock().await;
+    recovery::backup_copy_installation_locked(pool, &installation).await?;
+    recovery::remove_path_without_following_links(installed_path)?;
+    db::delete_skill_installation(pool, &installation.skill_id, &installation.agent_id).await
+}
+
+async fn delete_paused_installation_locked(
+    pool: &DbPool,
+    paused: PausedInstallation,
+) -> Result<(), String> {
+    let root = paused_root(pool).await?;
+    let paused_path = Path::new(&paused.paused_path);
+    validate_paused_path(&root, paused_path)?;
+    let metadata = match fs::symlink_metadata(paused_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "비활성 설치 경로를 확인할 수 없습니다 '{}': {error}",
+                paused_path.display()
+            ))
+        }
+    };
+
+    if metadata.is_none() {
+        return db::delete_paused_installation(pool, &paused.skill_id, &paused.agent_id).await;
+    }
+
+    let metadata = metadata.expect("missing paused installation is handled above");
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(paused_path).map_err(|error| {
+            format!(
+                "비활성 심볼릭 링크를 읽을 수 없습니다 '{}': {error}",
+                paused_path.display()
+            )
+        })?;
+        if paused.link_type != "symlink"
+            || paused.symlink_target.as_deref() != Some(target.to_string_lossy().as_ref())
+        {
+            return Err("비활성 심볼릭 링크가 관리 기록과 달라 삭제하지 않습니다".to_string());
+        }
+        fs::remove_file(paused_path).map_err(|error| {
+            format!(
+                "비활성 심볼릭 링크를 지울 수 없습니다 '{}': {error}",
+                paused_path.display()
+            )
+        })?;
+        return db::delete_paused_installation(pool, &paused.skill_id, &paused.agent_id).await;
+    }
+
+    if !metadata.is_dir() || !matches!(paused.link_type.as_str(), "copy" | "native") {
+        return Err(format!(
+            "비활성 관리 설치 파일 형식을 확인할 수 없습니다: {}",
+            paused_path.display()
+        ));
+    }
+
+    let _recovery_guard = recovery::recovery_lock().await;
+    recovery::backup_paused_installation_locked(pool, &paused).await?;
+    recovery::remove_path_without_following_links(paused_path)?;
+    db::delete_paused_installation(pool, &paused.skill_id, &paused.agent_id).await
+}
+
+async fn delete_managed_installation_locked(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<(), String> {
+    let agent = db::get_agent_by_id(pool, agent_id)
+        .await?
+        .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
+    if agent.id == "central" {
+        return Err("중앙 보관함 설치는 삭제할 수 없습니다".to_string());
+    }
+    ensure_not_shared_universal_root(pool, &agent).await?;
+
+    let active = db::get_skill_installation(pool, skill_id, agent_id).await?;
+    let paused = db::get_paused_installation(pool, skill_id, agent_id).await?;
+    if active.is_some() && paused.is_some() {
+        return Err("활성 설치와 비활성 설치 기록이 함께 있어 삭제하지 않습니다".to_string());
+    }
+    if let Some(installation) = active {
+        return delete_active_installation_locked(pool, &agent, installation).await;
+    }
+    if let Some(installation) = paused {
+        return delete_paused_installation_locked(pool, installation).await;
+    }
+    Ok(())
+}
+
+pub async fn delete_skill_from_agent_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<(), String> {
+    let _guard = usage_lock().await;
+    delete_managed_installation_locked(pool, skill_id, agent_id).await
+}
+
+pub async fn delete_platform_installations_impl(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<DeletePlatformInstallationsResult, String> {
+    let _guard = usage_lock().await;
+    let agent = db::get_agent_by_id(pool, agent_id)
+        .await?
+        .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
+    if agent.id == "central" {
+        return Err("중앙 보관함 설치는 삭제할 수 없습니다".to_string());
+    }
+    ensure_not_shared_universal_root(pool, &agent).await?;
+
+    let mut targets = db::get_skill_installations_by_agent(pool, agent_id)
+        .await?
+        .into_iter()
+        .map(|installation| installation.skill_id)
+        .collect::<Vec<_>>();
+    targets.extend(
+        db::get_paused_installations_by_agent(pool, agent_id)
+            .await?
+            .into_iter()
+            .map(|installation| installation.skill_id),
+    );
+    targets.sort();
+    targets.dedup();
+
+    let mut result = DeletePlatformInstallationsResult {
+        deleted: Vec::new(),
+        failed: Vec::new(),
+    };
+    for skill_id in targets {
+        match delete_managed_installation_locked(pool, &skill_id, agent_id).await {
+            Ok(()) => result.deleted.push(skill_id),
+            Err(error) => result
+                .failed
+                .push(DeleteInstallationFailure { skill_id, error }),
+        }
+    }
+    Ok(result)
 }
 
 async fn set_skill_usage_impl_locked(
@@ -588,7 +867,7 @@ pub async fn set_platform_usage_impl(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함은 사용 전환 대상이 아닙니다".to_string());
+        return Err("중앙 보관함은 활성/비활성 전환 대상이 아닙니다".to_string());
     }
 
     let targets = if enabled {
@@ -618,7 +897,7 @@ pub async fn set_platform_usage_impl(
         Ok(())
     } else {
         Err(format!(
-            "일부 스킬의 사용 상태를 바꾸지 못했습니다. 현재 상태를 다시 확인하세요: {}",
+            "일부 스킬의 활성 상태를 바꾸지 못했습니다. 현재 상태를 다시 확인하세요: {}",
             failures.join(" | ")
         ))
     }
@@ -648,6 +927,23 @@ pub async fn set_platform_usage(
     enabled: bool,
 ) -> Result<(), String> {
     set_platform_usage_impl(&state.db, &agent_id, enabled).await
+}
+
+#[tauri::command]
+pub async fn delete_skill_from_agent(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_id: String,
+) -> Result<(), String> {
+    delete_skill_from_agent_impl(&state.db, &skill_id, &agent_id).await
+}
+
+#[tauri::command]
+pub async fn delete_platform_installations(
+    state: State<'_, AppState>,
+    agent_id: String,
+) -> Result<DeletePlatformInstallationsResult, String> {
+    delete_platform_installations_impl(&state.db, &agent_id).await
 }
 
 #[cfg(test)]
@@ -935,6 +1231,361 @@ mod tests {
         );
         assert!(
             db::get_paused_installation(&pool, "collision", "claude-code")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_active_symlink_removes_only_platform_link() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "active-link", "symlink").await;
+
+        delete_skill_from_agent_impl(&pool, "active-link", "claude-code")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(agent.join("active-link")).is_err());
+        assert!(central.join("active-link/SKILL.md").is_file());
+        assert!(
+            db::get_skill_installation(&pool, "active-link", "claude-code")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_paused_symlink_removes_only_preserved_link() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "paused-link", "symlink").await;
+        set_skill_usage_impl(&pool, "paused-link", "claude-code", false)
+            .await
+            .unwrap();
+        let paused = db::get_paused_installation(&pool, "paused-link", "claude-code")
+            .await
+            .unwrap()
+            .unwrap();
+
+        delete_skill_from_agent_impl(&pool, "paused-link", "claude-code")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(paused.paused_path).is_err());
+        assert!(central.join("paused-link/SKILL.md").is_file());
+        assert!(
+            db::get_paused_installation(&pool, "paused-link", "claude-code")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_paused_copy_keeps_recoverable_original_installation() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "paused-copy", "copy").await;
+        fs::write(agent.join("paused-copy/user-note.txt"), "keep me").unwrap();
+        set_skill_usage_impl(&pool, "paused-copy", "claude-code", false)
+            .await
+            .unwrap();
+        let paused = db::get_paused_installation(&pool, "paused-copy", "claude-code")
+            .await
+            .unwrap()
+            .unwrap();
+
+        delete_skill_from_agent_impl(&pool, "paused-copy", "claude-code")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(&paused.paused_path).is_err());
+        assert!(central.join("paused-copy/SKILL.md").is_file());
+        let backup = recovery::list_recovery_entries_impl(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.label == "비활성 설치 백업: paused-copy")
+            .unwrap();
+        assert_eq!(
+            PathBuf::from(&backup.original_path),
+            agent.canonicalize().unwrap().join("paused-copy")
+        );
+
+        recovery::restore_recovery_entry_impl(&pool, &backup.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(agent.join("paused-copy/user-note.txt")).unwrap(),
+            "keep me"
+        );
+        assert!(
+            db::get_skill_installation(&pool, "paused-copy", "claude-code")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_paused_native_keeps_recoverable_original_installation() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "paused-native", "native").await;
+        fs::write(agent.join("paused-native/user-note.txt"), "native pause").unwrap();
+        set_skill_usage_impl(&pool, "paused-native", "claude-code", false)
+            .await
+            .unwrap();
+
+        delete_skill_from_agent_impl(&pool, "paused-native", "claude-code")
+            .await
+            .unwrap();
+
+        let backup = recovery::list_recovery_entries_impl(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.label == "비활성 설치 백업: paused-native")
+            .unwrap();
+        recovery::restore_recovery_entry_impl(&pool, &backup.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(agent.join("paused-native/user-note.txt")).unwrap(),
+            "native pause"
+        );
+        assert_eq!(
+            db::get_skill_installation(&pool, "paused-native", "claude-code")
+                .await
+                .unwrap()
+                .unwrap()
+                .link_type,
+            "native"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_active_native_keeps_recovery_manifest() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "native-install", "native").await;
+        fs::write(agent.join("native-install/user-note.txt"), "native edit").unwrap();
+
+        delete_skill_from_agent_impl(&pool, "native-install", "claude-code")
+            .await
+            .unwrap();
+
+        assert!(fs::symlink_metadata(agent.join("native-install")).is_err());
+        let backup = recovery::list_recovery_entries_impl(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.label == "설치 백업: native-install")
+            .unwrap();
+        recovery::restore_recovery_entry_impl(&pool, &backup.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(agent.join("native-install/user-note.txt")).unwrap(),
+            "native edit"
+        );
+        assert_eq!(
+            db::get_skill_installation(&pool, "native-install", "claude-code")
+                .await
+                .unwrap()
+                .unwrap()
+                .link_type,
+            "native"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_platform_removes_active_and_paused_but_preserves_failures_and_external() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "active", "copy").await;
+        add_skill(&pool, &central, &agent, "paused", "copy").await;
+        set_skill_usage_impl(&pool, "paused", "claude-code", false)
+            .await
+            .unwrap();
+        add_skill(&pool, &central, &agent, "unsafe", "copy").await;
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("SKILL.md"), "do not remove").unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "unsafe".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: outside.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &db::AgentSkillObservation {
+                row_id: "plugin-row-delete".to_string(),
+                agent_id: "claude-code".to_string(),
+                skill_id: "plugin-skill".to_string(),
+                name: "Plugin skill".to_string(),
+                description: None,
+                file_path: "/plugin/SKILL.md".to_string(),
+                dir_path: "/plugin".to_string(),
+                source_kind: "plugin".to_string(),
+                source_root: "/plugin".to_string(),
+                source_label: Some("Plugin".to_string()),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                is_read_only: true,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_platform_installations_impl(&pool, "claude-code")
+            .await
+            .unwrap();
+
+        assert_eq!(result.deleted, vec!["active", "paused"]);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].skill_id, "unsafe");
+        assert!(outside.join("SKILL.md").is_file());
+        assert!(db::get_skill_installation(&pool, "unsafe", "claude-code")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            db::get_agent_skill_observations(&pool, "claude-code")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_platform_refuses_shared_universal_install_root() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "universal-only", "symlink").await;
+        let installation = db::get_skill_installation(&pool, "universal-only", "claude-code")
+            .await
+            .unwrap()
+            .unwrap();
+        db::delete_skill_installation(&pool, "universal-only", "claude-code")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(agent.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                agent_id: "universal".to_string(),
+                ..installation
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(delete_platform_installations_impl(&pool, "claude-code")
+            .await
+            .is_err());
+        assert!(fs::symlink_metadata(agent.join("universal-only")).is_ok());
+        assert!(db::get_skill_installation(&pool, "universal-only", "universal")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn delete_platform_allows_managed_universal_installation() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "universal-delete", "symlink").await;
+        let installation = db::get_skill_installation(&pool, "universal-delete", "claude-code")
+            .await
+            .unwrap()
+            .unwrap();
+        db::delete_skill_installation(&pool, "universal-delete", "claude-code")
+            .await
+            .unwrap();
+        fs::remove_file(agent.join("universal-delete")).unwrap();
+        let universal_root = temp.path().join("universal");
+        fs::create_dir_all(&universal_root).unwrap();
+        let universal_path = universal_root.join("universal-delete");
+        std::os::unix::fs::symlink(central.join("universal-delete"), &universal_path).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(universal_root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                agent_id: "universal".to_string(),
+                installed_path: universal_path.to_string_lossy().into_owned(),
+                ..installation
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_platform_installations_impl(&pool, "universal")
+            .await
+            .unwrap();
+
+        assert_eq!(result.deleted, vec!["universal-delete"]);
+        assert!(result.failed.is_empty());
+        assert!(fs::symlink_metadata(&universal_path).is_err());
+        assert!(central.join("universal-delete/SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn delete_refuses_paused_path_outside_private_store() {
+        let temp = TempDir::new().unwrap();
+        let (pool, _central, agent) = setup(&temp).await;
+        let outside = temp.path().join("outside-paused");
+        fs::create_dir_all(&outside).unwrap();
+        db::upsert_paused_installation(
+            &pool,
+            &PausedInstallation {
+                skill_id: "traversal".to_string(),
+                agent_id: "claude-code".to_string(),
+                skill_name: "Traversal".to_string(),
+                installed_path: agent.join("traversal").to_string_lossy().into_owned(),
+                paused_path: outside.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                paused_by_bulk: false,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            delete_skill_from_agent_impl(&pool, "traversal", "claude-code")
+                .await
+                .is_err()
+        );
+        assert!(outside.is_dir());
+        assert!(
+            db::get_paused_installation(&pool, "traversal", "claude-code")
                 .await
                 .unwrap()
                 .is_some()

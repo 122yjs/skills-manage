@@ -23,7 +23,7 @@ import { UNIVERSAL_AGENT_ID } from "@/lib/agents";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useStorageStore } from "@/stores/storageStore";
-import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import { isSkillUsageBusyError, useSkillUsageStore } from "@/stores/skillUsageStore";
 import type { ScannedSkill } from "@/types";
 
 const EMPTY_SKILLS: ScannedSkill[] = [];
@@ -39,18 +39,22 @@ export function UniversalInstallView() {
   const isLoading = useSkillStore((state) => state.loadingByAgent[UNIVERSAL_AGENT_ID] ?? false);
   const pendingActions = useSkillStore((state) => state.pendingSkillActionKeys);
   const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent);
-  const uninstallSkill = useSkillStore((state) => state.uninstallSkillFromAgent);
   const centralPath = useStorageStore((state) => state.status?.central_path);
   const usageStatuses = useSkillUsageStore((state) => state.statuses);
   const usageUpdatingSkillKeys = useSkillUsageStore((state) => state.updatingSkillKeys);
   const usageUpdatingAgentIds = useSkillUsageStore((state) => state.updatingAgentIds);
   const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
   const setPlatformUsage = useSkillUsageStore((state) => state.setPlatformUsage);
+  const deleteSkillFromAgent = useSkillUsageStore((state) => state.deleteSkillFromAgent);
+  const deletePlatformInstallations = useSkillUsageStore(
+    (state) => state.deletePlatformInstallations
+  );
   const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
+  const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
   const [drawerSkill, setDrawerSkill] = useState<ScannedSkill | null>(null);
   const agent = agents.find((candidate) => candidate.id === UNIVERSAL_AGENT_ID);
 
@@ -60,9 +64,11 @@ export function UniversalInstallView() {
   }, [getSkillsByAgent, loadUsageStatus, scanGeneration]);
 
   useEffect(() => {
-    const installedIds = new Set(skills.map((skill) => skill.id));
-    setSelectedIds((current) => new Set([...current].filter((id) => installedIds.has(id))));
-  }, [skills]);
+    const managedIds = new Set(usageStatuses
+      .find((status) => status.agent_id === UNIVERSAL_AGENT_ID)
+      ?.skills.map((skill) => skill.skill_id) ?? []);
+    setSelectedIds((current) => new Set([...current].filter((id) => managedIds.has(id))));
+  }, [usageStatuses]);
 
   const usageStatus = usageStatuses.find((status) => status.agent_id === UNIVERSAL_AGENT_ID);
   const usageBySkillId = useMemo(
@@ -98,11 +104,11 @@ export function UniversalInstallView() {
     );
   }, [managedSkills, query]);
 
-  const removableSkills = useMemo(
-    () => skills.filter((skill) => !skill.is_read_only),
-    [skills]
+  const removableSkillIds = useMemo(
+    () => (usageStatus?.skills ?? []).map((skill) => skill.skill_id),
+    [usageStatus?.skills]
   );
-  const allSelected = removableSkills.length > 0 && removableSkills.every((skill) => selectedIds.has(skill.id));
+  const allSelected = removableSkillIds.length > 0 && removableSkillIds.every((id) => selectedIds.has(id));
 
   function toggleSkill(skillId: string) {
     setSelectedIds((current) => {
@@ -114,24 +120,40 @@ export function UniversalInstallView() {
   }
 
   function toggleAll() {
-    setSelectedIds(allSelected ? new Set() : new Set(removableSkills.map((skill) => skill.id)));
+    setSelectedIds(allSelected ? new Set() : new Set(removableSkillIds));
   }
 
   async function removeSkills(skillIds: string[]) {
     setIsRemoving(true);
-    const results = await Promise.allSettled(
-      skillIds.map((skillId) => uninstallSkill(skillId, UNIVERSAL_AGENT_ID))
-    );
-    await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
-    setIsRemoving(false);
-    setConfirmOpen(false);
-    setSelectedIds(new Set());
+    try {
+      let deleted = 0;
+      let failed = 0;
+      for (const skillId of skillIds) {
+        try {
+          await deleteSkillFromAgent(skillId, UNIVERSAL_AGENT_ID);
+          deleted += 1;
+        } catch (error) {
+          if (isSkillUsageBusyError(error)) return;
+          failed += 1;
+        }
+      }
+      await Promise.all([
+        getSkillsByAgent(UNIVERSAL_AGENT_ID),
+        refreshCounts(),
+      ]);
+      setConfirmOpen(false);
+      setSelectedIds(new Set());
 
-    const failed = results.filter((result) => result.status === "rejected").length;
-    if (failed > 0) {
-      toast.error(t("universal.removePartial", { failed }));
-    } else {
-      toast.success(t("universal.removeSuccess", { count: skillIds.length }));
+      if (failed > 0) {
+        toast.error(t("universal.removePartial", { deleted, failed }));
+      } else {
+        toast.success(t("universal.removeSuccess", { count: deleted }));
+      }
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.deleteError", { error: String(error) }));
+    } finally {
+      setIsRemoving(false);
     }
   }
 
@@ -141,6 +163,9 @@ export function UniversalInstallView() {
   const isPlatformUsageUpdating =
     (usageUpdatingAgentIds[UNIVERSAL_AGENT_ID] ?? false) ||
     Object.keys(usageUpdatingSkillKeys).some((key) => key.startsWith(`${UNIVERSAL_AGENT_ID}::`));
+  const isMutationInProgress = isRemoving || isPlatformUsageUpdating;
+  const managedInstallCount = usageStatus?.skills.length ?? 0;
+  const canDeletePlatform = managedInstallCount > 0;
   const platformUsageState = canPausePlatform
     ? (usageStatus?.paused_count ?? 0) > 0
       ? t("skillUsage.platformMixed")
@@ -165,6 +190,54 @@ export function UniversalInstallView() {
       toast.error(t("skillUsage.updateError", { error: String(error) }));
     }
   }
+
+  async function handlePlatformDelete() {
+    if (!canDeletePlatform) return;
+    try {
+      const result = await deletePlatformInstallations(UNIVERSAL_AGENT_ID);
+      await Promise.all([
+        getSkillsByAgent(UNIVERSAL_AGENT_ID),
+        refreshCounts(),
+      ]);
+      setIsPlatformDeleteDialogOpen(false);
+
+      const externalCount = usageStatus?.external_count ?? 0;
+      const failed = result.failed.length;
+      const messageKey = failed > 0
+        ? externalCount > 0
+          ? "skillUsage.deletePlatformPartialExternal"
+          : "skillUsage.deletePlatformPartial"
+        : externalCount > 0
+          ? "skillUsage.deletePlatformSuccessExternal"
+          : "skillUsage.deletePlatformSuccess";
+      toast[failed > 0 ? "error" : "success"](
+        t(messageKey, {
+          name: t("universal.title"),
+          count: result.deleted.length,
+          deleted: result.deleted.length,
+          failed,
+          external: externalCount,
+        })
+      );
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.deleteError", { error: String(error) }));
+    }
+  }
+
+  const platformDeleteButton = (
+    <Button
+      type="button"
+      variant="destructive"
+      size="sm"
+      disabled={!canDeletePlatform || isMutationInProgress}
+      onClick={() => setIsPlatformDeleteDialogOpen(true)}
+      aria-label={t("skillUsage.deletePlatformAria", { name: t("universal.title") })}
+    >
+      <Trash2 className="size-3.5" />
+      {t("skillUsage.deletePlatform")}
+    </Button>
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -198,6 +271,7 @@ export function UniversalInstallView() {
               <span className="text-xs text-muted-foreground">
                 {t("skillUsage.platformSwitchLabel")}: {platformUsageState}
               </span>
+              {platformDeleteButton}
             </div>
             {!canPausePlatform && (
               <p className="basis-full text-xs text-muted-foreground">
@@ -209,7 +283,10 @@ export function UniversalInstallView() {
             <p className="basis-full text-xs text-muted-foreground">{t("skillUsage.reloadHint")}</p>
           </div>
         ) : usageStatus ? (
-          <p className="mt-2 text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <p className="text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+            {platformDeleteButton}
+          </div>
         ) : null}
         {(usageStatus?.external_count ?? 0) > 0 ? (
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
@@ -233,7 +310,7 @@ export function UniversalInstallView() {
           <Checkbox
             id="universal-select-all"
             checked={allSelected}
-            disabled={removableSkills.length === 0}
+            disabled={removableSkillIds.length === 0 || isMutationInProgress}
             onCheckedChange={toggleAll}
             aria-label={t("universal.selectAll")}
           />
@@ -244,7 +321,7 @@ export function UniversalInstallView() {
         <Button
           type="button"
           variant="destructive"
-          disabled={selectedIds.size === 0 || isRemoving}
+          disabled={selectedIds.size === 0 || isMutationInProgress}
           onClick={() => setConfirmOpen(true)}
         >
           {isRemoving ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
@@ -288,9 +365,13 @@ export function UniversalInstallView() {
                   translation={skill.file_path
                     ? { resourceId: `local:${skill.file_path}`, filePath: skill.file_path }
                     : undefined}
-                  checkbox={skill.is_read_only || !skill.file_path
+                  checkbox={skill.is_read_only || !usage
                     ? undefined
-                    : { checked: selectedIds.has(skill.id), onChange: () => toggleSkill(skill.id) }}
+                    : {
+                        checked: selectedIds.has(skill.id),
+                        onChange: () => toggleSkill(skill.id),
+                        disabled: isMutationInProgress,
+                      }}
                   sourceType={skill.file_path
                     ? skill.link_type as "symlink" | "copy" | "native"
                     : undefined}
@@ -302,6 +383,7 @@ export function UniversalInstallView() {
                         pausedByBulk: usage.paused_by_bulk,
                         onCheckedChange: (enabled) => void handleUsageChange(skill.id, enabled),
                         isLoading:
+                          isRemoving ||
                           (usageUpdatingSkillKeys[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false) ||
                           (usageUpdatingAgentIds[UNIVERSAL_AGENT_ID] ?? false),
                       }
@@ -309,12 +391,15 @@ export function UniversalInstallView() {
                   externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
                   onDetail={() => setDrawerSkill(skill)}
                   onUninstallFromPlatform={
-                    skill.is_read_only || !skill.file_path
+                    skill.is_read_only || !usage
                       ? undefined
                       : () => void removeSkills([skill.id])
                   }
                   uninstallFromLabel={t("universal.removeOne", { skill: skill.name })}
-                  isLoading={pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false}
+                  isLoading={
+                    isMutationInProgress ||
+                    (pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false)
+                  }
                 />
               );
             })}
@@ -337,12 +422,60 @@ export function UniversalInstallView() {
             </div>
           </DialogBody>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={isRemoving}>
+            <Button type="button" variant="outline" onClick={() => setConfirmOpen(false)} disabled={isMutationInProgress}>
               {t("common.cancel")}
             </Button>
-            <Button type="button" variant="destructive" onClick={() => void removeSkills([...selectedIds])} disabled={isRemoving}>
-              {isRemoving ? <Loader2 className="size-4 animate-spin" /> : null}
+            <Button type="button" variant="destructive" onClick={() => void removeSkills([...selectedIds])} disabled={isMutationInProgress}>
+              {isMutationInProgress ? <Loader2 className="size-4 animate-spin" /> : null}
               {t("universal.confirmRemove")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isPlatformDeleteDialogOpen}
+        onOpenChange={(open) => {
+          if (!isMutationInProgress) setIsPlatformDeleteDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("skillUsage.deletePlatformTitle", { name: t("universal.title") })}</DialogTitle>
+            <DialogDescription>
+              {t("skillUsage.deletePlatformDescription", {
+                active: usageStatus?.active_count ?? 0,
+                paused: usageStatus?.paused_count ?? 0,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="space-y-2 text-sm text-muted-foreground">
+            <p>{t("skillUsage.deletePlatformOriginalKept")}</p>
+            {(usageStatus?.external_count ?? 0) > 0 && (
+              <p className="text-amber-700 dark:text-amber-300">
+                {t("skillUsage.deletePlatformExternal", {
+                  count: usageStatus?.external_count ?? 0,
+                })}
+              </p>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsPlatformDeleteDialogOpen(false)}
+              disabled={isMutationInProgress}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handlePlatformDelete()}
+              disabled={!canDeletePlatform || isMutationInProgress}
+            >
+              {isMutationInProgress && <Loader2 className="size-4 animate-spin" />}
+              {t("skillUsage.confirmDeletePlatform")}
             </Button>
           </DialogFooter>
         </DialogContent>

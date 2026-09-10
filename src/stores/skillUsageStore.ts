@@ -7,6 +7,27 @@ function skillActionKey(agentId: string, skillId: string) {
   return `${agentId}::${skillId}`;
 }
 
+export const SKILL_USAGE_BUSY_ERROR_CODE = "SKILL_USAGE_BUSY";
+
+export class SkillUsageBusyError extends Error {
+  readonly code = SKILL_USAGE_BUSY_ERROR_CODE;
+
+  constructor() {
+    super("A skill action is already in progress for this platform.");
+    this.name = "SkillUsageBusyError";
+  }
+}
+
+export function isSkillUsageBusyError(error: unknown): boolean {
+  return (
+    error instanceof SkillUsageBusyError ||
+    (typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === SKILL_USAGE_BUSY_ERROR_CODE)
+  );
+}
+
 function replaceUsageSkill(
   statuses: UsageStatus[],
   agentId: string,
@@ -30,6 +51,29 @@ function replaceUsageSkill(
   });
 }
 
+function removeUsageSkill(
+  statuses: UsageStatus[],
+  agentId: string,
+  skillId: string
+): UsageStatus[] {
+  return statuses.map((status) => {
+    if (status.agent_id !== agentId) return status;
+
+    const skills = status.skills.filter((skill) => skill.skill_id !== skillId);
+    return {
+      ...status,
+      skills,
+      active_count: skills.filter((skill) => skill.enabled).length,
+      paused_count: skills.filter((skill) => !skill.enabled).length,
+    };
+  });
+}
+
+export interface DeletePlatformInstallationsResult {
+  deleted: string[];
+  failed: Array<{ skill_id: string; error: string }>;
+}
+
 interface SkillUsageState {
   statuses: UsageStatus[];
   isLoading: boolean;
@@ -40,12 +84,14 @@ interface SkillUsageState {
   loadUsageStatus: () => Promise<void>;
   setSkillUsage: (skillId: string, agentId: string, enabled: boolean) => Promise<void>;
   setPlatformUsage: (agentId: string, enabled: boolean) => Promise<void>;
+  deleteSkillFromAgent: (skillId: string, agentId: string) => Promise<void>;
+  deletePlatformInstallations: (agentId: string) => Promise<DeletePlatformInstallationsResult>;
   getUsageStatus: (agentId: string) => UsageStatus | undefined;
   getSkillUsage: (agentId: string, skillId: string) => UsageSkillStatus | undefined;
 }
 
 /**
- * 설치 파일의 실제 사용 여부만 관리한다. 사이드바에 플랫폼을 표시할지 여부와는
+ * 설치 파일의 실제 활성 상태만 관리한다. 사이드바에 플랫폼을 표시할지 여부와는
  * 별개라서, 표시 설정을 바꿔도 이 상태를 다시 쓰지 않는다.
  */
 export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
@@ -95,7 +141,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
       try {
         await get().loadUsageStatus();
       } catch {
-        // 원래 사용 전환 실패를 호출자에게 유지한다.
+        // 원래 활성 상태 전환 실패를 호출자에게 유지한다.
       }
       set({ error: String(error) });
       throw error;
@@ -146,7 +192,96 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
       try {
         await get().loadUsageStatus();
       } catch {
-        // 원래 사용 전환 실패를 호출자에게 유지한다.
+        // 원래 활성 상태 전환 실패를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingAgentIds = { ...state.updatingAgentIds };
+        delete updatingAgentIds[agentId];
+        return { updatingAgentIds };
+      });
+    }
+  },
+
+  deleteSkillFromAgent: async (skillId, agentId) => {
+    const actionKey = skillActionKey(agentId, skillId);
+    if (get().updatingSkillKeys[actionKey] || get().updatingAgentIds[agentId]) {
+      throw new SkillUsageBusyError();
+    }
+
+    set((state) => ({
+      updatingSkillKeys: { ...state.updatingSkillKeys, [actionKey]: true },
+      error: null,
+    }));
+
+    try {
+      if (!isTauriRuntime()) {
+        set((state) => ({
+          statuses: removeUsageSkill(state.statuses, agentId, skillId),
+        }));
+        return;
+      }
+
+      await invoke("delete_skill_from_agent", { skillId, agentId });
+      await get().loadUsageStatus();
+    } catch (error) {
+      // 삭제가 일부라도 실패한 경우 서버 상태를 다시 읽어 실제 결과를 보여 준다.
+      try {
+        await get().loadUsageStatus();
+      } catch {
+        // 원래 삭제 실패를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingSkillKeys = { ...state.updatingSkillKeys };
+        delete updatingSkillKeys[actionKey];
+        return { updatingSkillKeys };
+      });
+    }
+  },
+
+  deletePlatformInstallations: async (agentId) => {
+    if (
+      get().updatingAgentIds[agentId] ||
+      Object.keys(get().updatingSkillKeys).some((key) => key.startsWith(`${agentId}::`))
+    ) {
+      throw new SkillUsageBusyError();
+    }
+
+    set((state) => ({
+      updatingAgentIds: { ...state.updatingAgentIds, [agentId]: true },
+      error: null,
+    }));
+
+    try {
+      if (!isTauriRuntime()) {
+        const status = get().statuses.find((candidate) => candidate.agent_id === agentId);
+        const deleted = status?.skills.map((skill) => skill.skill_id) ?? [];
+        set((state) => ({
+          statuses: state.statuses.map((candidate) =>
+            candidate.agent_id === agentId
+              ? { ...candidate, skills: [], active_count: 0, paused_count: 0 }
+              : candidate
+          ),
+        }));
+        return { deleted, failed: [] };
+      }
+
+      const result = await invoke<DeletePlatformInstallationsResult>(
+        "delete_platform_installations",
+        { agentId }
+      );
+      await get().loadUsageStatus();
+      return result;
+    } catch (error) {
+      try {
+        await get().loadUsageStatus();
+      } catch {
+        // 원래 삭제 실패를 호출자에게 유지한다.
       }
       set({ error: String(error) });
       throw error;

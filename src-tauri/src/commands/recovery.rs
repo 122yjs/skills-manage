@@ -8,7 +8,7 @@ use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
-use crate::db::{self, DbPool, SkillInstallation};
+use crate::db::{self, DbPool, PausedInstallation, SkillInstallation};
 use crate::AppState;
 
 const COPY_BACKUP: &str = "copy_backup";
@@ -217,7 +217,7 @@ fn is_path_inside(path: &Path, root: &Path) -> bool {
     path.starts_with(root) && path != root
 }
 
-fn remove_path_without_following_links(path: &Path) -> Result<(), String> {
+pub(crate) fn remove_path_without_following_links(path: &Path) -> Result<(), String> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -542,7 +542,9 @@ fn validate_manifest(
             .copy_installation
             .as_ref()
             .ok_or_else(|| "복사 설치 정보가 없습니다".to_string())?;
-        if installation.link_type != "copy" || installation.installed_path != entry.original_path {
+        if !matches!(installation.link_type.as_str(), "copy" | "native")
+            || installation.installed_path != entry.original_path
+        {
             return Err("복사 설치 정보가 유효하지 않습니다".to_string());
         }
     } else if manifest.copy_installation.is_some() {
@@ -628,16 +630,22 @@ fn create_file_backup(
     kind: &str,
     label: String,
     source: &Path,
+    restore_path: &Path,
     copy_installation: Option<SkillInstallation>,
 ) -> Result<RecoveryEntry, String> {
-    let original_path = canonical_parent_path(source)?;
-    if original_path.starts_with(&layout.root) || layout.root.starts_with(&original_path) {
+    let source_path = canonical_parent_path(source)?;
+    let original_path = canonical_parent_path(restore_path)?;
+    if source_path.starts_with(&layout.root)
+        || layout.root.starts_with(&source_path)
+        || original_path.starts_with(&layout.root)
+        || layout.root.starts_with(&original_path)
+    {
         return Err("복구 저장소와 겹치는 경로는 백업할 수 없습니다".to_string());
     }
-    fs::symlink_metadata(&original_path).map_err(|error| {
+    fs::symlink_metadata(&source_path).map_err(|error| {
         format!(
             "백업 원본을 찾을 수 없습니다 '{}': {error}",
-            original_path.display()
+            source_path.display()
         )
     })?;
 
@@ -651,7 +659,7 @@ fn create_file_backup(
         return Err("같은 복구 항목 ID가 이미 있습니다".to_string());
     }
 
-    if let Err(error) = copy_entry_without_following_links(&original_path, &stage) {
+    if let Err(error) = copy_entry_without_following_links(&source_path, &stage) {
         let _ = remove_path_without_following_links(&stage);
         return Err(error);
     }
@@ -689,11 +697,11 @@ fn create_file_backup(
     Ok(entry)
 }
 
-async fn expected_copy_install_path(
+async fn expected_managed_install_path(
     pool: &DbPool,
     installation: &SkillInstallation,
 ) -> Result<PathBuf, String> {
-    if installation.link_type != "copy" || !safe_child_name(&installation.skill_id) {
+    if !matches!(installation.link_type.as_str(), "copy" | "native") {
         return Err("복사 설치 정보가 유효하지 않습니다".to_string());
     }
     let agent = db::get_agent_by_id(pool, &installation.agent_id)
@@ -702,12 +710,17 @@ async fn expected_copy_install_path(
     let agent_root = PathBuf::from(&agent.global_skills_dir)
         .canonicalize()
         .map_err(|error| format!("설치 폴더를 확인할 수 없습니다: {error}"))?;
-    let expected = agent_root.join(&installation.skill_id);
     let recorded = canonical_parent_path(Path::new(&installation.installed_path))?;
-    if recorded != expected {
+    if !is_path_inside(&recorded, &agent_root) {
         return Err("복사 설치 경로가 플랫폼 폴더와 일치하지 않습니다".to_string());
     }
-    Ok(expected)
+    if installation.link_type == "copy"
+        && (!safe_child_name(&installation.skill_id)
+            || recorded != agent_root.join(&installation.skill_id))
+    {
+        return Err("복사 설치 경로가 플랫폼 폴더와 일치하지 않습니다".to_string());
+    }
+    Ok(recorded)
 }
 
 /// 복사 설치를 지우기 직전에 전체 내용을 보존합니다.
@@ -727,13 +740,45 @@ pub async fn backup_copy_installation_locked(
     let Some(layout) = recovery_layout(pool).await? else {
         return Ok(None);
     };
-    let source = expected_copy_install_path(pool, installation).await?;
+    let source = expected_managed_install_path(pool, installation).await?;
     create_file_backup(
         &layout,
         COPY_BACKUP,
-        format!("복사 설치 백업: {}", installation.skill_id),
+        format!("설치 백업: {}", installation.skill_id),
+        &source,
         &source,
         Some(installation.clone()),
+    )
+    .map(Some)
+}
+
+/// 중지 보관소에 있는 복사·독립 설치를 삭제하기 전에 원래 설치 위치로 복원할 수 있게 보존합니다.
+///
+/// 호출자는 중지 경로가 보관소 바로 아래인지 먼저 검증하고, 복구 잠금을 삭제 완료까지 유지해야 합니다.
+pub async fn backup_paused_installation_locked(
+    pool: &DbPool,
+    paused: &PausedInstallation,
+) -> Result<Option<RecoveryEntry>, String> {
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(None);
+    };
+    let installation = SkillInstallation {
+        skill_id: paused.skill_id.clone(),
+        agent_id: paused.agent_id.clone(),
+        installed_path: paused.installed_path.clone(),
+        link_type: paused.link_type.clone(),
+        symlink_target: paused.symlink_target.clone(),
+        created_at: paused.created_at.clone(),
+    };
+    let restore_path = expected_managed_install_path(pool, &installation).await?;
+    let source = canonical_parent_path(Path::new(&paused.paused_path))?;
+    create_file_backup(
+        &layout,
+        COPY_BACKUP,
+        format!("비활성 설치 백업: {}", paused.skill_id),
+        &source,
+        &restore_path,
+        Some(installation),
     )
     .map(Some)
 }
@@ -757,7 +802,7 @@ async fn backup_vault_before_removal_locked(
         return Ok(None);
     };
     let _ = snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
-    create_file_backup(&layout, VAULT_TRASH, label, source, None).map(Some)
+    create_file_backup(&layout, VAULT_TRASH, label, source, source, None).map(Some)
 }
 
 async fn snapshot_database_locked(
@@ -933,7 +978,7 @@ async fn restore_copy_target(
         .as_ref()
         .ok_or_else(|| "복사 설치 정보가 없습니다".to_string())?
         .clone();
-    let expected = expected_copy_install_path(pool, &installation).await?;
+    let expected = expected_managed_install_path(pool, &installation).await?;
     if expected.to_string_lossy() != manifest.entry.original_path {
         return Err("복사 설치 복원 경로가 유효하지 않습니다".to_string());
     }
@@ -944,7 +989,8 @@ async fn restore_vault_target(
     pool: &DbPool,
     manifest: &RecoveryManifest,
 ) -> Result<PathBuf, String> {
-    let central_root = PathBuf::from(db::get_central_skills_dir(pool).await?)
+    let central_root = db::get_central_skills_dir(pool)
+        .await?
         .canonicalize()
         .map_err(|error| format!("현재 보관함 위치를 확인할 수 없습니다: {error}"))?;
     let target = PathBuf::from(&manifest.entry.original_path);
@@ -969,7 +1015,7 @@ pub async fn restore_recovery_entry_impl(pool: &DbPool, id: &str) -> Result<(), 
     let layout = recovery_layout(pool)
         .await?
         .ok_or_else(|| "메모리 데이터베이스에는 복구 항목이 없습니다".to_string())?;
-    let manifest = read_manifest(&layout, &id)?;
+    let manifest = read_manifest(&layout, id)?;
     if manifest.entry.kind == DATABASE_BACKUP {
         return Err("데이터베이스 백업은 앱을 종료한 뒤 수동으로 복원해야 합니다".to_string());
     }
@@ -1016,7 +1062,7 @@ pub async fn delete_recovery_entry_impl(pool: &DbPool, id: &str) -> Result<(), S
     let layout = recovery_layout(pool)
         .await?
         .ok_or_else(|| "메모리 데이터베이스에는 복구 항목이 없습니다".to_string())?;
-    let manifest = read_manifest(&layout, &id)?;
+    let manifest = read_manifest(&layout, id)?;
     delete_manifest_entry(&layout, &manifest)
 }
 
@@ -1202,6 +1248,7 @@ mod tests {
             &layout,
             VAULT_TRASH,
             "실패 테스트".to_string(),
+            &source,
             &source,
             None,
         );

@@ -1495,7 +1495,7 @@ pub async fn get_skill_by_id(pool: &DbPool, skill_id: &str) -> Result<Option<Ski
 /// Delete a skill and all its installation records.
 pub async fn delete_skill(pool: &DbPool, skill_id: &str) -> Result<(), String> {
     if !get_paused_installations(pool, skill_id).await?.is_empty() {
-        return Err("중지된 설치가 있어 스킬 기록을 삭제할 수 없습니다".to_string());
+        return Err("비활성 설치가 있어 스킬 기록을 삭제할 수 없습니다".to_string());
     }
     sqlx::query("DELETE FROM skill_installations WHERE skill_id = ?")
         .bind(skill_id)

@@ -71,7 +71,7 @@ export function Sidebar() {
   }, [loadCollections, loadDiscoveredSkills, loadObsidianVaults]);
 
   const catalogAgents = agents.filter(isToggleableAgent);
-  // 표시 대상으로 고른 플랫폼은 스킬을 모두 중지한 뒤에도 복원할 수 있어야 한다.
+  // 표시 대상으로 고른 플랫폼은 스킬을 모두 비활성으로 바꾼 뒤에도 복원할 수 있어야 한다.
   const platformAgents = catalogAgents.filter((agent) => agent.is_enabled);
   const lobsterAgents = platformAgents.filter((a) => a.category === "lobster");
   const codingAgents = platformAgents.filter((a) => a.category !== "lobster");

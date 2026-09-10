@@ -95,7 +95,7 @@ export interface UnifiedSkillCardProps {
   onClick?: () => void;
 
   // ── discover variant ──
-  checkbox?: { checked: boolean; onChange: () => void };
+  checkbox?: { checked: boolean; onChange: () => void; disabled?: boolean };
   isCentral?: boolean;
   platformBadge?: { id: string; name: string };
   projectBadge?: string;
@@ -105,7 +105,7 @@ export interface UnifiedSkillCardProps {
     agents: AgentWithStatus[];
     linkedAgents: string[];
     readOnlyAgents?: string[];
-    /** 중지된 관리 설치도 카드에서 다시 켤 수 있도록 별도로 전달한다. */
+    /** 비활성 관리 설치도 카드에서 다시 활성으로 바꿀 수 있도록 별도로 전달한다. */
     usageByAgent?: Record<string, { enabled: boolean; paused_by_bulk: boolean }>;
     skillId: string;
     onToggle: (skillId: string, agentId: string) => void;
@@ -119,14 +119,14 @@ export interface UnifiedSkillCardProps {
   isReadOnly?: boolean;
   isUniversalSource?: boolean;
   isExternallyManaged?: boolean;
-  /** 앱이 관리하는 설치의 실제 사용 상태. 설치 파일 삭제와는 별개다. */
+  /** 앱이 관리하는 설치의 실제 활성 상태. 설치 파일 삭제와는 별개다. */
   usageControl?: {
     enabled: boolean;
     pausedByBulk?: boolean;
     onCheckedChange: (enabled: boolean) => void;
     isLoading?: boolean;
   };
-  /** 사용을 중지해도 남아 있는 공용/플러그인 제공 항목 수다. */
+  /** 비활성으로 바꿔도 남아 있는 공용/플러그인 제공 항목 수다. */
   externalUsageCount?: number;
 
   // ── marketplace variant ──
@@ -292,6 +292,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             <Checkbox
               checked={checkbox.checked}
               onCheckedChange={checkbox.onChange}
+              disabled={checkbox.disabled}
               aria-label={t("discover.selectSkill")}
             />
           </div>

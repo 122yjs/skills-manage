@@ -505,7 +505,7 @@ export function CentralSkillsView() {
       const isInstalled = skill?.linked_agents.includes(agentId) ?? false;
 
       // 처음 켜는 경우만 기존 설치 경로를 쓴다. 이미 관리 중이던 설치는 파일을
-      // 지우지 않고 사용 상태만 바꾼다.
+      // 지우지 않고 활성 상태만 바꾼다.
       if (usage || isInstalled) {
         await setSkillUsage(skillId, agentId, !(usage?.enabled ?? true));
       } else {

@@ -136,12 +136,12 @@ export interface SkillWithLinks {
 
 // ─── Skill Usage Types ──────────────────────────────────────────────────────
 
-/** 앱이 관리하는 설치 한 건의 실제 사용 상태다. */
+/** 앱이 관리하는 설치 한 건의 실제 활성 상태다. */
 export interface UsageSkillStatus {
   skill_id: string;
   name: string;
   enabled: boolean;
-  /** 플랫폼 전체 중지로 멈췄으며, 전체 복원 때만 다시 켜지는 항목이다. */
+  /** 플랫폼 전체 비활성으로 멈췄으며, 전체 복원 때만 다시 활성화되는 항목이다. */
   paused_by_bulk: boolean;
 }
 

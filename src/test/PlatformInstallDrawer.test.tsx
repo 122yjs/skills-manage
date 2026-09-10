@@ -107,7 +107,7 @@ describe("PlatformInstallDrawer", () => {
     );
 
     fireEvent.click(
-      screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的使用状态" })
+      screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的激活状态" })
     );
     expect(onToggle).toHaveBeenCalledWith("demo-skill", "claude-code");
 
@@ -171,11 +171,11 @@ describe("PlatformInstallDrawer", () => {
       />
     );
 
-    expect(screen.getByText("已暂停")).toBeInTheDocument();
+    expect(screen.getByText("未激活")).toBeInTheDocument();
     const resumeButton = screen.getByRole("button", {
-      name: "切换 demo-skill (Claude Code) 的使用状态",
+      name: "切换 demo-skill (Claude Code) 的激活状态",
     });
-    expect(resumeButton).toHaveTextContent("恢复使用");
+    expect(resumeButton).toHaveTextContent("设为激活");
     fireEvent.click(resumeButton);
     expect(onToggle).toHaveBeenCalledWith("demo-skill", "claude-code");
   });

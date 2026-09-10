@@ -1139,7 +1139,7 @@ pub async fn delete_central_skill_bundle_impl(
     }
     if !paused_skill_ids.is_empty() {
         return Err(format!(
-            "중지된 설치가 있어 보관함 묶음을 삭제할 수 없습니다: {}",
+            "비활성 설치가 있어 보관함 묶음을 삭제할 수 없습니다: {}",
             paused_skill_ids.join(", ")
         ));
     }
@@ -1242,7 +1242,7 @@ pub async fn delete_central_skill_impl(
             .collect::<Vec<_>>()
             .join(", ");
         return Err(format!(
-            "중지된 설치가 있어 보관함 스킬을 삭제할 수 없습니다: {}",
+            "비활성 설치가 있어 보관함 스킬을 삭제할 수 없습니다: {}",
             agents
         ));
     }
