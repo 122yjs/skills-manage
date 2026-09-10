@@ -13,3 +13,4 @@ pub mod settings;
 pub mod skill_translation;
 pub mod skills;
 pub mod storage;
+pub mod usage;

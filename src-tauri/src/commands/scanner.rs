@@ -7,6 +7,7 @@ use tauri::State;
 
 use crate::commands::agents::is_agent_detected;
 use crate::db::{self, AgentSkillObservation, DbPool, Skill, SkillInstallation};
+use crate::path_utils::app_data_dir;
 use crate::AppState;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -305,6 +306,11 @@ fn scan_skill_root_recursive(
     out: &mut Vec<(usize, ScannedSkill)>,
 ) {
     if depth > options.max_depth {
+        return;
+    }
+    // 중지 설치는 도구가 읽지 않는 내부 보관소입니다. 사용자가 앱 데이터
+    // 폴더를 스캔 대상으로 추가해도 이 파일을 다시 발견하지 않습니다.
+    if current_dir == app_data_dir().join("paused-installations") {
         return;
     }
 

@@ -862,6 +862,12 @@ async fn preview_central_path_change_impl(
     let (mut preview, _) = preview_storage_move_impl(&current, destination, universal_path)?;
     let (_, link_conflicts) = managed_links_for_move(pool, &current, destination).await?;
     preview.conflicts.extend(link_conflicts);
+    if db::has_paused_installations(pool).await? {
+        preview.conflicts.push(
+            "중지된 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+                .to_string(),
+        );
+    }
     let migration_state = db::get_setting(pool, db::CENTRAL_MIGRATION_STATE_SETTING)
         .await?
         .unwrap_or_else(|| MIGRATION_COMPLETED.to_string());
@@ -890,6 +896,12 @@ async fn change_central_path_impl(
     let (managed_links, link_conflicts) =
         managed_links_for_move(pool, &current, destination).await?;
     preview.conflicts.extend(link_conflicts);
+    if db::has_paused_installations(pool).await? {
+        preview.conflicts.push(
+            "중지된 설치가 있어 보관함 위치를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+                .to_string(),
+        );
+    }
     if !preview.conflicts.is_empty() {
         return Err(preview.conflicts.join("\n"));
     }

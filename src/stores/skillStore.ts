@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { ScannedSkill } from "@/types";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 const BROWSER_FIXTURE_SKILLS_BY_AGENT: Record<string, ScannedSkill[]> = {
   "claude-code": [
@@ -125,9 +126,10 @@ export const useSkillStore = create<SkillState>((set) => ({
 
     try {
       await invoke("uninstall_skill_from_agent", { skillId, agentId });
-      const skills = await invoke<ScannedSkill[]>("get_skills_by_agent", {
-        agentId,
-      });
+      const [skills] = await Promise.all([
+        invoke<ScannedSkill[]>("get_skills_by_agent", { agentId }),
+        useSkillUsageStore.getState().loadUsageStatus(),
+      ]);
 
       set((state) => {
         const next = { ...state.pendingSkillActionKeys };

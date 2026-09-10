@@ -229,6 +229,7 @@ describe("skillDetailStore", () => {
   it("calls install_skill_to_agent with skillId, agentId and method=auto", async () => {
     vi.mocked(invoke)
       .mockResolvedValueOnce(undefined) // install_skill_to_agent
+      .mockResolvedValueOnce([]) // get_skill_usage_status
       .mockResolvedValueOnce(mockDetailAfterInstall); // get_skill_detail refresh
     await useSkillDetailStore.getState().installSkill("frontend-design", "cursor");
     expect(invoke).toHaveBeenCalledWith("install_skill_to_agent", {
@@ -240,10 +241,15 @@ describe("skillDetailStore", () => {
 
   it("reloads detail after install", async () => {
     vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(mockDetailAfterInstall);
+      .mockResolvedValueOnce(undefined) // install_skill_to_agent
+      .mockResolvedValueOnce([]) // get_skill_usage_status
+      .mockResolvedValueOnce(mockDetailAfterInstall); // get_skill_detail refresh
     await useSkillDetailStore.getState().installSkill("frontend-design", "cursor");
     const state = useSkillDetailStore.getState();
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skill_usage_status");
+    expect(invoke).toHaveBeenNthCalledWith(3, "get_skill_detail", {
+      skillId: "frontend-design",
+    });
     expect(state.detail?.installations).toHaveLength(2);
     expect(state.installingAgentId).toBeNull();
   });
@@ -252,6 +258,7 @@ describe("skillDetailStore", () => {
     let resolveInstall!: (v: undefined) => void;
     vi.mocked(invoke)
       .mockReturnValueOnce(new Promise<undefined>((r) => (resolveInstall = r)))
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce(mockDetailAfterInstall);
 
     const installPromise = useSkillDetailStore
@@ -277,8 +284,9 @@ describe("skillDetailStore", () => {
 
   it("calls uninstall_skill_from_agent with skillId and agentId", async () => {
     vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(mockDetailAfterUninstall);
+      .mockResolvedValueOnce(undefined) // uninstall_skill_from_agent
+      .mockResolvedValueOnce([]) // get_skill_usage_status
+      .mockResolvedValueOnce(mockDetailAfterUninstall); // get_skill_detail refresh
     await useSkillDetailStore.getState().uninstallSkill("frontend-design", "claude-code");
     expect(invoke).toHaveBeenCalledWith("uninstall_skill_from_agent", {
       skillId: "frontend-design",
@@ -288,10 +296,15 @@ describe("skillDetailStore", () => {
 
   it("reloads detail after uninstall", async () => {
     vi.mocked(invoke)
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce(mockDetailAfterUninstall);
+      .mockResolvedValueOnce(undefined) // uninstall_skill_from_agent
+      .mockResolvedValueOnce([]) // get_skill_usage_status
+      .mockResolvedValueOnce(mockDetailAfterUninstall); // get_skill_detail refresh
     await useSkillDetailStore.getState().uninstallSkill("frontend-design", "claude-code");
     const state = useSkillDetailStore.getState();
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_skill_usage_status");
+    expect(invoke).toHaveBeenNthCalledWith(3, "get_skill_detail", {
+      skillId: "frontend-design",
+    });
     expect(state.detail?.installations).toHaveLength(0);
     expect(state.installingAgentId).toBeNull();
   });
@@ -357,6 +370,7 @@ describe("skillDetailStore", () => {
       .mockResolvedValueOnce(mockDetail)
       .mockResolvedValueOnce(mockContent)
       .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce(mockDetailAfterInstall);
 
     await useSkillDetailStore.getState().loadDetail({
@@ -378,6 +392,7 @@ describe("skillDetailStore", () => {
       .mockResolvedValueOnce(mockClaudeUserDetail)
       .mockResolvedValueOnce(mockContent)
       .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce(mockClaudeUserDetailAfterInstall);
 
     await useSkillDetailStore.getState().loadDetail({

@@ -893,6 +893,12 @@ pub async fn install_skill_to_agent_impl(
             symlink_path: canonical_dir.to_string_lossy().into_owned(),
         });
     }
+    if db::get_paused_installation(pool, skill_id, &target_agent.id)
+        .await?
+        .is_some()
+    {
+        return Err("중지된 설치가 있습니다. 사용 토글로 먼저 복원하세요.".to_string());
+    }
 
     let agent_dir = PathBuf::from(&target_agent.global_skills_dir);
     std::fs::create_dir_all(&agent_dir)
@@ -973,6 +979,12 @@ pub async fn install_skill_to_agent_copy_impl(
             symlink_path: canonical_dir.to_string_lossy().into_owned(),
         });
     }
+    if db::get_paused_installation(pool, skill_id, &target_agent.id)
+        .await?
+        .is_some()
+    {
+        return Err("중지된 설치가 있습니다. 사용 토글로 먼저 복원하세요.".to_string());
+    }
 
     let agent_dir = PathBuf::from(&target_agent.global_skills_dir);
     std::fs::create_dir_all(&agent_dir)
@@ -1043,6 +1055,14 @@ pub async fn uninstall_skill_from_agent_impl(
     } else {
         requested_agent.clone()
     };
+
+    if db::get_paused_installation(pool, skill_id, &agent.id)
+        .await?
+        .is_some()
+    {
+        return Err("중지된 설치는 제거할 수 없습니다. 사용 토글로 복원하거나 중지 상태를 유지하세요."
+            .to_string());
+    }
 
     let installations = db::get_skill_installations(pool, skill_id).await?;
     let record = installations

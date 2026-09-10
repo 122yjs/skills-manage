@@ -105,7 +105,11 @@ const agents: AgentWithStatus[] = [
   },
 ];
 
-function renderCard(linkedAgents: string[], readOnlyAgents: string[] = []) {
+function renderCard(
+  linkedAgents: string[],
+  readOnlyAgents: string[] = [],
+  usageByAgent: Record<string, { enabled: boolean; paused_by_bulk: boolean }> = {}
+) {
   const onToggle = vi.fn();
   const onManagePlatforms = vi.fn();
   render(
@@ -116,6 +120,7 @@ function renderCard(linkedAgents: string[], readOnlyAgents: string[] = []) {
         agents,
         linkedAgents,
         readOnlyAgents,
+        usageByAgent,
         skillId: "demo-skill",
         onToggle,
         togglingAgentId: null,
@@ -134,13 +139,13 @@ describe("UnifiedSkillCard platform toggles", () => {
     expect(screen.getByText("编程类")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "管理 demo-skill 的平台安装" })).toBeInTheDocument();
 
-    expect(screen.getByRole("button", { name: "切换 demo-skill 在 OpenClaw 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill 在 Kiro 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill 在 Claude Code 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill 在 Cursor 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 demo-skill 在 Trae 的链接状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (OpenClaw) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Kiro) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Cursor) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 demo-skill (Trae) 的使用状态" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "切换 demo-skill 在 Gemini CLI 的链接状态" })
+      screen.queryByRole("button", { name: "切换 demo-skill (Gemini CLI) 的使用状态" })
     ).not.toBeInTheDocument();
   });
 
@@ -148,7 +153,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     const { onToggle } = renderCard([]);
 
     const button = screen.getByRole("button", {
-      name: "切换 demo-skill 在 Cursor 的链接状态",
+      name: "切换 demo-skill (Cursor) 的使用状态",
     });
 
     expect(button).toHaveAttribute("aria-pressed", "false");
@@ -160,13 +165,26 @@ describe("UnifiedSkillCard platform toggles", () => {
     renderCard(["cursor"], ["claude-code"]);
 
     const button = screen.getByRole("button", {
-      name: "切换 demo-skill 在 Claude Code 的链接状态",
+      name: "切换 demo-skill (Claude Code) 的使用状态",
     });
 
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("aria-pressed", "false");
     expect(button).toHaveClass("text-muted-foreground/40");
     expect(button.querySelector("svg")).toHaveClass("opacity-40", "grayscale");
+  });
+
+  it("keeps a paused managed install available for restoration", () => {
+    const { onToggle } = renderCard([], [], {
+      cursor: { enabled: false, paused_by_bulk: true },
+    });
+
+    const button = screen.getByRole("button", {
+      name: "切换 demo-skill (Cursor) 的使用状态",
+    });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(button);
+    expect(onToggle).toHaveBeenCalledWith("demo-skill", "cursor");
   });
 
   it("opens the platform manager for hidden coding platforms", () => {

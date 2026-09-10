@@ -1,7 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { PlatformInstallDrawer } from "../components/central/PlatformInstallDrawer";
-import type { AgentWithStatus, SkillWithLinks } from "../types";
+import type { AgentWithStatus, SkillWithLinks, UsageStatus } from "../types";
+import { useSkillUsageStore } from "../stores/skillUsageStore";
+
+vi.mock("../stores/skillUsageStore", () => ({
+  useSkillUsageStore: vi.fn(),
+}));
 
 const agents: AgentWithStatus[] = [
   {
@@ -55,6 +60,15 @@ const skill: SkillWithLinks = {
 };
 
 describe("PlatformInstallDrawer", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(useSkillUsageStore).mockImplementation((selector?: unknown) => {
+      const state = { statuses: [] as UsageStatus[] };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+  });
+
   it("renders a right drawer with platform status rows", () => {
     render(
       <PlatformInstallDrawer
@@ -92,7 +106,9 @@ describe("PlatformInstallDrawer", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "从 Claude Code 卸载 demo-skill" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "切换 demo-skill (Claude Code) 的使用状态" })
+    );
     expect(onToggle).toHaveBeenCalledWith("demo-skill", "claude-code");
 
     fireEvent.click(screen.getByRole("tab", { name: "共享" }));
@@ -118,6 +134,50 @@ describe("PlatformInstallDrawer", () => {
 
     expect(screen.getByText("Cursor")).toBeInTheDocument();
     expect(screen.queryByText("Claude Code")).not.toBeInTheDocument();
+  });
+
+  it("keeps paused managed installs visible and ready to resume", () => {
+    const pausedStatuses: UsageStatus[] = [
+      {
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 1,
+        external_count: 0,
+        skills: [
+          {
+            skill_id: "demo-skill",
+            name: "demo-skill",
+            enabled: false,
+            paused_by_bulk: false,
+          },
+        ],
+      },
+    ];
+    vi.mocked(useSkillUsageStore).mockImplementation((selector?: unknown) => {
+      const state = { statuses: pausedStatuses };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    const onToggle = vi.fn();
+
+    render(
+      <PlatformInstallDrawer
+        open
+        skill={{ ...skill, linked_agents: [] }}
+        agents={agents}
+        togglingAgentId={null}
+        onOpenChange={vi.fn()}
+        onToggle={onToggle}
+      />
+    );
+
+    expect(screen.getByText("已暂停")).toBeInTheDocument();
+    const resumeButton = screen.getByRole("button", {
+      name: "切换 demo-skill (Claude Code) 的使用状态",
+    });
+    expect(resumeButton).toHaveTextContent("恢复使用");
+    fireEvent.click(resumeButton);
+    expect(onToggle).toHaveBeenCalledWith("demo-skill", "claude-code");
   });
 
   it("filters platforms by search text", () => {

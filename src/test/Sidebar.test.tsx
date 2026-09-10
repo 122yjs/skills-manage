@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { Sidebar } from "../components/layout/Sidebar";
-import { toast } from "sonner";
 import { usePlatformStore } from "../stores/platformStore";
+import { useDevToolSetupStore } from "../stores/devToolSetupStore";
 import type { DiscoveredProject, DiscoveredSkill, ObsidianVault } from "../types";
 import {
   OBSIDIAN_CROSS_AREA_FIXTURE,
@@ -28,8 +28,6 @@ vi.mock("../stores/discoverStore", () => ({
 vi.mock("../stores/obsidianStore", () => ({
   useObsidianStore: vi.fn(),
 }));
-
-vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
 import { useCollectionStore } from "../stores/collectionStore";
 import { useDiscoverStore } from "../stores/discoverStore";
@@ -207,6 +205,7 @@ describe("Sidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage?.clear?.();
+    useDevToolSetupStore.setState({ isEditorOpen: false, error: null });
     // Default: collection store returns empty state.
     vi.mocked(useCollectionStore).mockImplementation((selector) =>
       selector(defaultCollectionState)
@@ -344,7 +343,7 @@ describe("Sidebar", () => {
     expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
   });
 
-  it("hides agents with zero skills by default", () => {
+  it("keeps a selected platform visible with zero active skills so paused skills can be restored", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
       skillsByAgent: {
@@ -358,11 +357,11 @@ describe("Sidebar", () => {
         <Sidebar />
       </MemoryRouter>
     );
-    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Cursor/ })).toBeInTheDocument();
   });
 
-  it("미설치 플랫폼은 공용 스킬 수가 있어도 기본 메뉴에서 숨긴다", () => {
+  it("표시 설정에서 선택한 미감지 플랫폼도 사이드바에 표시한다", () => {
     vi.mocked(usePlatformStore).mockReturnValue({
       ...defaultStoreState,
       agents: [
@@ -391,146 +390,15 @@ describe("Sidebar", () => {
       </MemoryRouter>
     );
 
-    expect(screen.queryByRole("button", { name: /Dexto/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Dexto/ })).toBeInTheDocument();
   });
 
-  it("shows hidden agents after clicking toggle", () => {
-    vi.mocked(usePlatformStore).mockReturnValue({
-      ...defaultStoreState,
-      skillsByAgent: {
-        "claude-code": 0,
-        cursor: 3,
-        central: 10,
-      },
-    });
-    render(
-      <MemoryRouter>
-        <Sidebar />
-      </MemoryRouter>
-    );
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
-  });
+  it("opens platform display settings instead of changing usage from the sidebar", () => {
+    renderSidebar();
 
-  it("모든 플랫폼 표시에서 숨긴 플랫폼을 다시 표시할 수 있다", async () => {
-    const setAgentVisibility = vi.fn().mockResolvedValue(undefined);
-    renderSidebar("/central", {
-      platformState: {
-        ...defaultStoreState,
-        setAgentVisibility,
-        agents: [
-          ...mockAgents,
-          {
-            id: "continue",
-            display_name: "Continue",
-            category: "coding",
-            global_skills_dir: "~/.continue/skills/",
-            is_detected: false,
-            is_builtin: true,
-            is_enabled: false,
-          },
-        ],
-      },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "平台显示设置" }));
 
-    expect(screen.queryByRole("button", { name: "Continue" })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-
-    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument();
-    const visibilitySwitch = screen.getByRole("switch", { name: "显示 Continue" });
-    expect(visibilitySwitch).not.toBeChecked();
-    fireEvent.click(visibilitySwitch);
-
-    await waitFor(() =>
-      expect(setAgentVisibility).toHaveBeenCalledWith("continue", true)
-    );
-  });
-
-  it("모든 플랫폼 표시에서 표시 중인 플랫폼을 숨길 수 있다", async () => {
-    const setAgentVisibility = vi.fn().mockResolvedValue(undefined);
-    renderSidebar("/central", {
-      platformState: {
-        ...defaultStoreState,
-        setAgentVisibility,
-      },
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    const visibilitySwitch = screen.getByRole("switch", { name: "隐藏 Claude Code" });
-    expect(visibilitySwitch).toBeChecked();
-    fireEvent.click(visibilitySwitch);
-
-    await waitFor(() =>
-      expect(setAgentVisibility).toHaveBeenCalledWith("claude-code", false)
-    );
-  });
-
-  it("모든 플랫폼을 표시하면 전체 숨기기를 요청해도 현재 화면을 유지한다", async () => {
-    renderSidebar("/platform/claude-code");
-    expect(screen.queryByRole("button", { name: "全部隐藏" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-
-    expect(screen.getByRole("button", { name: "全部显示" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "全部隐藏" }));
-
-    await waitFor(() => expect(defaultStoreState.setAllAgentsVisibility).toHaveBeenCalledWith(false));
-    expect(defaultStoreState.setAgentVisibility).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByTestId("location-path")).toHaveTextContent("/platform/claude-code"));
-  });
-
-  it("모두 숨긴 플랫폼도 목록을 표시해 전체 표시할 수 있다", async () => {
-    renderSidebar("/central", {
-      platformState: {
-        ...defaultStoreState,
-        agents: mockAgents.map((agent) => agent.id === "central" ? agent : { ...agent, is_enabled: false }),
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-
-    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "全部显示" }));
-    await waitFor(() => expect(defaultStoreState.setAllAgentsVisibility).toHaveBeenCalledWith(true));
-  });
-
-  it("일부만 표시 중인 경우 두 전체 버튼을 모두 사용할 수 있다", () => {
-    renderSidebar("/central", {
-      platformState: {
-        ...defaultStoreState,
-        agents: mockAgents.map((agent) => agent.id === "cursor" ? { ...agent, is_enabled: false } : agent),
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    expect(screen.getByRole("button", { name: "全部显示" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeEnabled();
-  });
-
-  it("표시 상태를 저장하는 동안 전체 버튼과 개별 스위치를 잠근다", () => {
-    renderSidebar("/central", {
-      platformState: { ...defaultStoreState, updatingAgentIds: { "claude-code": true } },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    expect(screen.getByRole("button", { name: "全部显示" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "全部隐藏" })).toBeDisabled();
-    for (const toggle of screen.getAllByRole("switch")) {
-      expect(toggle).toHaveAttribute("aria-disabled", "true");
-      fireEvent.click(toggle);
-    }
-    expect(defaultStoreState.setAgentVisibility).not.toHaveBeenCalled();
-  });
-
-  it("전체 변경 실패를 알리고 현재 페이지를 유지한다", async () => {
-    renderSidebar("/platform/claude-code", {
-      platformState: {
-        ...defaultStoreState,
-        setAllAgentsVisibility: vi.fn().mockRejectedValue(new Error("저장 실패")),
-      },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-    fireEvent.click(screen.getByRole("button", { name: "全部隐藏" }));
-
-    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("无法完成所有平台的显示状态更新。"));
-    expect(screen.getByTestId("location-path")).toHaveTextContent("/platform/claude-code");
+    expect(useDevToolSetupStore.getState().isEditorOpen).toBe(true);
   });
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -592,9 +460,9 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "项目技能库" })).toBeInTheDocument();
   });
 
-  it("renders show all platforms toggle", () => {
+  it("renders platform display settings action", () => {
     renderSidebar();
-    expect(screen.getByRole("button", { name: "显示所有平台" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "平台显示设置" })).toBeInTheDocument();
   });
 
   it("renders Obsidian as a separate category with one deduped row per populated vault", () => {
@@ -754,7 +622,7 @@ describe("Sidebar", () => {
     );
   });
 
-  it("keeps populated Obsidian vault rows visible when show-all-platforms toggles normal agents", () => {
+  it("keeps populated Obsidian vault rows visible with a zero-skill platform", () => {
     const vaultPath = "/vaults/toggle-proof";
     renderSidebar("/central", {
       platformState: {
@@ -773,10 +641,6 @@ describe("Sidebar", () => {
     });
 
     expect(screen.getByRole("button", { name: /Toggle Proof/ })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Claude Code/ })).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "显示所有平台" }));
-
     expect(screen.getByRole("button", { name: /Toggle Proof/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Claude Code/ })).toBeInTheDocument();
   });
@@ -812,7 +676,7 @@ describe("Sidebar", () => {
     );
   });
 
-  it("places the Obsidian section before ordinary platform categories and the show-all toggle", () => {
+  it("places the Obsidian section before ordinary platform categories and display settings", () => {
     const vaultPath = "/vaults/ordered";
     renderSidebar("/central", {
       platformState: {
@@ -845,12 +709,12 @@ describe("Sidebar", () => {
     const obsidianHeading = screen.getByText("Obsidian");
     const lobsterHeading = screen.getByText("龙虾类");
     const codingHeading = screen.getByText("编程类");
-    const toggle = screen.getByRole("button", { name: "显示所有平台" });
+    const displaySettings = screen.getByRole("button", { name: "平台显示设置" });
 
     expect(discoverButton.compareDocumentPosition(obsidianHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(obsidianHeading.compareDocumentPosition(lobsterHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(lobsterHeading.compareDocumentPosition(codingHeading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(codingHeading.compareDocumentPosition(toggle)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(codingHeading.compareDocumentPosition(displaySettings)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   // ── Collapse Toggle ───────────────────────────────────────────────────────

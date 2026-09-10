@@ -6,6 +6,7 @@ import {
   ExplanationErrorInfo,
   setupExplanationStreamListeners,
 } from "@/lib/explanationStream";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -324,6 +325,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
         agentId,
         method: "auto",
       });
+      await useSkillUsageStore.getState().loadUsageStatus();
       // Reload detail so the installations list reflects the new install.
       const detailRequest = getActiveDetailRequest(skillId);
       const detail = await invoke<SkillDetail>(
@@ -352,6 +354,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     }
     try {
       await invoke("uninstall_skill_from_agent", { skillId, agentId });
+      await useSkillUsageStore.getState().loadUsageStatus();
       // Reload detail so the installations list reflects the removal.
       const detailRequest = getActiveDetailRequest(skillId);
       const detail = await invoke<SkillDetail>(

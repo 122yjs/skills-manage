@@ -10,6 +10,7 @@ import { useStorageStore } from "@/stores/storageStore";
 import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 import { DevToolSetupDialog } from "@/components/settings/DevToolSetupDialog";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 /**
  * Top-level app shell shared visually with the read-only web dashboard.
@@ -29,18 +30,20 @@ export function AppShell() {
   const setupStatus = useDevToolSetupStore((s) => s.status);
   const setupCompleted = useDevToolSetupStore((s) => s.completed);
   const loadDevToolSetup = useDevToolSetupStore((s) => s.load);
+  const loadUsageStatus = useSkillUsageStore((s) => s.loadUsageStatus);
 
   useEffect(() => {
     void loadDevToolSetup();
     void loadStorageStatus().catch(() => undefined);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [loadDevToolSetup, loadStorageStatus]);
 
   useEffect(() => {
     if (setupStatus !== "ready" || !setupCompleted || didInitializeRef.current) return;
     didInitializeRef.current = true;
-    void initialize();
-  }, [initialize, setupCompleted, setupStatus]);
+    void initialize().finally(() => {
+      void loadUsageStatus().catch(() => undefined);
+    });
+  }, [initialize, loadUsageStatus, setupCompleted, setupStatus]);
 
   useEffect(() => {
     if (!mainRef.current) return;
@@ -52,6 +55,7 @@ export function AppShell() {
     await Promise.allSettled([
       loadCentralSkills(),
       rescanDiscoverFromDisk(),
+      loadUsageStatus(),
     ]);
   }
 

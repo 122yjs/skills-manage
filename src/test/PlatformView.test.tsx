@@ -81,6 +81,7 @@ vi.mock("../components/skill/SkillFolderDrawer", () => ({
 import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
+import { useSkillUsageStore } from "../stores/skillUsageStore";
 import * as tauriBridge from "@/lib/tauri";
 
 const userSourceText = /用户来源|User source/i;
@@ -315,8 +316,10 @@ const mockClaudePluginSliceDuplicates: ScannedSkill[] = [
 const mockGetSkillsByAgent = vi.fn();
 const mockLoadCentralSkills = vi.fn();
 const mockInstallSkill = vi.fn();
-const mockUninstallSkillFromAgent = vi.fn();
 const mockRefreshCounts = vi.fn();
+const mockLoadUsageStatus = vi.fn();
+const mockSetSkillUsage = vi.fn();
+const mockSetPlatformUsage = vi.fn();
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseSkillStore = vi.mocked(useSkillStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
@@ -343,7 +346,6 @@ function buildSkillStoreState(overrides = {}) {
     pendingSkillActionKeys: {},
     error: null,
     getSkillsByAgent: mockGetSkillsByAgent,
-    uninstallSkillFromAgent: mockUninstallSkillFromAgent,
     ...overrides,
   };
 }
@@ -401,7 +403,30 @@ describe("PlatformView", () => {
     window.localStorage.clear();
     testNavigate = null;
     mockRefreshCounts.mockReset();
-    mockUninstallSkillFromAgent.mockReset();
+    mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
+    mockSetSkillUsage.mockReset().mockResolvedValue(undefined);
+    mockSetPlatformUsage.mockReset().mockResolvedValue(undefined);
+    useSkillUsageStore.setState({
+      statuses: [
+        {
+          agent_id: "claude-code",
+          active_count: 2,
+          paused_count: 0,
+          external_count: 0,
+          skills: [
+            { skill_id: "frontend-design", name: "frontend-design", enabled: true, paused_by_bulk: false },
+            { skill_id: "code-reviewer", name: "code-reviewer", enabled: true, paused_by_bulk: false },
+          ],
+        },
+      ],
+      isLoading: false,
+      updatingSkillKeys: {},
+      updatingAgentIds: {},
+      error: null,
+      loadUsageStatus: mockLoadUsageStatus,
+      setSkillUsage: mockSetSkillUsage,
+      setPlatformUsage: mockSetPlatformUsage,
+    });
     installDefaultStoreMocks();
   });
 
@@ -725,6 +750,20 @@ describe("PlatformView", () => {
       if (typeof selector === "function") return selector(state);
       return state;
     });
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 1,
+        paused_count: 0,
+        external_count: 1,
+        skills: [{
+          skill_id: "shared-skill",
+          name: "shared-skill",
+          enabled: true,
+          paused_by_bulk: false,
+        }],
+      }],
+    });
 
     renderPlatformView();
 
@@ -754,8 +793,8 @@ describe("PlatformView", () => {
       })
     ).toBeInTheDocument();
     expect(
-      within(userCard as HTMLElement).getByRole("button", {
-        name: /从 Claude Code 卸载 shared-skill/i,
+      within(userCard as HTMLElement).getByRole("switch", {
+        name: /切换 shared-skill 的使用状态/i,
       })
     ).toBeInTheDocument();
     expect(
@@ -764,56 +803,165 @@ describe("PlatformView", () => {
       })
     ).not.toBeInTheDocument();
     expect(
-      within(pluginCard as HTMLElement).queryByRole("button", {
-        name: /从 Claude Code 卸载 shared-skill/i,
+      within(pluginCard as HTMLElement).queryByRole("switch", {
+        name: /切换 shared-skill 的使用状态/i,
       })
     ).not.toBeInTheDocument();
   });
 
-  it("renders uninstall actions for writable platform skills", () => {
+  it("renders usage switches for managed platform skills", () => {
     renderPlatformView();
 
     expect(
-      screen.getByRole("button", { name: /从 Claude Code 卸载 frontend-design/i })
+      screen.getByRole("switch", { name: /切换 frontend-design 的使用状态/i })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /从 Claude Code 卸载 code-reviewer/i })
+      screen.getByRole("switch", { name: /切换 code-reviewer 的使用状态/i })
     ).toBeInTheDocument();
   });
 
-  it("uninstalls a skill from the current platform and refreshes counts", async () => {
+  it("changes usage without deleting the installed skill and refreshes counts", async () => {
     renderPlatformView();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /从 Claude Code 卸载 frontend-design/i })
+      screen.getByRole("switch", { name: /切换 frontend-design 的使用状态/i })
     );
-    expect(mockUninstallSkillFromAgent).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole("button", { name: /确认删除/i }));
 
     await waitFor(() => {
-      expect(mockUninstallSkillFromAgent).toHaveBeenCalledWith(
+      expect(mockSetSkillUsage).toHaveBeenCalledWith(
         "frontend-design",
-        "claude-code"
+        "claude-code",
+        false
       );
     });
     expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels the armed uninstall state when clicking outside the card actions", async () => {
+  it("pauses only active managed skills from a partially active platform", async () => {
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 1,
+        paused_count: 1,
+        external_count: 0,
+        skills: [
+          { skill_id: "frontend-design", name: "frontend-design", enabled: true, paused_by_bulk: false },
+          { skill_id: "code-reviewer", name: "code-reviewer", enabled: false, paused_by_bulk: false },
+        ],
+      }],
+    });
+
     renderPlatformView();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /从 Claude Code 卸载 frontend-design/i })
-    );
-    expect(screen.getByRole("button", { name: /确认删除/i })).toBeInTheDocument();
+    const platformSwitch = screen.getByRole("switch", {
+      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+    });
+    expect(platformSwitch).toBeChecked();
+    expect(screen.getByText(/使用受管理技能: 部分使用中/)).toBeInTheDocument();
 
-    fireEvent.pointerDown(document.body);
+    fireEvent.click(platformSwitch);
 
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: /确认删除/i })).not.toBeInTheDocument();
+      expect(mockSetPlatformUsage).toHaveBeenCalledWith("claude-code", false);
     });
-    expect(mockUninstallSkillFromAgent).not.toHaveBeenCalled();
+  });
+
+  it("restores only bulk-paused skills when no managed skill is active", async () => {
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 2,
+        external_count: 0,
+        skills: [
+          { skill_id: "frontend-design", name: "frontend-design", enabled: false, paused_by_bulk: true },
+          { skill_id: "code-reviewer", name: "code-reviewer", enabled: false, paused_by_bulk: false },
+        ],
+      }],
+    });
+
+    renderPlatformView();
+
+    const platformSwitch = screen.getByRole("switch", {
+      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+    });
+    expect(platformSwitch).not.toBeChecked();
+    expect(platformSwitch).not.toBeDisabled();
+    expect(screen.getByText("恢复到全部暂停前的状态。")).toBeInTheDocument();
+
+    fireEvent.click(platformSwitch);
+
+    await waitFor(() => {
+      expect(mockSetPlatformUsage).toHaveBeenCalledWith("claude-code", true);
+    });
+  });
+
+  it("disables platform-wide restore when every managed skill was paused individually", () => {
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 2,
+        external_count: 0,
+        skills: [
+          { skill_id: "frontend-design", name: "frontend-design", enabled: false, paused_by_bulk: false },
+          { skill_id: "code-reviewer", name: "code-reviewer", enabled: false, paused_by_bulk: false },
+        ],
+      }],
+    });
+
+    renderPlatformView();
+
+    const platformSwitch = screen.getByRole("switch", {
+      name: /切换 Claude Code 中全部受管理技能的使用状态/i,
+    });
+    expect(platformSwitch).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByText("所有受管理技能均已单独暂停。")).toBeInTheDocument();
+
+    fireEvent.click(platformSwitch);
+    expect(mockSetPlatformUsage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a paused managed row operable when a read-only plugin copy remains", async () => {
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": mockPluginBundleSkills },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 1,
+        external_count: 1,
+        skills: [{
+          skill_id: "ponytail-audit",
+          name: "ponytail-audit",
+          enabled: false,
+          paused_by_bulk: false,
+        }],
+      }],
+    });
+
+    renderPlatformView();
+
+    const usageSwitch = screen.getByRole("switch", {
+      name: /切换 ponytail-audit 的使用状态/i,
+    });
+    expect(usageSwitch).not.toBeChecked();
+    expect(screen.getByText(/仍有 1 个外部提供的技能可用/)).toBeInTheDocument();
+
+    fireEvent.click(usageSwitch);
+
+    await waitFor(() => {
+      expect(mockSetSkillUsage).toHaveBeenCalledWith(
+        "ponytail-audit",
+        "claude-code",
+        true
+      );
+    });
   });
 
   it("shows Claude-only source tabs with 全部 selected by default", () => {

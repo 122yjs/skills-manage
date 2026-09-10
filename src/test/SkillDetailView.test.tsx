@@ -6,6 +6,7 @@ import {
   AgentWithStatus,
   SkillDetail as SkillDetailType,
   SkillDirectoryNode as SkillDirectoryNodeType,
+  UsageStatus,
 } from "../types";
 
 const { mockTauriInvoke, mockIsTauriRuntime } = vi.hoisted(() => ({
@@ -26,6 +27,10 @@ vi.mock("../stores/skillDetailStore", () => ({
 
 vi.mock("../stores/platformStore", () => ({
   usePlatformStore: vi.fn(),
+}));
+
+vi.mock("../stores/skillUsageStore", () => ({
+  useSkillUsageStore: vi.fn(),
 }));
 
 // ─── Mock CollectionPickerDialog ──────────────────────────────────────────────
@@ -58,6 +63,7 @@ vi.mock("../components/collection/CollectionPickerDialog", () => ({
 
 import { useSkillDetailStore } from "../stores/skillDetailStore";
 import { usePlatformStore } from "../stores/platformStore";
+import { useSkillUsageStore } from "../stores/skillUsageStore";
 
 // ─── Mock react-markdown ──────────────────────────────────────────────────────
 
@@ -222,6 +228,7 @@ const mockReset = vi.fn();
 const mockRescan = vi.fn();
 const mockRefreshCounts = vi.fn();
 const mockRefreshInstallations = vi.fn();
+const mockSetSkillUsage = vi.fn();
 
 function buildDetailStoreState(overrides = {}) {
   return {
@@ -262,7 +269,17 @@ function buildPlatformStoreState(overrides = {}) {
   };
 }
 
-function applyStoreMocks(detailOverrides = {}, platformOverrides = {}) {
+function buildSkillUsageStoreState(overrides = {}) {
+  return {
+    statuses: [] as UsageStatus[],
+    updatingSkillKeys: {},
+    updatingAgentIds: {},
+    setSkillUsage: mockSetSkillUsage,
+    ...overrides,
+  };
+}
+
+function applyStoreMocks(detailOverrides = {}, platformOverrides = {}, usageOverrides = {}) {
   vi.mocked(useSkillDetailStore).mockImplementation((selector?: unknown) => {
     const state = buildDetailStoreState(detailOverrides);
     if (typeof selector === "function") return selector(state);
@@ -270,6 +287,11 @@ function applyStoreMocks(detailOverrides = {}, platformOverrides = {}) {
   });
   vi.mocked(usePlatformStore).mockImplementation((selector?: unknown) => {
     const state = buildPlatformStoreState(platformOverrides);
+    if (typeof selector === "function") return selector(state);
+    return state;
+  });
+  vi.mocked(useSkillUsageStore).mockImplementation((selector?: unknown) => {
+    const state = buildSkillUsageStoreState(usageOverrides);
     if (typeof selector === "function") return selector(state);
     return state;
   });
@@ -295,6 +317,7 @@ function renderView(
 describe("SkillDetailView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockSetSkillUsage.mockResolvedValue(undefined);
     mockIsTauriRuntime.mockImplementation(() => {
       const w = window as unknown as {
         __TAURI__?: unknown;
@@ -435,7 +458,7 @@ describe("SkillDetailView", () => {
       screen.getByText(/不可调整技能集|Collection management is unavailable/i)
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /切换 .* 的链接状态/i })
+      screen.queryByRole("button", { name: /切换 .* 的使用状态/i })
     ).toBeNull();
     expect(
       screen.queryByRole("button", { name: /加入技能集/i })
@@ -464,7 +487,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByText("~/.claude/skills/frontend-design/SKILL.md")).toBeInTheDocument();
     expect(screen.getByText("~/.claude/skills")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design 在 Cursor 的链接状态/i })
+      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的使用状态/i })
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /加入技能集/i })
@@ -485,7 +508,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Each non-central agent should have a toggle icon button
     const toggleButtons = screen.getAllByRole("button", {
-      name: /切换 .* 的链接状态/i,
+      name: /切换 .* 的使用状态/i,
     });
     // 2 non-central agents (claude-code, cursor)
     expect(toggleButtons).toHaveLength(2);
@@ -531,7 +554,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Claude Code is installed — tooltip includes linked status
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Claude Code 的链接状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
     });
     expect(claudeToggle).toHaveAttribute("title", expect.stringContaining("Claude Code"));
   });
@@ -540,7 +563,7 @@ describe("SkillDetailView", () => {
     renderView();
 
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Claude Code 的链接状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
     });
 
     expect(claudeToggle).toHaveAttribute("aria-pressed", "true");
@@ -552,7 +575,7 @@ describe("SkillDetailView", () => {
     renderView();
 
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
     });
 
     expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
@@ -570,7 +593,7 @@ describe("SkillDetailView", () => {
     renderView("frontend-design", "page", { skipMockSetup: true });
 
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
     });
 
     expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
@@ -585,7 +608,7 @@ describe("SkillDetailView", () => {
     renderView();
     // Cursor is NOT installed
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
     });
     fireEvent.click(cursorToggle);
     await waitFor(() => {
@@ -595,18 +618,52 @@ describe("SkillDetailView", () => {
     expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
   });
 
-  it("calls uninstallSkill when linked platform icon is clicked", async () => {
+  it("pauses a linked platform icon without uninstalling its managed file", async () => {
     renderView();
     // Claude Code IS installed
     const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Claude Code 的链接状态/i,
+      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
     });
     fireEvent.click(claudeToggle);
     await waitFor(() => {
-      expect(mockUninstallSkill).toHaveBeenCalledWith("frontend-design", "claude-code");
+      expect(mockSetSkillUsage).toHaveBeenCalledWith("frontend-design", "claude-code", false);
     });
+    expect(mockUninstallSkill).not.toHaveBeenCalled();
     expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
     expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
+  });
+
+  it("restores a paused managed platform icon without reinstalling it", async () => {
+    applyStoreMocks({}, {}, {
+      statuses: [
+        {
+          agent_id: "claude-code",
+          active_count: 0,
+          paused_count: 1,
+          external_count: 0,
+          skills: [
+            {
+              skill_id: "frontend-design",
+              name: "frontend-design",
+              enabled: false,
+              paused_by_bulk: false,
+            },
+          ],
+        },
+      ],
+    });
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const claudeToggle = screen.getByRole("button", {
+      name: /切换 frontend-design \(Claude Code\) 的使用状态/i,
+    });
+    expect(claudeToggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(claudeToggle);
+
+    await waitFor(() => {
+      expect(mockSetSkillUsage).toHaveBeenCalledWith("frontend-design", "claude-code", true);
+    });
+    expect(mockInstallSkill).not.toHaveBeenCalled();
   });
 
   // ── Collections ───────────────────────────────────────────────────────────
@@ -1210,7 +1267,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByTestId("react-markdown")).toHaveTextContent("# User Frontend Design");
     expect(screen.getByRole("button", { name: /加入技能集/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design 在 Cursor 的链接状态/i })
+      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的使用状态/i })
     ).toBeInTheDocument();
     expect(screen.queryByText(/只读来源|Read-only source/i)).toBeNull();
   });
@@ -1261,7 +1318,7 @@ describe("SkillDetailView", () => {
       </MemoryRouter>
     );
     const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design 在 Cursor 的链接状态/i,
+      name: /切换 frontend-design \(Cursor\) 的使用状态/i,
     });
     expect(cursorToggle).toBeDisabled();
   });

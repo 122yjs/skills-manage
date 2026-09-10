@@ -13,6 +13,7 @@ import {
   SkillBundleInstallResult,
   SkillWithLinks,
 } from "@/types";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 export const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   {
@@ -232,7 +233,10 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       });
 
       // Refresh central skills to get updated link status.
-      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      const [skills] = await Promise.all([
+        invoke<SkillWithLinks[]>("get_central_skills"),
+        useSkillUsageStore.getState().loadUsageStatus(),
+      ]);
       set({ skills, isInstalling: false });
 
       return result;
@@ -250,6 +254,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     const [skills, bundles] = await Promise.all([
       invoke<SkillWithLinks[]>("get_central_skills"),
       invoke<CentralSkillBundle[]>("get_central_skill_bundles"),
+      useSkillUsageStore.getState().loadUsageStatus(),
     ]);
     set({ skills, bundles });
     return result;
@@ -263,6 +268,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     const [skills, bundles] = await Promise.all([
       invoke<SkillWithLinks[]>("get_central_skills"),
       invoke<CentralSkillBundle[]>("get_central_skill_bundles"),
+      useSkillUsageStore.getState().loadUsageStatus(),
     ]);
     set({ skills, bundles });
     return result;
@@ -294,7 +300,10 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
         options,
       });
 
-      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      const [skills] = await Promise.all([
+        invoke<SkillWithLinks[]>("get_central_skills"),
+        useSkillUsageStore.getState().loadUsageStatus(),
+      ]);
       set({ skills, deletingSkillId: null });
 
       return result;
@@ -365,6 +374,7 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
       const [skills, bundles] = await Promise.all([
         invoke<SkillWithLinks[]>("get_central_skills"),
         invoke<CentralSkillBundle[]>("get_central_skill_bundles"),
+        useSkillUsageStore.getState().loadUsageStatus(),
       ]);
       set({
         skills,
@@ -406,7 +416,10 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
         await invoke("install_skill_to_agent", { skillId, agentId, method: "auto" });
       }
 
-      const skills = await invoke<SkillWithLinks[]>("get_central_skills");
+      const [skills] = await Promise.all([
+        invoke<SkillWithLinks[]>("get_central_skills"),
+        useSkillUsageStore.getState().loadUsageStatus(),
+      ]);
       set({ skills, togglingAgentId: null });
     } catch (err) {
       set({ error: String(err), togglingAgentId: null });

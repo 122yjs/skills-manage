@@ -6,7 +6,9 @@ import { useTranslation } from "react-i18next";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import {
@@ -64,7 +66,6 @@ export function PlatformView() {
   const loadingByAgent = useSkillStore((state) => state.loadingByAgent);
   const pendingSkillActionKeys = useSkillStore((state) => state.pendingSkillActionKeys);
   const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent);
-  const uninstallSkillFromAgent = useSkillStore((state) => state.uninstallSkillFromAgent);
 
   const centralSkills = useCentralSkillsStore((state) => state.skills);
   const centralAgents = useCentralSkillsStore((state) => state.agents);
@@ -74,6 +75,12 @@ export function PlatformView() {
     (state) => state.installPluginBundle
   );
   const refreshCounts = usePlatformStore((state) => state.refreshCounts);
+  const usageStatuses = useSkillUsageStore((state) => state.statuses);
+  const usageUpdatingSkillKeys = useSkillUsageStore((state) => state.updatingSkillKeys);
+  const usageUpdatingAgentIds = useSkillUsageStore((state) => state.updatingAgentIds);
+  const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
+  const setPlatformUsage = useSkillUsageStore((state) => state.setPlatformUsage);
+  const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
@@ -103,8 +110,9 @@ export function PlatformView() {
   useEffect(() => {
     if (agentId) {
       getSkillsByAgent(agentId);
+      void loadUsageStatus().catch(() => undefined);
     }
-  }, [agentId, getSkillsByAgent, scanGeneration]);
+  }, [agentId, getSkillsByAgent, loadUsageStatus, scanGeneration]);
 
   useEffect(() => {
     if (!contentRef.current) return;
@@ -150,13 +158,13 @@ export function PlatformView() {
     }
   }
 
-  async function handleUninstall(skillId: string) {
+  async function handleUsageChange(skillId: string, enabled: boolean) {
     if (!agentId) return;
     try {
-      await uninstallSkillFromAgent(skillId, agentId);
-      await refreshCounts();
+      await setSkillUsage(skillId, agentId, enabled);
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
     } catch (err) {
-      toast.error(t("detail.uninstallError", { error: String(err) }));
+      toast.error(t("skillUsage.updateError", { error: String(err) }));
     }
   }
 
@@ -167,11 +175,55 @@ export function PlatformView() {
     () => (agentId ? (skillsByAgent[agentId] ?? []) : []),
     [agentId, skillsByAgent]
   );
+  const usageStatus = usageStatuses.find((status) => status.agent_id === agentId);
+  const usageBySkillId = useMemo(
+    () => new Map((usageStatus?.skills ?? []).map((usage) => [usage.skill_id, usage])),
+    [usageStatus?.skills]
+  );
+  const hasBulkPausedSkills = (usageStatus?.skills ?? []).some((usage) => usage.paused_by_bulk);
+  const canPausePlatform = (usageStatus?.active_count ?? 0) > 0;
+  const canRestorePlatform = !canPausePlatform && hasBulkPausedSkills;
+  const isPlatformUsageUpdating = agentId
+    ? (usageUpdatingAgentIds[agentId] ?? false) ||
+      Object.keys(usageUpdatingSkillKeys).some((key) => key.startsWith(`${agentId}::`))
+    : false;
+  const platformUsageState = canPausePlatform
+    ? (usageStatus?.paused_count ?? 0) > 0
+      ? t("skillUsage.platformMixed")
+      : t("skillUsage.platformActive")
+    : t("skillUsage.platformPaused");
+
+  async function handlePlatformUsageChange() {
+    if (!agentId || (!canPausePlatform && !canRestorePlatform)) return;
+    try {
+      await setPlatformUsage(agentId, !canPausePlatform);
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+    } catch (error) {
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+  const managedSkills = useMemo(() => {
+    const activeSkillIds = new Set(
+      skills.filter((skill) => !skill.is_read_only).map((skill) => skill.id)
+    );
+    const pausedSkills: ScannedSkill[] = (usageStatus?.skills ?? [])
+      .filter((usage) => !usage.enabled && !activeSkillIds.has(usage.skill_id))
+      .map((usage) => ({
+        id: usage.skill_id,
+        row_id: `${agentId}::paused::${usage.skill_id}`,
+        name: usage.name,
+        file_path: "",
+        dir_path: agent?.global_skills_dir ?? "",
+        link_type: "symlink",
+        is_central: true,
+      }));
+    return [...skills, ...pausedSkills];
+  }, [agent?.global_skills_dir, agentId, skills, usageStatus?.skills]);
 
   const sourceFilteredSkills = useMemo(() => {
     const claudeFiltered = !isClaudePage || sourceFilter === "all"
-      ? skills
-      : skills.filter((skill) => skill.source_kind === sourceFilter);
+      ? managedSkills
+      : managedSkills.filter((skill) => skill.source_kind === sourceFilter);
 
     if (installSourceFilter === "universal") {
       return claudeFiltered.filter(isUniversalSource);
@@ -180,7 +232,7 @@ export function PlatformView() {
       return claudeFiltered.filter((skill) => !isUniversalSource(skill));
     }
     return claudeFiltered;
-  }, [installSourceFilter, isClaudePage, skills, sourceFilter]);
+  }, [installSourceFilter, isClaudePage, managedSkills, sourceFilter]);
 
   const universalCount = useMemo(
     () => skills.filter(isUniversalSource).length,
@@ -410,6 +462,53 @@ export function PlatformView() {
         <p className="text-sm text-muted-foreground mt-0.5">
           {formatPathForDisplay(agent.global_skills_dir)}
         </p>
+        {usageStatus ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {usageStatus.skills.length > 0 ? (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  {t("skillUsage.managedSummary", {
+                    active: usageStatus.active_count,
+                    paused: usageStatus.paused_count,
+                  })}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={canPausePlatform}
+                    disabled={
+                      isPlatformUsageUpdating ||
+                      (!canPausePlatform && !canRestorePlatform)
+                    }
+                    onCheckedChange={() => void handlePlatformUsageChange()}
+                    aria-label={t("skillUsage.togglePlatform", { name: agent.display_name })}
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    {t("skillUsage.platformSwitchLabel")}: {platformUsageState}
+                  </span>
+                </div>
+                {!canPausePlatform && (
+                  <p className="basis-full text-xs text-muted-foreground">
+                    {canRestorePlatform
+                      ? t("skillUsage.restoreBulkHint")
+                      : t("skillUsage.individualPaused")}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+            )}
+            {usageStatus.external_count > 0 && (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                {t("skillUsage.externalHint", { count: usageStatus.external_count })}
+              </p>
+            )}
+            {usageStatus.skills.length > 0 && (
+              <p className="basis-full text-xs text-muted-foreground">
+                {t("skillUsage.reloadHint")}
+              </p>
+            )}
+          </div>
+        ) : null}
       </div>
 
       {isClaudePage && (
@@ -495,7 +594,7 @@ export function PlatformView() {
       <div ref={contentRef} className="flex-1 overflow-auto p-6">
         {isLoading ? (
           <EmptyState message={t("platform.loading")} />
-        ) : skills.length === 0 ? (
+        ) : managedSkills.length === 0 ? (
           <EmptyState
             message={t("platform.noSkills", { name: agent.display_name })}
           />
@@ -546,46 +645,61 @@ export function PlatformView() {
                 )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {filteredSkills.map((skill) => (
-                    <UnifiedSkillCard
-                      key={getSkillRowKey(skill)}
-                      name={skill.name}
-                      description={skill.description}
-                      translation={{
-                        resourceId: `local:${skill.file_path}`,
-                        filePath: skill.file_path,
-                      }}
-                      sourceType={skill.link_type as "symlink" | "copy" | "native"}
-                      originKind={skill.source_kind ?? null}
-                      isReadOnly={skill.is_read_only ?? false}
-                      isUniversalSource={isUniversalSource(skill)}
-                      isLoading={
-                        agentId
-                          ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
-                          : false
-                      }
-                      onDetail={() => handleOpenDrawer(skill)}
-                      onInstallTo={
-                        skill.is_read_only
-                          ? undefined
-                          : () => handleInstallClick(skill.id)
-                      }
-                      onUninstallFromPlatform={
-                        skill.is_read_only
-                          ? undefined
-                          : () => handleUninstall(skill.id)
-                      }
-                      onManageUniversal={
-                        isUniversalSource(skill) ? () => navigate("/universal") : undefined
-                      }
-                      uninstallFromLabel={t("platform.uninstallFromLabel", {
-                        skill: skill.name,
-                        platform: agent.display_name,
-                        defaultValue: i18n.language.startsWith("zh")
-                          ? `从 ${agent.display_name} 卸载 ${skill.name}`
-                          : `Uninstall ${skill.name} from ${agent.display_name}`,
-                      })}
-                      detailButtonRef={(node) => setDetailButtonRef(getSkillRowKey(skill), node)}
-                    />
+                    (() => {
+                      const usage = usageBySkillId.get(skill.id);
+                      const hasExternalCounterpart = skills.some(
+                        (candidate) =>
+                          candidate.id === skill.id &&
+                          candidate.is_read_only &&
+                          candidate.row_id !== skill.row_id
+                      );
+                      return (
+                        <UnifiedSkillCard
+                          key={getSkillRowKey(skill)}
+                          name={skill.name}
+                          description={skill.description}
+                          translation={skill.file_path
+                            ? {
+                                resourceId: `local:${skill.file_path}`,
+                                filePath: skill.file_path,
+                              }
+                            : undefined}
+                          sourceType={skill.file_path
+                            ? skill.link_type as "symlink" | "copy" | "native"
+                            : undefined}
+                          originKind={skill.source_kind ?? null}
+                          isReadOnly={skill.is_read_only ?? false}
+                          isUniversalSource={isUniversalSource(skill)}
+                          usageControl={usage && !skill.is_read_only
+                            ? {
+                                enabled: usage.enabled,
+                                pausedByBulk: usage.paused_by_bulk,
+                                onCheckedChange: (enabled) => void handleUsageChange(skill.id, enabled),
+                                isLoading: agentId
+                                  ? (usageUpdatingSkillKeys[`${agentId}::${skill.id}`] ?? false) ||
+                                    (usageUpdatingAgentIds[agentId] ?? false)
+                                  : false,
+                              }
+                            : undefined}
+                          externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
+                          isLoading={
+                            agentId
+                              ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false)
+                              : false
+                          }
+                          onDetail={() => handleOpenDrawer(skill)}
+                          onInstallTo={
+                            skill.is_read_only
+                              ? undefined
+                              : () => handleInstallClick(skill.id)
+                          }
+                          onManageUniversal={
+                            isUniversalSource(skill) ? () => navigate("/universal") : undefined
+                          }
+                          detailButtonRef={(node) => setDetailButtonRef(getSkillRowKey(skill), node)}
+                        />
+                      );
+                    })()
                   ))}
                 </div>
               </section>

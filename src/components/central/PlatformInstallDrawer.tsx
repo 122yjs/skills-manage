@@ -17,6 +17,7 @@ import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, SkillWithLinks } from "@/types";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { cn } from "@/lib/utils";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 type PlatformDrawerTab = "installed" | "coding" | "lobster" | "shared";
 
@@ -56,14 +57,26 @@ export function PlatformInstallDrawer({
     () => new Set(skill?.read_only_agents ?? []),
     [skill?.read_only_agents]
   );
+  const usageByAgent = useSkillUsageStore((state) => state.statuses);
+  const skillUsageByAgent = useMemo(
+    () =>
+      new Map(
+        usageByAgent.flatMap((status) => {
+          const usage = status.skills.find((candidate) => candidate.skill_id === skill?.id);
+          return usage ? [[status.agent_id, usage] as const] : [];
+        })
+      ),
+    [skill?.id, usageByAgent]
+  );
 
   const rows = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     return targetAgents
       .filter((agent) => {
         const isLinked = linkedAgentIds.has(agent.id);
-        const isReadOnly = readOnlyAgentIds.has(agent.id);
-        if (activeTab === "installed" && !isLinked) return false;
+        const usage = skillUsageByAgent.get(agent.id);
+        const isReadOnly = readOnlyAgentIds.has(agent.id) && !usage && !isLinked;
+        if (activeTab === "installed" && !isLinked && !usage) return false;
         if (activeTab === "coding" && agent.category === "lobster") return false;
         if (activeTab === "lobster" && agent.category !== "lobster") return false;
         if (activeTab === "shared" && !isReadOnly) return false;
@@ -73,14 +86,14 @@ export function PlatformInstallDrawer({
           .includes(normalizedQuery);
       })
       .sort((a, b) => {
-        const aInstalled = linkedAgentIds.has(a.id) || readOnlyAgentIds.has(a.id);
-        const bInstalled = linkedAgentIds.has(b.id) || readOnlyAgentIds.has(b.id);
+        const aInstalled = linkedAgentIds.has(a.id) || skillUsageByAgent.has(a.id) || readOnlyAgentIds.has(a.id);
+        const bInstalled = linkedAgentIds.has(b.id) || skillUsageByAgent.has(b.id) || readOnlyAgentIds.has(b.id);
         if (aInstalled !== bInstalled) return aInstalled ? -1 : 1;
         return getAgentDisplayName(a, t("sidebar.universal")).localeCompare(
           getAgentDisplayName(b, t("sidebar.universal"))
         );
       });
-  }, [activeTab, linkedAgentIds, query, readOnlyAgentIds, t, targetAgents]);
+  }, [activeTab, linkedAgentIds, query, readOnlyAgentIds, skillUsageByAgent, t, targetAgents]);
 
   if (!skill) return null;
 
@@ -185,12 +198,17 @@ export function PlatformInstallDrawer({
                   {rows.map((agent) => {
                     const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
                     const isLinked = linkedAgentIds.has(agent.id);
-                    const isReadOnly = readOnlyAgentIds.has(agent.id);
+                    const usage = skillUsageByAgent.get(agent.id);
+                    const isReadOnly = readOnlyAgentIds.has(agent.id) && !usage && !isLinked;
                     const isToggling = togglingAgentId === agent.id;
                     const statusLabel = isReadOnly
                       ? t("platformDrawer.statusShared")
-                      : isLinked
-                        ? t("platformDrawer.statusInstalled")
+                      : usage
+                        ? usage.enabled
+                          ? t("skillUsage.active")
+                          : t("skillUsage.paused")
+                        : isLinked
+                          ? t("skillUsage.active")
                         : t("platformDrawer.statusNotInstalled");
 
                     return (
@@ -223,14 +241,14 @@ export function PlatformInstallDrawer({
                         ) : (
                           <Button
                             type="button"
-                            variant={isLinked ? "outline" : "default"}
+                            variant={(usage?.enabled ?? isLinked) ? "outline" : "default"}
                             size="sm"
                             disabled={isToggling}
                             aria-label={
-                              isLinked
-                                ? t("platformDrawer.uninstallAria", {
+                              usage || isLinked
+                                ? t("skillUsage.toggleSkill", {
                                     skill: skill.name,
-                                    platform: displayName,
+                                    name: `${skill.name} (${displayName})`,
                                   })
                                 : t("platformDrawer.installAria", {
                                     skill: skill.name,
@@ -239,7 +257,11 @@ export function PlatformInstallDrawer({
                             }
                             onClick={() => onToggle(skill.id, agent.id)}
                           >
-                            {isLinked ? t("common.uninstall") : t("common.install")}
+                            {usage?.enabled ?? isLinked
+                              ? t("skillUsage.pause")
+                              : usage
+                                ? t("skillUsage.resume")
+                                : t("common.install")}
                           </Button>
                         )}
                       </div>

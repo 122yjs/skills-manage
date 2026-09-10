@@ -49,6 +49,24 @@ pub struct SkillInstallation {
     pub created_at: String,
 }
 
+/// 도구가 읽지 않는 보관소로 옮겨 둔 관리 설치입니다.
+///
+/// 사용 중지는 복구 휴지통과 달리 자동 만료하지 않습니다. 스캐너가 원래
+/// 설치 경로를 더는 찾지 못해도 이 행만으로 같은 설치를 안전하게 복원합니다.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PausedInstallation {
+    pub skill_id: String,
+    pub agent_id: String,
+    pub skill_name: String,
+    pub installed_path: String,
+    pub paused_path: String,
+    pub link_type: String,
+    /// 심볼릭 링크를 옮긴 경우 원래 링크 본문입니다. 상대 경로도 그대로 보존합니다.
+    pub symlink_target: Option<String>,
+    pub paused_by_bulk: bool,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct AgentSkillObservation {
     pub row_id: String,
@@ -152,6 +170,26 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             link_type      TEXT NOT NULL,
             symlink_target TEXT,
             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (skill_id, agent_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 사용 중지 설치는 일반 설치 기록과 분리합니다. 스캐너가 원래 경로를
+    // 정리해도 중지한 파일을 잃지 않고, 복구 휴지통의 30일 만료도 적용되지 않습니다.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS paused_installations (
+            skill_id       TEXT NOT NULL,
+            agent_id       TEXT NOT NULL,
+            skill_name     TEXT NOT NULL,
+            installed_path TEXT NOT NULL,
+            paused_path    TEXT NOT NULL UNIQUE,
+            link_type      TEXT NOT NULL,
+            symlink_target TEXT,
+            paused_by_bulk BOOLEAN NOT NULL DEFAULT 0,
+            created_at     TEXT NOT NULL,
             PRIMARY KEY (skill_id, agent_id)
         )",
     )
@@ -1456,6 +1494,9 @@ pub async fn get_skill_by_id(pool: &DbPool, skill_id: &str) -> Result<Option<Ski
 
 /// Delete a skill and all its installation records.
 pub async fn delete_skill(pool: &DbPool, skill_id: &str) -> Result<(), String> {
+    if !get_paused_installations(pool, skill_id).await?.is_empty() {
+        return Err("중지된 설치가 있어 스킬 기록을 삭제할 수 없습니다".to_string());
+    }
     sqlx::query("DELETE FROM skill_installations WHERE skill_id = ?")
         .bind(skill_id)
         .execute(pool)
@@ -1606,6 +1647,134 @@ pub async fn delete_skill_description_translations(
 
 // ─── Skill Installations ──────────────────────────────────────────────────────
 
+/// 활성 설치 한 건을 반환한다.
+pub async fn get_skill_installation(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<Option<SkillInstallation>, String> {
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations WHERE skill_id = ? AND agent_id = ?",
+    )
+    .bind(skill_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 플랫폼별 활성 설치를 반환한다.
+pub async fn get_skill_installations_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<Vec<SkillInstallation>, String> {
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations WHERE agent_id = ? ORDER BY skill_id",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 중지 설치 한 건을 반환한다.
+pub async fn get_paused_installation(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<Option<PausedInstallation>, String> {
+    sqlx::query_as::<_, PausedInstallation>(
+        "SELECT * FROM paused_installations WHERE skill_id = ? AND agent_id = ?",
+    )
+    .bind(skill_id)
+    .bind(agent_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 플랫폼별 중지 설치를 반환한다.
+pub async fn get_paused_installations_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<Vec<PausedInstallation>, String> {
+    sqlx::query_as::<_, PausedInstallation>(
+        "SELECT * FROM paused_installations WHERE agent_id = ? ORDER BY skill_name, skill_id",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 스킬 삭제와의 충돌을 확인하기 위해 중지된 설치를 반환한다.
+pub async fn get_paused_installations(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<Vec<PausedInstallation>, String> {
+    sqlx::query_as::<_, PausedInstallation>(
+        "SELECT * FROM paused_installations WHERE skill_id = ? ORDER BY agent_id",
+    )
+    .bind(skill_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn has_paused_installations(pool: &DbPool) -> Result<bool, String> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM paused_installations")
+        .fetch_one(pool)
+        .await
+        .map(|count| count > 0)
+        .map_err(|e| e.to_string())
+}
+
+pub async fn upsert_paused_installation(
+    pool: &DbPool,
+    installation: &PausedInstallation,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO paused_installations
+         (skill_id, agent_id, skill_name, installed_path, paused_path, link_type,
+          symlink_target, paused_by_bulk, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(skill_id, agent_id) DO UPDATE SET
+           skill_name = excluded.skill_name,
+           installed_path = excluded.installed_path,
+           paused_path = excluded.paused_path,
+           link_type = excluded.link_type,
+           symlink_target = excluded.symlink_target,
+           paused_by_bulk = excluded.paused_by_bulk",
+    )
+    .bind(&installation.skill_id)
+    .bind(&installation.agent_id)
+    .bind(&installation.skill_name)
+    .bind(&installation.installed_path)
+    .bind(&installation.paused_path)
+    .bind(&installation.link_type)
+    .bind(&installation.symlink_target)
+    .bind(installation.paused_by_bulk)
+    .bind(&installation.created_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub async fn delete_paused_installation(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM paused_installations WHERE skill_id = ? AND agent_id = ?")
+        .bind(skill_id)
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Insert or update a skill installation record.
 ///
 /// On conflict (same skill_id + agent_id), updates the mutable fields
@@ -1730,12 +1899,19 @@ pub async fn delete_skills_not_in_scope(
     found_skill_ids: &[String],
 ) -> Result<(), String> {
     if found_skill_ids.is_empty() {
-        // Nothing found — delete all installation records first, then all skills.
-        sqlx::query("DELETE FROM skill_installations")
+        // 중지된 설치는 원래 경로에서 의도적으로 사라져 있습니다. 해당 스킬의
+        // 메타데이터와 재개 뒤 목록 복귀에 필요한 행은 스캐너 정리에서 보존합니다.
+        sqlx::query(
+            "DELETE FROM skill_installations
+             WHERE skill_id NOT IN (SELECT skill_id FROM paused_installations)",
+        )
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
-        return sqlx::query("DELETE FROM skills")
+        return sqlx::query(
+            "DELETE FROM skills
+             WHERE id NOT IN (SELECT skill_id FROM paused_installations)",
+        )
             .execute(pool)
             .await
             .map(|_| ())
@@ -1750,7 +1926,9 @@ pub async fn delete_skills_not_in_scope(
 
     // Cascade: remove installation rows for skills that are no longer on disk.
     let install_sql = format!(
-        "DELETE FROM skill_installations WHERE skill_id NOT IN ({})",
+        "DELETE FROM skill_installations
+         WHERE skill_id NOT IN ({})
+           AND skill_id NOT IN (SELECT skill_id FROM paused_installations)",
         placeholders
     );
     let mut q = sqlx::query(&install_sql);
@@ -1760,7 +1938,12 @@ pub async fn delete_skills_not_in_scope(
     q.execute(pool).await.map_err(|e| e.to_string())?;
 
     // Remove the stale skills themselves.
-    let skill_sql = format!("DELETE FROM skills WHERE id NOT IN ({})", placeholders);
+    let skill_sql = format!(
+        "DELETE FROM skills
+         WHERE id NOT IN ({})
+           AND id NOT IN (SELECT skill_id FROM paused_installations)",
+        placeholders
+    );
     let mut q2 = sqlx::query(&skill_sql);
     for id in found_skill_ids {
         q2 = q2.bind(id.as_str());

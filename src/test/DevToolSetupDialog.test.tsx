@@ -52,7 +52,7 @@ describe("DevToolSetupDialog", () => {
     );
   });
 
-  it("preselects only strongly detected tools and saves the user's choice", async () => {
+  it("강하게 감지된 도구만 미리 고르고, 사이드바 표시 선택을 저장한다", async () => {
     render(<DevToolSetupDialog />);
 
     expect(
@@ -60,9 +60,9 @@ describe("DevToolSetupDialog", () => {
     ).toBeChecked();
     expect(screen.queryByRole("checkbox", { name: /Cursor/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: /显示 1 个未选工具/ }));
+    fireEvent.click(screen.getByRole("button", { name: /显示 1 个已隐藏的平台/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /Cursor/ }));
-    fireEvent.click(screen.getByRole("button", { name: "选择并开始" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存显示设置" }));
 
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith(["codex", "cursor"]);

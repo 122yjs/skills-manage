@@ -15,6 +15,7 @@ import { useTranslation } from "react-i18next";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { SkillFolderCard } from "@/components/skill/SkillFolderCard";
@@ -301,6 +302,10 @@ export function CentralSkillsView() {
     (state) => state.bundleDeletePreview
   );
   const togglingAgentId = useCentralSkillsStore((state) => state.togglingAgentId);
+  const usageStatuses = useSkillUsageStore((state) => state.statuses);
+  const usageUpdatingSkillKeys = useSkillUsageStore((state) => state.updatingSkillKeys);
+  const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
+  const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
   const deletingSkillId = useCentralSkillsStore((state) => state.deletingSkillId);
   const deletingBundlePath = useCentralSkillsStore((state) => state.deletingBundlePath);
 
@@ -493,7 +498,20 @@ export function CentralSkillsView() {
 
   async function handleTogglePlatform(skillId: string, agentId: string) {
     try {
-      await togglePlatformLink(skillId, agentId);
+      const skill = skills.find((candidate) => candidate.id === skillId);
+      const usage = usageStatuses
+        .find((status) => status.agent_id === agentId)
+        ?.skills.find((candidate) => candidate.skill_id === skillId);
+      const isInstalled = skill?.linked_agents.includes(agentId) ?? false;
+
+      // 처음 켜는 경우만 기존 설치 경로를 쓴다. 이미 관리 중이던 설치는 파일을
+      // 지우지 않고 사용 상태만 바꾼다.
+      if (usage || isInstalled) {
+        await setSkillUsage(skillId, agentId, !(usage?.enabled ?? true));
+      } else {
+        await togglePlatformLink(skillId, agentId);
+        await loadUsageStatus();
+      }
       await refreshCounts();
       await loadCentralSkills();
     } catch (err) {
@@ -822,10 +840,20 @@ export function CentralSkillsView() {
                         agents,
                         linkedAgents: skill.linked_agents,
                         readOnlyAgents: skill.read_only_agents ?? [],
+                        usageByAgent: Object.fromEntries(
+                          usageStatuses.flatMap((status) => {
+                            const usage = status.skills.find(
+                              (candidate) => candidate.skill_id === skill.id
+                            );
+                            return usage ? [[status.agent_id, usage]] : [];
+                          })
+                        ),
                         skillId: skill.id,
                         onToggle: handleTogglePlatform,
                         onManage: () => handleOpenPlatformDrawer(skill.id),
-                        togglingAgentId,
+                        togglingAgentId: togglingAgentId ?? Object.keys(usageUpdatingSkillKeys)
+                          .find((key) => key.endsWith(`::${skill.id}`))
+                          ?.split("::")[0] ?? null,
                       }}
                     />
                   ))}

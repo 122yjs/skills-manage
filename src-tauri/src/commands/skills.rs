@@ -1128,6 +1128,21 @@ pub async fn delete_central_skill_bundle_impl(
             preview.affected_agents.join(", ")
         ));
     }
+    let mut paused_skill_ids = Vec::new();
+    for skill in &skills {
+        if !db::get_paused_installations(pool, &skill.id)
+            .await?
+            .is_empty()
+        {
+            paused_skill_ids.push(skill.id.clone());
+        }
+    }
+    if !paused_skill_ids.is_empty() {
+        return Err(format!(
+            "중지된 설치가 있어 보관함 묶음을 삭제할 수 없습니다: {}",
+            paused_skill_ids.join(", ")
+        ));
+    }
 
     // 파일과 DB를 먼저 보존해야 원본 삭제를 진행할 수 있습니다.
     recovery::backup_vault_before_removal(
@@ -1219,6 +1234,18 @@ pub async fn delete_central_skill_impl(
     let delete_target = validate_central_delete_target(&canonical_dir, &central_root)?;
 
     let installations = db::get_skill_installations(pool, skill_id).await?;
+    let paused_installations = db::get_paused_installations(pool, skill_id).await?;
+    if !paused_installations.is_empty() {
+        let agents = paused_installations
+            .iter()
+            .map(|installation| installation.agent_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "중지된 설치가 있어 보관함 스킬을 삭제할 수 없습니다: {}",
+            agents
+        ));
+    }
     if !options.cascade_uninstall && !installations.is_empty() {
         let agents = installations
             .iter()

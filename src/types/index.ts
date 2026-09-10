@@ -134,6 +134,27 @@ export interface SkillWithLinks {
   read_only_agents?: string[];
 }
 
+// ─── Skill Usage Types ──────────────────────────────────────────────────────
+
+/** 앱이 관리하는 설치 한 건의 실제 사용 상태다. */
+export interface UsageSkillStatus {
+  skill_id: string;
+  name: string;
+  enabled: boolean;
+  /** 플랫폼 전체 중지로 멈췄으며, 전체 복원 때만 다시 켜지는 항목이다. */
+  paused_by_bulk: boolean;
+}
+
+/** 한 플랫폼에서 앱이 관리하는 설치와 외부 설치를 구분한 요약이다. */
+export interface UsageStatus {
+  agent_id: string;
+  active_count: number;
+  paused_count: number;
+  /** 공용 설치·플러그인처럼 이 화면에서 바꿀 수 없는 관측 항목 수다. */
+  external_count: number;
+  skills: UsageSkillStatus[];
+}
+
 // ─── Skill Description Translation Types ────────────────────────────────────
 
 /** 저장소의 SKILL.md 또는 README가 직접 제공한 언어별 설명. */

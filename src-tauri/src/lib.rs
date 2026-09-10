@@ -62,6 +62,10 @@ pub fn run() {
             commands::linker::uninstall_skill_from_agent,
             commands::linker::batch_install_to_agents,
             commands::linker::install_plugin_skill_bundle_to_agents,
+            // Skill usage
+            commands::usage::get_skill_usage_status,
+            commands::usage::set_skill_usage,
+            commands::usage::set_platform_usage,
             // Skills
             commands::skills::get_skills_by_agent,
             commands::skills::get_central_skills,

@@ -98,19 +98,21 @@
     }
   },
   "devToolSetup": {
-    "title": "Choose your development tools",
-    "description": "Common tools are ordered first. Only selected tools are shown in the tools list; hidden tools continue to be scanned and remain available as install targets.",
-    "detectedHint": "Tools with a confirmed executable or app are preselected. A settings folder alone is not treated as an installation.",
-    "listLabel": "Development tools",
+    "title": "Platform visibility",
+    "description": "Choose which platforms appear in the sidebar. This setting does not change scanning, skill usage, or installation files.",
+    "detectedHint": "Platforms with a confirmed executable or app are preselected. A settings folder alone is not treated as an installation.",
+    "listLabel": "Platform visibility list",
     "detected": "Detected",
-    "unselectedTools": "Unselected tools",
-    "showUnselectedTools": "Show {{count}} unselected tools",
-    "hideUnselectedTools": "Hide unselected tools",
-    "continue": "Select and start",
-    "save": "Save selection",
-    "settingsTitle": "Development tools",
-    "settingsDescription": "Choose scanning and installation targets from the full existing catalog.",
-    "changeSelection": "Change selection"
+    "unselectedTools": "Hidden platforms",
+    "showUnselectedTools": "Show {{count}} hidden platforms",
+    "hideUnselectedTools": "Hide hidden platforms",
+    "selectAll": "Select all",
+    "clearAll": "Clear all",
+    "continue": "Save visibility",
+    "save": "Save visibility",
+    "settingsTitle": "Platform visibility",
+    "settingsDescription": "Choose which entries appear in the sidebar from the full platform catalog.",
+    "changeSelection": "Platform visibility"
   },
   "common": {
     "install": "Install",
@@ -172,7 +174,8 @@
     "platformToggleError": "Could not change visibility for {{name}}.",
     "showAllPlatformEntries": "Show all",
     "hideAllPlatformEntries": "Hide all",
-    "allPlatformsToggleError": "Could not update visibility for all platforms."
+    "allPlatformsToggleError": "Could not update visibility for all platforms.",
+    "platformDisplaySettings": "Platform visibility"
   },
   "platform": {
     "searchPlaceholder": "Search skills...",
@@ -205,6 +208,28 @@
       "platform": "Platform install",
       "universal": "Shared install"
     }
+  },
+  "skillUsage": {
+    "active": "Active",
+    "paused": "Paused",
+    "toggleSkill": "Toggle use of {{name}}",
+    "togglePlatform": "Toggle use of all managed skills on {{name}}",
+    "platformSwitchLabel": "Use managed skills",
+    "platformActive": "Active",
+    "platformMixed": "Partly active",
+    "platformPaused": "Paused",
+    "pause": "Pause use",
+    "resume": "Resume use",
+    "pausePlatform": "Pause all active skills",
+    "restoreBulk": "Restore previous state",
+    "restoreBulkHint": "Restores the state from before pausing everything.",
+    "managedSummary": "Managed: {{active}} active · {{paused}} paused",
+    "noManaged": "This platform has no app-managed skills.",
+    "individualPaused": "Every managed skill was paused individually.",
+    "externalHint": "{{count}} shared or plugin skills remain available.",
+    "externalStillAvailable": "{{count}} externally provided skill remains available.",
+    "updateError": "Could not change skill usage: {{error}}",
+    "reloadHint": "The tool may need a reload or a new session before it reads this change."
   },
   "storage": {
     "title": "Skill Library location",
@@ -351,7 +376,7 @@
     "noPlatforms": "No matching platforms.",
     "openFull": "Open full install panel",
     "installAria": "Install {{skill}} to {{platform}}",
-    "uninstallAria": "Uninstall {{skill}} from {{platform}}",
+    "uninstallAria": "Pause use of {{skill}} on {{platform}}",
     "sharedAria": "{{platform}} is available through the shared directory"
   },
   "installDialog": {

@@ -98,19 +98,21 @@
     }
   },
   "devToolSetup": {
-    "title": "选择你使用的开发工具",
-    "description": "常用工具会排在前面。只有选中的工具显示在工具列表中；隐藏的工具仍会被扫描，也仍可作为安装目标。",
-    "detectedHint": "已确认存在可执行文件或应用的工具会被预选。仅有设置文件夹不会被视为已安装。",
-    "listLabel": "开发工具列表",
+    "title": "平台显示",
+    "description": "选择要显示在侧边栏的平台。此设置不会改变扫描、技能使用状态或安装文件。",
+    "detectedHint": "已确认存在可执行文件或应用的平台会被预选。仅有设置文件夹不会被视为已安装。",
+    "listLabel": "平台显示列表",
     "detected": "已检测",
-    "unselectedTools": "未选工具",
-    "showUnselectedTools": "显示 {{count}} 个未选工具",
-    "hideUnselectedTools": "收起未选工具",
-    "continue": "选择并开始",
-    "save": "保存选择",
-    "settingsTitle": "开发工具",
-    "settingsDescription": "从现有完整目录中选择扫描和安装目标。",
-    "changeSelection": "更改选择"
+    "unselectedTools": "已隐藏的平台",
+    "showUnselectedTools": "显示 {{count}} 个已隐藏的平台",
+    "hideUnselectedTools": "收起已隐藏的平台",
+    "selectAll": "全选",
+    "clearAll": "全部取消",
+    "continue": "保存显示设置",
+    "save": "保存显示设置",
+    "settingsTitle": "平台显示",
+    "settingsDescription": "从完整平台目录中选择显示在侧边栏的项目。",
+    "changeSelection": "平台显示设置"
   },
   "common": {
     "install": "安装",
@@ -172,7 +174,8 @@
     "platformToggleError": "无法更改 {{name}} 的显示状态。",
     "showAllPlatformEntries": "全部显示",
     "hideAllPlatformEntries": "全部隐藏",
-    "allPlatformsToggleError": "无法完成所有平台的显示状态更新。"
+    "allPlatformsToggleError": "无法完成所有平台的显示状态更新。",
+    "platformDisplaySettings": "平台显示设置"
   },
   "platform": {
     "searchPlaceholder": "搜索技能...",
@@ -205,6 +208,28 @@
       "platform": "平台专用安装",
       "universal": "共享安装"
     }
+  },
+  "skillUsage": {
+    "active": "使用中",
+    "paused": "已暂停",
+    "toggleSkill": "切换 {{name}} 的使用状态",
+    "togglePlatform": "切换 {{name}} 中全部受管理技能的使用状态",
+    "platformSwitchLabel": "使用受管理技能",
+    "platformActive": "使用中",
+    "platformMixed": "部分使用中",
+    "platformPaused": "已暂停",
+    "pause": "暂停使用",
+    "resume": "恢复使用",
+    "pausePlatform": "暂停所有正在使用的技能",
+    "restoreBulk": "恢复之前状态",
+    "restoreBulkHint": "恢复到全部暂停前的状态。",
+    "managedSummary": "受管理：使用中 {{active}} 个 · 已暂停 {{paused}} 个",
+    "noManaged": "此平台没有由应用管理的技能。",
+    "individualPaused": "所有受管理技能均已单独暂停。",
+    "externalHint": "仍有 {{count}} 个共享或插件技能可用。",
+    "externalStillAvailable": "仍有 {{count}} 个外部提供的技能可用。",
+    "updateError": "无法更改技能使用状态：{{error}}",
+    "reloadHint": "工具可能需要重新加载或新会话才会读取此更改。"
   },
   "storage": {
     "title": "技能仓库位置",
@@ -351,7 +376,7 @@
     "noPlatforms": "没有匹配的平台。",
     "openFull": "打开完整安装面板",
     "installAria": "安装 {{skill}} 到 {{platform}}",
-    "uninstallAria": "从 {{platform}} 卸载 {{skill}}",
+    "uninstallAria": "在 {{platform}} 暂停使用 {{skill}}",
     "sharedAria": "{{platform}} 通过共享目录可用"
   },
   "installDialog": {

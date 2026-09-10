@@ -7,6 +7,7 @@ import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogBody,
@@ -22,6 +23,7 @@ import { UNIVERSAL_AGENT_ID } from "@/lib/agents";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useStorageStore } from "@/stores/storageStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 import type { ScannedSkill } from "@/types";
 
 const EMPTY_SKILLS: ScannedSkill[] = [];
@@ -39,6 +41,12 @@ export function UniversalInstallView() {
   const getSkillsByAgent = useSkillStore((state) => state.getSkillsByAgent);
   const uninstallSkill = useSkillStore((state) => state.uninstallSkillFromAgent);
   const centralPath = useStorageStore((state) => state.status?.central_path);
+  const usageStatuses = useSkillUsageStore((state) => state.statuses);
+  const usageUpdatingSkillKeys = useSkillUsageStore((state) => state.updatingSkillKeys);
+  const usageUpdatingAgentIds = useSkillUsageStore((state) => state.updatingAgentIds);
+  const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
+  const setPlatformUsage = useSkillUsageStore((state) => state.setPlatformUsage);
+  const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
   const [query, setQuery] = useState("");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -48,23 +56,47 @@ export function UniversalInstallView() {
 
   useEffect(() => {
     void getSkillsByAgent(UNIVERSAL_AGENT_ID);
-  }, [getSkillsByAgent, scanGeneration]);
+    void loadUsageStatus().catch(() => undefined);
+  }, [getSkillsByAgent, loadUsageStatus, scanGeneration]);
 
   useEffect(() => {
     const installedIds = new Set(skills.map((skill) => skill.id));
     setSelectedIds((current) => new Set([...current].filter((id) => installedIds.has(id))));
   }, [skills]);
 
+  const usageStatus = usageStatuses.find((status) => status.agent_id === UNIVERSAL_AGENT_ID);
+  const usageBySkillId = useMemo(
+    () => new Map((usageStatus?.skills ?? []).map((usage) => [usage.skill_id, usage])),
+    [usageStatus?.skills]
+  );
+  const managedSkills = useMemo(() => {
+    const activeSkillIds = new Set(
+      skills.filter((skill) => !skill.is_read_only).map((skill) => skill.id)
+    );
+    const pausedSkills: ScannedSkill[] = (usageStatus?.skills ?? [])
+      .filter((usage) => !usage.enabled && !activeSkillIds.has(usage.skill_id))
+      .map((usage) => ({
+        id: usage.skill_id,
+        row_id: `${UNIVERSAL_AGENT_ID}::paused::${usage.skill_id}`,
+        name: usage.name,
+        file_path: "",
+        dir_path: agent?.global_skills_dir ?? "",
+        link_type: "symlink",
+        is_central: true,
+      }));
+    return [...skills, ...pausedSkills];
+  }, [agent?.global_skills_dir, skills, usageStatus?.skills]);
+
   const filteredSkills = useMemo(() => {
     const normalized = query.trim().toLowerCase();
-    if (!normalized) return skills;
-    return skills.filter(
+    if (!normalized) return managedSkills;
+    return managedSkills.filter(
       (skill) =>
         skill.name.toLowerCase().includes(normalized) ||
         skill.id.toLowerCase().includes(normalized) ||
         skill.description?.toLowerCase().includes(normalized)
     );
-  }, [query, skills]);
+  }, [managedSkills, query]);
 
   const removableSkills = useMemo(
     () => skills.filter((skill) => !skill.is_read_only),
@@ -103,6 +135,37 @@ export function UniversalInstallView() {
     }
   }
 
+  const hasBulkPausedSkills = (usageStatus?.skills ?? []).some((usage) => usage.paused_by_bulk);
+  const canPausePlatform = (usageStatus?.active_count ?? 0) > 0;
+  const canRestorePlatform = !canPausePlatform && hasBulkPausedSkills;
+  const isPlatformUsageUpdating =
+    (usageUpdatingAgentIds[UNIVERSAL_AGENT_ID] ?? false) ||
+    Object.keys(usageUpdatingSkillKeys).some((key) => key.startsWith(`${UNIVERSAL_AGENT_ID}::`));
+  const platformUsageState = canPausePlatform
+    ? (usageStatus?.paused_count ?? 0) > 0
+      ? t("skillUsage.platformMixed")
+      : t("skillUsage.platformActive")
+    : t("skillUsage.platformPaused");
+
+  async function handleUsageChange(skillId: string, enabled: boolean) {
+    try {
+      await setSkillUsage(skillId, UNIVERSAL_AGENT_ID, enabled);
+      await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
+    } catch (error) {
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  async function handlePlatformUsageChange() {
+    if (!canPausePlatform && !canRestorePlatform) return;
+    try {
+      await setPlatformUsage(UNIVERSAL_AGENT_ID, !canPausePlatform);
+      await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
+    } catch (error) {
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-border px-6 py-4">
@@ -114,9 +177,43 @@ export function UniversalInstallView() {
           {formatPathForDisplay(agent?.global_skills_dir ?? "~/.agents/skills/")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">{t("universal.description")}</p>
-        {skills.some((skill) => skill.source_kind === "unmanaged") ? (
+        {usageStatus?.skills.length ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <p className="text-xs text-muted-foreground">
+              {t("skillUsage.managedSummary", {
+                active: usageStatus.active_count,
+                paused: usageStatus.paused_count,
+              })}
+            </p>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={canPausePlatform}
+                disabled={
+                  isPlatformUsageUpdating ||
+                  (!canPausePlatform && !canRestorePlatform)
+                }
+                onCheckedChange={() => void handlePlatformUsageChange()}
+                aria-label={t("skillUsage.togglePlatform", { name: t("universal.title") })}
+              />
+              <span className="text-xs text-muted-foreground">
+                {t("skillUsage.platformSwitchLabel")}: {platformUsageState}
+              </span>
+            </div>
+            {!canPausePlatform && (
+              <p className="basis-full text-xs text-muted-foreground">
+                {canRestorePlatform
+                  ? t("skillUsage.restoreBulkHint")
+                  : t("skillUsage.individualPaused")}
+              </p>
+            )}
+            <p className="basis-full text-xs text-muted-foreground">{t("skillUsage.reloadHint")}</p>
+          </div>
+        ) : usageStatus ? (
+          <p className="mt-2 text-xs text-muted-foreground">{t("skillUsage.noManaged")}</p>
+        ) : null}
+        {(usageStatus?.external_count ?? 0) > 0 ? (
           <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            {t("universal.externalHint")}
+            {t("skillUsage.externalHint", { count: usageStatus?.external_count ?? 0 })}
           </p>
         ) : null}
       </div>
@@ -161,7 +258,7 @@ export function UniversalInstallView() {
             <Loader2 className="size-4 animate-spin" />
             {t("universal.loading")}
           </div>
-        ) : skills.length === 0 ? (
+        ) : managedSkills.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-4 py-20 text-center">
             <div className="rounded-full bg-muted/60 p-4">
               <Blocks className="size-12 text-muted-foreground opacity-60" />
@@ -175,27 +272,52 @@ export function UniversalInstallView() {
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {filteredSkills.map((skill) => (
-              <UnifiedSkillCard
-                key={skill.row_id ?? skill.id}
-                name={skill.name}
-                description={skill.description}
-                translation={{
-                  resourceId: `local:${skill.file_path}`,
-                  filePath: skill.file_path,
-                }}
-                checkbox={skill.is_read_only
-                  ? undefined
-                  : { checked: selectedIds.has(skill.id), onChange: () => toggleSkill(skill.id) }}
-                sourceType={skill.link_type as "symlink" | "copy" | "native"}
-                isReadOnly={skill.is_read_only ?? false}
-                isExternallyManaged={skill.source_kind === "unmanaged"}
-                onDetail={() => setDrawerSkill(skill)}
-                onUninstallFromPlatform={skill.is_read_only ? undefined : () => void removeSkills([skill.id])}
-                uninstallFromLabel={t("universal.removeOne", { skill: skill.name })}
-                isLoading={pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false}
-              />
-            ))}
+            {filteredSkills.map((skill) => {
+              const usage = usageBySkillId.get(skill.id);
+              const hasExternalCounterpart = skills.some(
+                (candidate) =>
+                  candidate.id === skill.id &&
+                  candidate.is_read_only &&
+                  candidate.row_id !== skill.row_id
+              );
+              return (
+                <UnifiedSkillCard
+                  key={skill.row_id ?? skill.id}
+                  name={skill.name}
+                  description={skill.description}
+                  translation={skill.file_path
+                    ? { resourceId: `local:${skill.file_path}`, filePath: skill.file_path }
+                    : undefined}
+                  checkbox={skill.is_read_only || !skill.file_path
+                    ? undefined
+                    : { checked: selectedIds.has(skill.id), onChange: () => toggleSkill(skill.id) }}
+                  sourceType={skill.file_path
+                    ? skill.link_type as "symlink" | "copy" | "native"
+                    : undefined}
+                  isReadOnly={skill.is_read_only ?? false}
+                  isExternallyManaged={skill.source_kind === "unmanaged"}
+                  usageControl={usage && !skill.is_read_only
+                    ? {
+                        enabled: usage.enabled,
+                        pausedByBulk: usage.paused_by_bulk,
+                        onCheckedChange: (enabled) => void handleUsageChange(skill.id, enabled),
+                        isLoading:
+                          (usageUpdatingSkillKeys[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false) ||
+                          (usageUpdatingAgentIds[UNIVERSAL_AGENT_ID] ?? false),
+                      }
+                    : undefined}
+                  externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
+                  onDetail={() => setDrawerSkill(skill)}
+                  onUninstallFromPlatform={
+                    skill.is_read_only || !skill.file_path
+                      ? undefined
+                      : () => void removeSkills([skill.id])
+                  }
+                  uninstallFromLabel={t("universal.removeOne", { skill: skill.name })}
+                  isLoading={pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false}
+                />
+              );
+            })}
           </div>
         )}
       </div>

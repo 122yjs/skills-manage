@@ -31,6 +31,7 @@ import {
   SkillDetailRequest,
   SkillDirectoryNode,
   SkillInstallation,
+  UsageSkillStatus,
 } from "@/types";
 import { cn } from "@/lib/utils";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
@@ -38,6 +39,7 @@ import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 
@@ -137,8 +139,8 @@ function PlatformToggleIcon({
         isReadOnly && "cursor-default hover:bg-transparent",
         isLoading && "animate-pulse pointer-events-none"
       )}
-      title={`${displayName}${isInstalled && !isReadOnly ? ` — ${t("central.linked")}` : ""}`}
-      aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
+      title={`${displayName}${isInstalled && !isReadOnly ? ` — ${t("skillUsage.active")}` : ""}`}
+      aria-label={t("skillUsage.toggleSkill", { name: `${skillName} (${displayName})` })}
       aria-pressed={isInstalled && !isReadOnly}
       disabled={isLoading || isReadOnly}
       onClick={onToggle}
@@ -160,8 +162,9 @@ interface PlatformToggleGroupProps {
   agents: AgentWithStatus[];
   skillName: string;
   installationMap: Map<string, SkillInstallation>;
+  usageMap: Map<string, UsageSkillStatus>;
   readOnlyAgentIds: Set<string>;
-  installingAgentId: string | null;
+  loadingAgentIds: Set<string>;
   onToggle: (agentId: string) => void;
 }
 
@@ -170,8 +173,9 @@ function PlatformToggleGroup({
   agents,
   skillName,
   installationMap,
+  usageMap,
   readOnlyAgentIds,
-  installingAgentId,
+  loadingAgentIds,
   onToggle,
 }: PlatformToggleGroupProps) {
   if (agents.length === 0) return null;
@@ -183,15 +187,22 @@ function PlatformToggleGroup({
       </span>
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
         {agents.map((agent) => (
-          <PlatformToggleIcon
-            key={agent.id}
-            agent={agent}
-            skillName={skillName}
-            isInstalled={installationMap.has(agent.id) || readOnlyAgentIds.has(agent.id)}
-            isReadOnly={readOnlyAgentIds.has(agent.id)}
-            isLoading={installingAgentId === agent.id}
-            onToggle={() => onToggle(agent.id)}
-          />
+          (() => {
+            const usage = usageMap.get(agent.id);
+            const isManaged = Boolean(usage) || installationMap.has(agent.id);
+            const isReadOnly = readOnlyAgentIds.has(agent.id) && !isManaged;
+            return (
+              <PlatformToggleIcon
+                key={agent.id}
+                agent={agent}
+                skillName={skillName}
+                isInstalled={(usage?.enabled ?? installationMap.has(agent.id)) || isReadOnly}
+                isReadOnly={isReadOnly}
+                isLoading={loadingAgentIds.has(agent.id)}
+                onToggle={() => onToggle(agent.id)}
+              />
+            );
+          })()
         ))}
       </div>
     </div>
@@ -352,7 +363,6 @@ export function SkillDetailView({
   const error = useSkillDetailStore((s) => s.error);
   const loadDetail = useSkillDetailStore((s) => s.loadDetail);
   const installSkill = useSkillDetailStore((s) => s.installSkill);
-  const uninstallSkill = useSkillDetailStore((s) => s.uninstallSkill);
   const refreshInstallations = useSkillDetailStore((s) => s.refreshInstallations);
   const storeExplanation = useSkillDetailStore((s) => s.explanation);
   const fallbackExplanation = useSkillDetailStore((s) => s.fallbackExplanation);
@@ -368,6 +378,10 @@ export function SkillDetailView({
   // Platform agents (loaded at app init)
   const agents = usePlatformStore((s) => s.agents);
   const refreshCounts = usePlatformStore((s) => s.refreshCounts);
+  const usageStatuses = useSkillUsageStore((s) => s.statuses);
+  const usageUpdatingSkillKeys = useSkillUsageStore((s) => s.updatingSkillKeys);
+  const usageUpdatingAgentIds = useSkillUsageStore((s) => s.updatingAgentIds);
+  const setSkillUsage = useSkillUsageStore((s) => s.setSkillUsage);
 
   // Local state for filePath mode
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -551,6 +565,22 @@ export function SkillDetailView({
   const installationMap = new Map<string, SkillInstallation>(
     (detail?.installations ?? []).map((inst) => [inst.agent_id, inst])
   );
+  const usageMap = new Map<string, UsageSkillStatus>(
+    usageStatuses.flatMap((status) => {
+      const usage = status.skills.find((candidate) => candidate.skill_id === skillId);
+      return usage ? [[status.agent_id, usage] as const] : [];
+    })
+  );
+  const loadingAgentIds = new Set(
+    targetAgents
+      .filter(
+        (agent) =>
+          installingAgentId === agent.id ||
+          usageUpdatingSkillKeys[`${agent.id}::${skillId ?? ""}`] ||
+          usageUpdatingAgentIds[agent.id]
+      )
+      .map((agent) => agent.id)
+  );
   const readOnlyAgentIds = new Set(detail?.read_only_agents ?? []);
   const skillCollections = detail?.collections ?? [];
 
@@ -558,11 +588,12 @@ export function SkillDetailView({
 
   async function handleToggle(agentId: string) {
     if (!skillId || detail?.is_read_only) return;
-    if (readOnlyAgentIds.has(agentId)) return;
     const isInstalled = installationMap.has(agentId);
+    const usage = usageMap.get(agentId);
+    if (readOnlyAgentIds.has(agentId) && !usage && !isInstalled) return;
     try {
-      if (isInstalled) {
-        await uninstallSkill(skillId, agentId);
+      if (usage || isInstalled) {
+        await setSkillUsage(skillId, agentId, !(usage?.enabled ?? true));
       } else {
         await installSkill(skillId, agentId);
       }
@@ -573,8 +604,8 @@ export function SkillDetailView({
       await onInstallationsChange?.();
     } catch (err) {
       toast.error(
-        isInstalled
-          ? t("detail.uninstallError", { error: String(err) })
+        usage || isInstalled
+          ? t("skillUsage.updateError", { error: String(err) })
           : t("detail.installError", { error: String(err) })
       );
     }
@@ -1100,8 +1131,9 @@ export function SkillDetailView({
                             agents={lobsterAgents}
                             skillName={detail.name}
                             installationMap={installationMap}
+                            usageMap={usageMap}
                             readOnlyAgentIds={readOnlyAgentIds}
-                            installingAgentId={installingAgentId}
+                            loadingAgentIds={loadingAgentIds}
                             onToggle={handleToggle}
                           />
                           <PlatformToggleGroup
@@ -1109,8 +1141,9 @@ export function SkillDetailView({
                             agents={codingAgents}
                             skillName={detail.name}
                             installationMap={installationMap}
+                            usageMap={usageMap}
                             readOnlyAgentIds={readOnlyAgentIds}
-                            installingAgentId={installingAgentId}
+                            loadingAgentIds={loadingAgentIds}
                             onToggle={handleToggle}
                           />
                         </>

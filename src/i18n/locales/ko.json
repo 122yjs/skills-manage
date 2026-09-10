@@ -98,19 +98,21 @@
     }
   },
   "devToolSetup": {
-    "title": "사용할 개발 도구를 선택하세요",
-    "description": "주로 쓰는 도구를 앞쪽에 배치했습니다. 선택한 도구만 도구 목록에 표시하며, 숨긴 도구도 계속 스캔하고 적용할 수 있습니다.",
-    "detectedHint": "실행 파일이나 앱이 확인된 도구는 미리 선택했습니다. 설정 폴더만으로는 설치됨으로 판단하지 않습니다.",
-    "listLabel": "개발 도구 목록",
+    "title": "플랫폼 표시",
+    "description": "사이드바에 표시할 플랫폼을 고릅니다. 이 설정은 스캔, 스킬 사용 상태, 설치 파일을 바꾸지 않습니다.",
+    "detectedHint": "실행 파일이나 앱이 확인된 플랫폼은 미리 선택했습니다. 설정 폴더만으로는 설치됨으로 판단하지 않습니다.",
+    "listLabel": "플랫폼 표시 목록",
     "detected": "감지됨",
-    "unselectedTools": "선택하지 않은 도구",
-    "showUnselectedTools": "선택하지 않은 도구 {{count}}개 보기",
-    "hideUnselectedTools": "선택하지 않은 도구 접기",
-    "continue": "선택하고 시작",
-    "save": "선택 저장",
-    "settingsTitle": "개발 도구",
-    "settingsDescription": "기존 전체 카탈로그에서 스캔·설치 대상으로 사용할 도구를 관리합니다.",
-    "changeSelection": "선택 변경"
+    "unselectedTools": "숨긴 플랫폼",
+    "showUnselectedTools": "숨긴 플랫폼 {{count}}개 보기",
+    "hideUnselectedTools": "숨긴 플랫폼 접기",
+    "selectAll": "전체 선택",
+    "clearAll": "전체 해제",
+    "continue": "표시 설정 저장",
+    "save": "표시 설정 저장",
+    "settingsTitle": "플랫폼 표시",
+    "settingsDescription": "전체 플랫폼 목록에서 사이드바에 표시할 항목을 관리합니다.",
+    "changeSelection": "플랫폼 표시 설정"
   },
   "common": {
     "install": "설치",
@@ -172,7 +174,8 @@
     "platformToggleError": "{{name}}의 표시 상태를 바꾸지 못했습니다.",
     "showAllPlatformEntries": "전체 표시",
     "hideAllPlatformEntries": "전체 숨기기",
-    "allPlatformsToggleError": "전체 플랫폼의 표시 상태 변경을 완료하지 못했습니다."
+    "allPlatformsToggleError": "전체 플랫폼의 표시 상태 변경을 완료하지 못했습니다.",
+    "platformDisplaySettings": "플랫폼 표시 설정"
   },
   "platform": {
     "searchPlaceholder": "스킬 검색...",
@@ -205,6 +208,28 @@
       "platform": "전용 설치",
       "universal": "공용 설치"
     }
+  },
+  "skillUsage": {
+    "active": "사용 중",
+    "paused": "중지됨",
+    "toggleSkill": "{{name}} 사용 전환",
+    "togglePlatform": "{{name}}의 관리 스킬 전체 사용 전환",
+    "platformSwitchLabel": "관리 스킬 사용",
+    "platformActive": "사용 중",
+    "platformMixed": "일부 사용 중",
+    "platformPaused": "중지됨",
+    "pause": "사용 중지",
+    "resume": "다시 사용",
+    "pausePlatform": "전체 사용 중지",
+    "restoreBulk": "이전 상태 복원",
+    "restoreBulkHint": "전체 중지 직전 상태로 복원",
+    "managedSummary": "관리 중: 사용 {{active}}개 · 중지 {{paused}}개",
+    "noManaged": "이 플랫폼에는 앱이 관리하는 스킬이 없습니다.",
+    "individualPaused": "모든 관리 스킬이 개별 중지되었습니다.",
+    "externalHint": "공용 설치 또는 플러그인 스킬 {{count}}개는 계속 제공됩니다.",
+    "externalStillAvailable": "외부 제공 {{count}}개는 계속 사용할 수 있습니다.",
+    "updateError": "스킬 사용 상태를 바꾸지 못했습니다: {{error}}",
+    "reloadHint": "도구가 새 상태를 읽으려면 다시 불러오거나 새 세션이 필요할 수 있습니다."
   },
   "storage": {
     "title": "스킬 보관함 위치",
@@ -351,7 +376,7 @@
     "noPlatforms": "일치하는 플랫폼이 없습니다.",
     "openFull": "전체 적용 패널 열기",
     "installAria": "{{platform}}에 {{skill}} 적용",
-    "uninstallAria": "{{platform}}에서 {{skill}} 적용 해제",
+    "uninstallAria": "{{platform}}에서 {{skill}} 사용 중지",
     "sharedAria": "{{platform}}은 공유 디렉터리를 통해 사용할 수 있습니다"
   },
   "installDialog": {

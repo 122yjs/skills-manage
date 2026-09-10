@@ -57,6 +57,14 @@ export function DevToolSetupDialog() {
     });
   }
 
+  function selectAllTools() {
+    setSelectedIds(new Set(tools.map((tool) => tool.id)));
+  }
+
+  function clearAllTools() {
+    setSelectedIds(new Set());
+  }
+
   function renderToolOption(tool: (typeof tools)[number]) {
     const checkboxId = `dev-tool-${tool.id}`;
     return (
@@ -105,6 +113,14 @@ export function DevToolSetupDialog() {
           <p className="text-xs text-muted-foreground">
             {t("devToolSetup.detectedHint")}
           </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={selectAllTools}>
+              {t("devToolSetup.selectAll")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={clearAllTools}>
+              {t("devToolSetup.clearAll")}
+            </Button>
+          </div>
           {selectedTools.length > 0 && (
             <div className="grid grid-cols-2 gap-2" role="group" aria-label={t("devToolSetup.listLabel")}>
               {selectedTools.map(renderToolOption)}

@@ -16,6 +16,7 @@ import {
 import type { MouseEventHandler, Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type { AgentWithStatus, ClaudeSourceKind, SkillDescriptionTranslationMeta } from "@/types";
@@ -63,7 +64,7 @@ function PlatformToggleIcon({
         isToggling && "animate-pulse pointer-events-none"
       )}
       title={displayName}
-      aria-label={t("central.toggleInstallLabel", { platform: displayName, skill: skillName })}
+      aria-label={t("skillUsage.toggleSkill", { name: `${skillName} (${displayName})` })}
       aria-pressed={isLinked && !isReadOnly}
       disabled={isToggling || isReadOnly}
       onClick={onToggle}
@@ -104,6 +105,8 @@ export interface UnifiedSkillCardProps {
     agents: AgentWithStatus[];
     linkedAgents: string[];
     readOnlyAgents?: string[];
+    /** 중지된 관리 설치도 카드에서 다시 켤 수 있도록 별도로 전달한다. */
+    usageByAgent?: Record<string, { enabled: boolean; paused_by_bulk: boolean }>;
     skillId: string;
     onToggle: (skillId: string, agentId: string) => void;
     onManage?: () => void;
@@ -116,6 +119,15 @@ export interface UnifiedSkillCardProps {
   isReadOnly?: boolean;
   isUniversalSource?: boolean;
   isExternallyManaged?: boolean;
+  /** 앱이 관리하는 설치의 실제 사용 상태. 설치 파일 삭제와는 별개다. */
+  usageControl?: {
+    enabled: boolean;
+    pausedByBulk?: boolean;
+    onCheckedChange: (enabled: boolean) => void;
+    isLoading?: boolean;
+  };
+  /** 사용을 중지해도 남아 있는 공용/플러그인 제공 항목 수다. */
+  externalUsageCount?: number;
 
   // ── marketplace variant ──
   isInstalled?: boolean;
@@ -159,6 +171,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     isReadOnly,
     isUniversalSource,
     isExternallyManaged,
+    usageControl,
+    externalUsageCount = 0,
     isInstalled,
     tags,
     publisher,
@@ -201,6 +215,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   const codingAgents = targetPlatformAgents.filter((agent) => agent.category !== "lobster");
   const linkedAgentIds = new Set(platformIcons?.linkedAgents ?? []);
   const readOnlyAgentIds = new Set(platformIcons?.readOnlyAgents ?? []);
+  const usageByAgent = platformIcons?.usageByAgent ?? {};
   const featuredCodingAgents = FEATURED_CODING_AGENT_IDS
     .map((agentId) => codingAgents.find((agent) => agent.id === agentId))
     .filter((agent): agent is AgentWithStatus => !!agent);
@@ -431,6 +446,29 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   ? <ReadOnlyBadge />
                   : null}
 
+            {usageControl && (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70">
+                <span>
+                  {usageControl.enabled
+                    ? t("skillUsage.active")
+                    : t("skillUsage.paused")}
+                </span>
+                <Switch
+                  checked={usageControl.enabled}
+                  disabled={usageControl.isLoading}
+                  onCheckedChange={usageControl.onCheckedChange}
+                  aria-label={t("skillUsage.toggleSkill", { name })}
+                  className="h-4 w-7 [&_[data-slot=switch-thumb]]:size-3 [&_[data-slot=switch-thumb]]:group-data-[checked]/switch:translate-x-3"
+                />
+              </span>
+            )}
+
+            {!usageControl?.enabled && externalUsageCount > 0 && (
+              <span className="text-[10px] text-amber-700 dark:text-amber-300">
+                {t("skillUsage.externalStillAvailable", { count: externalUsageCount })}
+              </span>
+            )}
+
             {/* Source indicator (platform) */}
             {sourceType && <SourceIndicator sourceType={sourceType} />}
 
@@ -485,13 +523,15 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </span>
                   <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
                     {lobsterAgents.map((agent) => {
-                      const isReadOnlyAgent = readOnlyAgentIds.has(agent.id);
+                      const usage = usageByAgent[agent.id];
+                      const isManaged = Boolean(usage) || linkedAgentIds.has(agent.id);
+                      const isReadOnlyAgent = readOnlyAgentIds.has(agent.id) && !isManaged;
                       return (
                         <PlatformToggleIcon
                           key={agent.id}
                           agent={agent}
                           skillName={name}
-                          isLinked={linkedAgentIds.has(agent.id) || isReadOnlyAgent}
+                          isLinked={(usage?.enabled ?? linkedAgentIds.has(agent.id)) || isReadOnlyAgent}
                           isReadOnly={isReadOnlyAgent}
                           isToggling={platformIcons.togglingAgentId === agent.id}
                           onToggle={() => platformIcons.onToggle(platformIcons.skillId, agent.id)}
@@ -508,13 +548,15 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </span>
                   <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden">
                     {featuredCodingAgents.map((agent) => {
-                      const isReadOnlyAgent = readOnlyAgentIds.has(agent.id);
+                      const usage = usageByAgent[agent.id];
+                      const isManaged = Boolean(usage) || linkedAgentIds.has(agent.id);
+                      const isReadOnlyAgent = readOnlyAgentIds.has(agent.id) && !isManaged;
                       return (
                         <PlatformToggleIcon
                           key={agent.id}
                           agent={agent}
                           skillName={name}
-                          isLinked={linkedAgentIds.has(agent.id) || isReadOnlyAgent}
+                          isLinked={(usage?.enabled ?? linkedAgentIds.has(agent.id)) || isReadOnlyAgent}
                           isReadOnly={isReadOnlyAgent}
                           isToggling={platformIcons.togglingAgentId === agent.id}
                           onToggle={() => platformIcons.onToggle(platformIcons.skillId, agent.id)}

@@ -338,6 +338,18 @@ pub async fn update_custom_agent_impl(
 
     let category = config.category.unwrap_or_else(|| "other".to_string());
     let global_skills_dir = path_to_string(&expand_home_path(config.global_skills_dir.trim()));
+    if let Some(existing) = db::get_agent_by_id(pool, agent_id).await? {
+        if existing.global_skills_dir != global_skills_dir
+            && !db::get_paused_installations_by_agent(pool, agent_id)
+                .await?
+                .is_empty()
+        {
+            return Err(
+                "중지된 설치가 있어 플랫폼 스킬 폴더를 바꿀 수 없습니다. 먼저 모두 복원하세요."
+                    .to_string(),
+            );
+        }
+    }
 
     let updated = db::update_custom_agent(
         pool,
@@ -353,6 +365,13 @@ pub async fn update_custom_agent_impl(
 
 /// Remove a user-defined (non-builtin) agent by ID.
 pub async fn remove_custom_agent_impl(pool: &DbPool, agent_id: &str) -> Result<(), String> {
+    if !db::get_paused_installations_by_agent(pool, agent_id)
+        .await?
+        .is_empty()
+    {
+        return Err("중지된 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요."
+            .to_string());
+    }
     db::delete_custom_agent(pool, agent_id).await
 }
 
@@ -427,6 +446,13 @@ mod tests {
 
     async fn setup_test_db() -> DbPool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
+        db::init_database(&pool).await.unwrap();
+        pool
+    }
+
+    async fn setup_file_test_db(temp: &TempDir) -> DbPool {
+        let path = temp.path().join("db.sqlite");
+        let pool = db::create_pool(&path.to_string_lossy()).await.unwrap();
         db::init_database(&pool).await.unwrap();
         pool
     }
@@ -947,6 +973,64 @@ mod tests {
 
         let result = update_custom_agent_impl(&pool, "empty-name", config).await;
         assert!(result.is_err(), "Empty display name should fail validation");
+    }
+
+    #[tokio::test]
+    async fn paused_custom_agent_cannot_change_path_or_be_removed() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_test_db(&temp).await;
+        let original_dir = temp.path().join("original-skills");
+        let next_dir = temp.path().join("next-skills");
+        let agent = add_custom_agent_impl(
+            &pool,
+            CustomAgentConfig {
+                id: Some("paused-custom".to_string()),
+                display_name: "Paused Custom".to_string(),
+                category: Some("other".to_string()),
+                global_skills_dir: original_dir.to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_paused_installation(
+            &pool,
+            &db::PausedInstallation {
+                skill_id: "paused-skill".to_string(),
+                agent_id: agent.id.clone(),
+                skill_name: "Paused Skill".to_string(),
+                installed_path: original_dir.join("paused-skill").to_string_lossy().into_owned(),
+                paused_path: temp.path().join("paused-data").to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                paused_by_bulk: false,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let update = update_custom_agent_impl(
+            &pool,
+            &agent.id,
+            UpdateCustomAgentConfig {
+                display_name: "Paused Custom".to_string(),
+                category: Some("other".to_string()),
+                global_skills_dir: next_dir.to_string_lossy().into_owned(),
+            },
+        )
+        .await;
+        assert!(update.is_err());
+        assert_eq!(
+            db::get_agent_by_id(&pool, &agent.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .global_skills_dir,
+            original_dir.to_string_lossy()
+        );
+
+        assert!(remove_custom_agent_impl(&pool, &agent.id).await.is_err());
+        assert!(db::get_agent_by_id(&pool, &agent.id).await.unwrap().is_some());
     }
 
     // ── remove_custom_agent_impl ──────────────────────────────────────────────

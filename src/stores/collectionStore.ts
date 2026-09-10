@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { Collection, CollectionDetail, CollectionBatchInstallResult } from "@/types";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 const BROWSER_FIXTURE_COLLECTIONS: Collection[] = [
   {
@@ -219,6 +220,7 @@ export const useCollectionStore = create<CollectionState>((set, get) => ({
         collectionId,
         agentIds,
       });
+      await useSkillUsageStore.getState().loadUsageStatus();
       return result;
     } catch (err) {
       set({ error: String(err) });

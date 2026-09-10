@@ -7,6 +7,7 @@ import {
   CentralSkillBundle,
   CentralSkillBundleDetail,
   SkillWithLinks,
+  UsageStatus,
 } from "../types";
 
 // Mock stores
@@ -24,6 +25,10 @@ vi.mock("../stores/skillStore", () => ({
 
 vi.mock("../stores/marketplaceStore", () => ({
   useMarketplaceStore: vi.fn(),
+}));
+
+vi.mock("../stores/skillUsageStore", () => ({
+  useSkillUsageStore: vi.fn(),
 }));
 
 vi.mock("../components/skill/SkillDetailDrawer", () => ({
@@ -75,6 +80,7 @@ import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useMarketplaceStore } from "../stores/marketplaceStore";
+import { useSkillUsageStore } from "../stores/skillUsageStore";
 import * as tauriBridge from "@/lib/tauri";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -200,6 +206,9 @@ const mockLoadCentralBundleDetail = vi.fn();
 const mockClearCentralBundleDetail = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockTogglePlatformLink = vi.fn();
+const mockSetSkillUsage = vi.fn();
+const mockLoadUsageStatus = vi.fn();
+let mockUsageStatuses: UsageStatus[] = [];
 const mockDeleteCentralSkill = vi.fn();
 const mockPreviewDeleteCentralBundle = vi.fn();
 const mockDeleteCentralBundle = vi.fn();
@@ -299,6 +308,16 @@ function renderCentralSkillsView(centralOverrides = {}) {
     if (typeof selector === "function") return selector(state);
     return state;
   });
+  vi.mocked(useSkillUsageStore).mockImplementation((selector?: unknown) => {
+    const state = {
+      statuses: mockUsageStatuses,
+      updatingSkillKeys: {},
+      setSkillUsage: mockSetSkillUsage,
+      loadUsageStatus: mockLoadUsageStatus,
+    };
+    if (typeof selector === "function") return selector(state);
+    return state;
+  });
 
   return render(
     <MemoryRouter>
@@ -313,6 +332,9 @@ describe("CentralSkillsView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
+    mockUsageStatuses = [];
+    mockSetSkillUsage.mockResolvedValue(undefined);
+    mockLoadUsageStatus.mockResolvedValue(undefined);
   });
 
   // ── Header ────────────────────────────────────────────────────────────────
@@ -689,25 +711,57 @@ describe("CentralSkillsView", () => {
     expect(screen.getAllByText("龙虾类").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText("编程类").length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole("button", { name: /管理 .* 的平台安装/i })).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "切换 frontend-design 在 Claude Code 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 frontend-design 在 Cursor 的链接状态" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "切换 frontend-design 在 OpenClaw 的链接状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (Claude Code) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的使用状态" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "切换 frontend-design (OpenClaw) 的使用状态" })).toBeInTheDocument();
   });
 
   it("toggles featured coding platforms directly from the card", async () => {
     mockTogglePlatformLink.mockResolvedValue(undefined);
     renderCentralSkillsView();
 
-    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design 在 Cursor 的链接状态" }));
+    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的使用状态" }));
 
     await waitFor(() => {
       expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor");
       expect(mockRescan).toHaveBeenCalledTimes(1);
       expect(mockLoadCentralSkills).toHaveBeenCalledTimes(2);
+      expect(mockLoadUsageStatus).toHaveBeenCalledTimes(1);
     });
     expect(mockRescan.mock.invocationCallOrder[0]).toBeLessThan(
       mockLoadCentralSkills.mock.invocationCallOrder[1]
     );
+  });
+
+  it("restores a paused managed install without removing its platform link", async () => {
+    mockUsageStatuses = [
+      {
+        agent_id: "claude-code",
+        active_count: 0,
+        paused_count: 1,
+        external_count: 0,
+        skills: [
+          {
+            skill_id: "frontend-design",
+            name: "frontend-design",
+            enabled: false,
+            paused_by_bulk: false,
+          },
+        ],
+      },
+    ];
+    renderCentralSkillsView();
+
+    const pausedButton = screen.getByRole("button", {
+      name: "切换 frontend-design (Claude Code) 的使用状态",
+    });
+    expect(pausedButton).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(pausedButton);
+
+    await waitFor(() => {
+      expect(mockSetSkillUsage).toHaveBeenCalledWith("frontend-design", "claude-code", true);
+    });
+    expect(mockTogglePlatformLink).not.toHaveBeenCalled();
   });
 
   it("opens the platform manager drawer and toggles a platform", async () => {

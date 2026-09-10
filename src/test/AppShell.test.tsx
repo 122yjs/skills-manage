@@ -6,6 +6,7 @@ import { usePlatformStore } from "@/stores/platformStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
+import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
 let triggerRescanInMock = false;
 
@@ -23,6 +24,10 @@ vi.mock("@/stores/discoverStore", () => ({
 
 vi.mock("@/stores/devToolSetupStore", () => ({
   useDevToolSetupStore: vi.fn(),
+}));
+
+vi.mock("@/stores/skillUsageStore", () => ({
+  useSkillUsageStore: vi.fn(),
 }));
 
 vi.mock("@/components/settings/DevToolSetupDialog", () => ({
@@ -64,6 +69,7 @@ const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
 const mockUseDiscoverStore = vi.mocked(useDiscoverStore);
 const mockUseDevToolSetupStore = vi.mocked(useDevToolSetupStore);
+const mockUseSkillUsageStore = vi.mocked(useSkillUsageStore);
 
 let testNavigate: ReturnType<typeof useNavigate> | null = null;
 
@@ -101,8 +107,15 @@ describe("AppShell", () => {
 
     mockUsePlatformStore.mockImplementation((selector?: unknown) => {
       const state = {
-        initialize: vi.fn(),
-        rescan: vi.fn(),
+        initialize: vi.fn().mockResolvedValue(undefined),
+        rescan: vi.fn().mockResolvedValue(undefined),
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    mockUseSkillUsageStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        loadUsageStatus: vi.fn().mockResolvedValue(undefined),
       };
       if (typeof selector === "function") return selector(state);
       return state;
@@ -166,7 +179,7 @@ describe("AppShell", () => {
 
     mockUsePlatformStore.mockImplementation((selector?: unknown) => {
       const state = {
-        initialize: vi.fn(),
+        initialize: vi.fn().mockResolvedValue(undefined),
         rescan: mockRescan,
       };
       if (typeof selector === "function") return selector(state);
@@ -187,6 +200,21 @@ describe("AppShell", () => {
       if (typeof selector === "function") return selector(state);
       return state;
     });
+    const mockLoadUsageStatus = vi.fn().mockResolvedValue(undefined);
+    mockUseSkillUsageStore.mockImplementation((selector?: unknown) => {
+      const state = { loadUsageStatus: mockLoadUsageStatus };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    mockUseDevToolSetupStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        status: "ready",
+        completed: false,
+        load: vi.fn().mockResolvedValue(undefined),
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
 
     render(
       <MemoryRouter initialEntries={["/a"]}>
@@ -197,6 +225,7 @@ describe("AppShell", () => {
         </Routes>
       </MemoryRouter>
     );
+    mockLoadUsageStatus.mockClear();
 
     await act(async () => {
       screen.getByRole("button", { name: /open-search/i }).click();
@@ -210,6 +239,7 @@ describe("AppShell", () => {
     expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1);
     expect(mockRescanDiscoverFromDisk).toHaveBeenCalledTimes(1);
     expect(mockRefreshDiscoverCounts).not.toHaveBeenCalled();
+    expect(mockLoadUsageStatus).toHaveBeenCalled();
   });
 
   it("waits for the platform rescan before refreshing central and rerunning discover from disk", async () => {
@@ -225,7 +255,7 @@ describe("AppShell", () => {
 
     mockUsePlatformStore.mockImplementation((selector?: unknown) => {
       const state = {
-        initialize: vi.fn(),
+        initialize: vi.fn().mockResolvedValue(undefined),
         rescan: mockRescan,
       };
       if (typeof selector === "function") return selector(state);
@@ -246,6 +276,22 @@ describe("AppShell", () => {
       if (typeof selector === "function") return selector(state);
       return state;
     });
+    const mockLoadUsageStatus = vi.fn().mockResolvedValue(undefined);
+    mockUseSkillUsageStore.mockImplementation((selector?: unknown) => {
+      const state = { loadUsageStatus: mockLoadUsageStatus };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    mockUseDevToolSetupStore.mockImplementation((selector?: unknown) => {
+      const state = {
+        status: "ready",
+        completed: false,
+        load: vi.fn().mockResolvedValue(undefined),
+      };
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
 
     render(
       <MemoryRouter initialEntries={["/a"]}>
@@ -256,6 +302,7 @@ describe("AppShell", () => {
         </Routes>
       </MemoryRouter>
     );
+    mockLoadUsageStatus.mockClear();
 
     await act(async () => {
       screen.getByRole("button", { name: /open-search/i }).click();
@@ -269,12 +316,14 @@ describe("AppShell", () => {
     expect(mockLoadCentralSkills).not.toHaveBeenCalled();
     expect(mockRescanDiscoverFromDisk).not.toHaveBeenCalled();
     expect(mockRefreshDiscoverCounts).not.toHaveBeenCalled();
+    expect(mockLoadUsageStatus).not.toHaveBeenCalled();
 
     resolveRescan();
 
     await waitFor(() => {
       expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1);
       expect(mockRescanDiscoverFromDisk).toHaveBeenCalledTimes(1);
+      expect(mockLoadUsageStatus).toHaveBeenCalledTimes(1);
     });
 
     expect(mockRefreshDiscoverCounts).not.toHaveBeenCalled();
