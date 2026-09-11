@@ -101,8 +101,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-22.04
-            asset-arch: x86_64
+          # Linux 패키지 자동 검증은 arm64에서만 실행한다.
           - runner: ubuntu-22.04-arm
             asset-arch: arm64
     steps:
