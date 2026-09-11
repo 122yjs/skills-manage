@@ -48,15 +48,14 @@ fn error(code: &'static str, message: impl Into<String>) -> OnDeviceTranslationE
     }
 }
 
+#[cfg(target_os = "macos")]
 fn message_for_code(code: &'static str) -> &'static str {
     match code {
         "unsupported_os" => "기기 내 무료 번역은 macOS 15 이상에서 사용할 수 있습니다.",
         "unsupported_source_language" => "원문 언어를 Apple 번역이 지원하지 않습니다.",
         "unsupported_target_language" => "대상 언어를 Apple 번역이 지원하지 않습니다.",
         "unsupported_language_pairing" => "이 언어 조합은 Apple 번역에서 지원하지 않습니다.",
-        "language_not_downloaded" => {
-            "이 언어 조합의 번역 언어 팩이 아직 내려받아지지 않았습니다."
-        }
+        "language_not_downloaded" => "이 언어 조합의 번역 언어 팩이 아직 내려받아지지 않았습니다.",
         "unable_to_identify_language" => "원문의 언어를 확인하지 못했습니다.",
         "source_matches_target" => "원문과 대상 언어가 같아 번역하지 않았습니다.",
         "empty_text" => "번역할 설명이 없습니다.",

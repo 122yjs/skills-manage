@@ -111,17 +111,24 @@ fn executable_names(agent: &Agent) -> Vec<String> {
 /// macOS 앱은 셸보다 짧은 PATH로 실행될 수 있다.
 /// Homebrew로 설치한 CLI도 실제 설치 여부 판단에 포함한다.
 fn executable_search_paths() -> Vec<std::path::PathBuf> {
-    let mut directories: Vec<std::path::PathBuf> = std::env::var_os("PATH")
+    let directories: Vec<std::path::PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
 
     #[cfg(target_os = "macos")]
-    directories.extend([
-        std::path::PathBuf::from("/opt/homebrew/bin"),
-        std::path::PathBuf::from("/usr/local/bin"),
-    ]);
+    {
+        let mut directories = directories;
+        directories.extend([
+            std::path::PathBuf::from("/opt/homebrew/bin"),
+            std::path::PathBuf::from("/usr/local/bin"),
+        ]);
+        directories
+    }
 
-    directories
+    #[cfg(not(target_os = "macos"))]
+    {
+        directories
+    }
 }
 
 fn executable_exists(agent: &Agent) -> bool {
@@ -369,8 +376,9 @@ pub async fn remove_custom_agent_impl(pool: &DbPool, agent_id: &str) -> Result<(
         .await?
         .is_empty()
     {
-        return Err("비활성 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요."
-            .to_string());
+        return Err(
+            "비활성 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요.".to_string(),
+        );
     }
     db::delete_custom_agent(pool, agent_id).await
 }
@@ -998,8 +1006,15 @@ mod tests {
                 skill_id: "paused-skill".to_string(),
                 agent_id: agent.id.clone(),
                 skill_name: "Paused Skill".to_string(),
-                installed_path: original_dir.join("paused-skill").to_string_lossy().into_owned(),
-                paused_path: temp.path().join("paused-data").to_string_lossy().into_owned(),
+                installed_path: original_dir
+                    .join("paused-skill")
+                    .to_string_lossy()
+                    .into_owned(),
+                paused_path: temp
+                    .path()
+                    .join("paused-data")
+                    .to_string_lossy()
+                    .into_owned(),
                 link_type: "copy".to_string(),
                 symlink_target: None,
                 paused_by_bulk: false,
@@ -1030,7 +1045,10 @@ mod tests {
         );
 
         assert!(remove_custom_agent_impl(&pool, &agent.id).await.is_err());
-        assert!(db::get_agent_by_id(&pool, &agent.id).await.unwrap().is_some());
+        assert!(db::get_agent_by_id(&pool, &agent.id)
+            .await
+            .unwrap()
+            .is_some());
     }
 
     // ── remove_custom_agent_impl ──────────────────────────────────────────────

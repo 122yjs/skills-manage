@@ -973,9 +973,7 @@ fn scan_root_recursive(
     }
     // 앱 내부의 중지 설치 보관소는 프로젝트 스킬이 아닙니다. 전체 디스크
     // 스캔이나 사용자가 추가한 ~/.skillsmanage 루트에서도 노출하지 않습니다.
-    if current_dir == app_data_dir()
-        || current_dir == app_data_dir().join("paused-installations")
-    {
+    if current_dir == app_data_dir() || current_dir == app_data_dir().join("paused-installations") {
         return;
     }
     if is_scan_cancelled() {
