@@ -1905,17 +1905,17 @@ pub async fn delete_skills_not_in_scope(
             "DELETE FROM skill_installations
              WHERE skill_id NOT IN (SELECT skill_id FROM paused_installations)",
         )
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
         return sqlx::query(
             "DELETE FROM skills
              WHERE id NOT IN (SELECT skill_id FROM paused_installations)",
         )
-            .execute(pool)
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string());
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string());
     }
 
     let placeholders = found_skill_ids

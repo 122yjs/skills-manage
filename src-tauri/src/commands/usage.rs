@@ -7,8 +7,8 @@ use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
-use crate::commands::recovery;
 use crate::commands::linker::uninstall_skill_from_agent_impl;
+use crate::commands::recovery;
 use crate::db::{self, DbPool, PausedInstallation, SkillInstallation};
 use crate::AppState;
 
@@ -588,12 +588,8 @@ async fn delete_active_installation_locked(
     let symlink_target =
         validate_active_installation(Path::new(&agent.global_skills_dir), &installation)?;
     if symlink_target.is_some() {
-        uninstall_skill_from_agent_impl(
-            pool,
-            &installation.skill_id,
-            &installation.agent_id,
-        )
-        .await?;
+        uninstall_skill_from_agent_impl(pool, &installation.skill_id, &installation.agent_id)
+            .await?;
         if db::get_skill_installation(pool, &installation.skill_id, &installation.agent_id)
             .await?
             .is_some()
@@ -1505,10 +1501,12 @@ mod tests {
             .await
             .is_err());
         assert!(fs::symlink_metadata(agent.join("universal-only")).is_ok());
-        assert!(db::get_skill_installation(&pool, "universal-only", "universal")
-            .await
-            .unwrap()
-            .is_some());
+        assert!(
+            db::get_skill_installation(&pool, "universal-only", "universal")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[cfg(unix)]

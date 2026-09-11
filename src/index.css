@@ -13,7 +13,8 @@
 
 @theme inline {
     --font-heading: var(--font-sans);
-    --font-sans: 'JetBrains Mono Variable', 'Geist Variable', monospace;
+    --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
     --color-hover-bg: var(--hover-bg);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
@@ -597,4 +598,34 @@
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted-foreground);
+}
+
+/* 보관함에서는 문서 설명과 조작 영역을 분리해 많은 스킬을 빠르게 훑는다. */
+.library-skill-card {
+  padding: 1rem;
+}
+.library-skill-card .skill-card-platforms {
+  border-top: 1px solid var(--border);
+  margin-top: 0.75rem;
+  padding-top: 0.625rem;
+}
+@container (min-width: 640px) {
+  .skill-card--list .skill-card-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 1.5rem;
+    align-content: start;
+  }
+  .skill-card--list .skill-card-content > * {
+    grid-column: 1;
+  }
+  .skill-card--list .skill-card-content > .skill-card-platforms {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: center;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    margin: 0;
+    padding: 0 0 0 1rem;
+  }
 }

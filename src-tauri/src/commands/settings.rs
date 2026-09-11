@@ -20,9 +20,7 @@ pub async fn get_scan_directories_impl(pool: &DbPool) -> Result<Vec<ScanDirector
 
     Ok(directories
         .into_iter()
-        .filter(|directory| {
-            !directory.is_builtin || builtin_paths.contains(&directory.path)
-        })
+        .filter(|directory| !directory.is_builtin || builtin_paths.contains(&directory.path))
         .collect())
 }
 

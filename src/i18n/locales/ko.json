@@ -913,5 +913,22 @@
     "githubImportResultSkippedTitle": "건너뛴 항목",
     "githubImportResultSkippedNone": "건너뛴 스킬이 없습니다.",
     "githubPatSettingsHint": "설정을 열고 GitHub 개인용 액세스 토큰을 저장하면 이 가져오기 과정에서 인증된 GitHub 직접 요청을 사용할 수 있습니다."
+  },
+  "libraryBrowser": {
+    "folders": "보관함 탐색",
+    "searchFolders": "폴더 검색",
+    "allSkills": "모든 스킬",
+    "rootSkills": "개별 스킬",
+    "openFolder": "{{name}} 탐색",
+    "noFolders": "일치하는 폴더가 없습니다.",
+    "layout": "목록 표시 방식",
+    "grid": "카드 보기",
+    "list": "목록 보기",
+    "clearSearch": "검색 지우기",
+    "results": "스킬 {{count}}개",
+    "folderCount": "폴더 {{count}}개",
+    "quickToggleHint": "플랫폼 아이콘을 눌러 사용 상태를 바꾸세요.",
+    "skillResults": "스킬 목록",
+    "emptyFolder": "이 폴더에는 스킬이 없습니다."
   }
 }

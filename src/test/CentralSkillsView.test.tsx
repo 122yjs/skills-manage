@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { CentralSkillsView } from "../pages/CentralSkillsView";
 import {
@@ -411,7 +411,7 @@ describe("CentralSkillsView", () => {
     });
 
     expect(screen.getByText("套件 / 文件夹")).toBeInTheDocument();
-    expect(screen.getByText("Superpowers")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /打开目录 Superpowers/i })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /查看 frontend-design 的详情/i })
     ).toBeInTheDocument();
@@ -442,6 +442,59 @@ describe("CentralSkillsView", () => {
       expect(detailButtons[0]).toHaveTextContent("code-reviewer");
       expect(detailButtons[1]).toHaveTextContent("frontend-design");
     });
+  });
+
+  it("폴더 선택과 검색을 함께 적용하고 전체 목록으로 돌아온다", () => {
+    renderCentralSkillsView({ bundles: mockBundles, skills: [...mockSkills, ...mockBundleDetail.skills] });
+    fireEvent.click(screen.getByRole("button", { name: "浏览 Superpowers" }));
+    const results = within(screen.getByRole("region", { name: "技能列表" }));
+    expect(results.getByText("using-superpowers")).toBeInTheDocument();
+    expect(results.queryByText("frontend-design")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "浏览 Superpowers" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.change(screen.getByPlaceholderText(/搜索技能仓库/i), { target: { value: "writing" } });
+    expect(results.getByText("writing-plans")).toBeInTheDocument();
+    expect(results.queryByText("using-superpowers")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "浏览 所有技能" }));
+    expect(screen.getByPlaceholderText(/搜索技能仓库/i)).toHaveValue("writing");
+    fireEvent.click(screen.getByRole("button", { name: "清除搜索" }));
+    expect(results.getByText("frontend-design")).toBeInTheDocument();
+    expect(results.getByText("using-superpowers")).toBeInTheDocument();
+  });
+
+  it("폴더 보기에서도 모든 스킬 탐색을 누르면 중첩 스킬을 표시한다", () => {
+    window.localStorage.setItem("skills-manage.skillListViewMode.central", "folders");
+    renderCentralSkillsView({ bundles: mockBundles, skills: [...mockSkills, ...mockBundleDetail.skills] });
+    fireEvent.click(screen.getByRole("button", { name: "浏览 所有技能" }));
+    expect(screen.getByRole("button", { name: /查看 using-superpowers 的详情/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "浏览 独立技能" }));
+    expect(screen.queryByRole("button", { name: /查看 using-superpowers 的详情/i })).not.toBeInTheDocument();
+    expect(screen.getByText("frontend-design")).toBeInTheDocument();
+  });
+
+  it("폴더 검색은 스킬 검색과 분리하고 빈 폴더를 안내한다", () => {
+    renderCentralSkillsView({ bundles: mockBundles });
+    fireEvent.change(screen.getByPlaceholderText("搜索文件夹"), { target: { value: "missing" } });
+    expect(screen.queryByRole("button", { name: "浏览 Superpowers" })).not.toBeInTheDocument();
+    expect(screen.getByText("没有匹配的文件夹。")).toBeInTheDocument();
+    expect(screen.getByText("frontend-design")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("搜索文件夹"), { target: { value: "SUPER" } });
+    fireEvent.click(screen.getByRole("button", { name: "浏览 Superpowers" }));
+    expect(screen.getByText("此文件夹中没有技能。")).toBeInTheDocument();
+  });
+
+  it("목록 보기를 기억하고 상세 열기와 플랫폼 조작을 유지한다", async () => {
+    const { unmount } = renderCentralSkillsView();
+    fireEvent.click(screen.getByRole("button", { name: "列表视图" }));
+    expect(screen.getByRole("button", { name: "列表视图" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: /查看 frontend-design 的详情/i }));
+    expect(screen.getByTestId("skill-detail-drawer")).toHaveTextContent("frontend-design");
+    fireEvent.click(screen.getByRole("button", { name: "Close drawer" }));
+    fireEvent.click(screen.getByRole("button", { name: "切换 frontend-design (Cursor) 的激活状态" }));
+    await waitFor(() => expect(mockTogglePlatformLink).toHaveBeenCalledWith("frontend-design", "cursor"));
+    unmount();
+    renderCentralSkillsView();
+    expect(screen.getByRole("button", { name: "列表视图" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("renders skill descriptions", () => {
@@ -519,8 +572,8 @@ describe("CentralSkillsView", () => {
     renderCentralSkillsView({ bundles: mockBundles });
 
     expect(screen.getByText("套件 / 文件夹")).toBeInTheDocument();
-    expect(screen.getByText("Superpowers")).toBeInTheDocument();
-    expect(screen.getByText(/2 个技能/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /打开目录 Superpowers/i })).toBeInTheDocument();
+    expect(screen.getAllByText(/2 个技能/).length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: /删除套件 Superpowers/i })
     ).toBeInTheDocument();
@@ -852,22 +905,8 @@ describe("CentralSkillsView", () => {
 
     const resultButton = await screen.findByText("frontend-design");
 
-    let current: HTMLElement | null = resultButton;
-    let gridContainer: HTMLElement | null = null;
-    while (current) {
-      if (
-        current.classList.contains("grid") &&
-        current.classList.contains("grid-cols-1") &&
-        current.className.includes("lg:grid-cols-2") &&
-        current.classList.contains("gap-4")
-      ) {
-        gridContainer = current;
-        break;
-      }
-      current = current.parentElement;
-    }
-
-    expect(gridContainer).not.toBeNull();
+    expect(screen.getByRole("region", { name: "技能列表" })).toContainElement(resultButton);
+    expect(screen.getByRole("button", { name: "卡片视图" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("filters skills by description when searching", async () => {
@@ -1067,7 +1106,7 @@ describe("CentralSkillsView", () => {
     const searchInput = screen.getByPlaceholderText(/搜索技能仓库/i);
     fireEvent.change(searchInput, { target: { value: "frontend" } });
 
-    const scroller = searchInput.closest(".flex.flex-col.h-full")?.querySelector(".flex-1.overflow-auto.p-6");
+    const scroller = screen.getByRole("region", { name: "技能列表" });
     expect(scroller).not.toBeNull();
     if (!scroller) return;
     (scroller as HTMLDivElement).scrollTop = 240;

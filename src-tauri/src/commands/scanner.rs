@@ -1155,6 +1155,7 @@ mod tests {
         assert!(target.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_detect_link_type_symlink() {
         let tmp = TempDir::new().unwrap();
@@ -1175,6 +1176,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_detect_link_type_symlink_is_symlink_regardless_of_is_central() {
         let tmp = TempDir::new().unwrap();
@@ -1305,6 +1307,7 @@ mod tests {
         assert!(skills[0].is_central);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_scan_directory_detects_symlinked_skill() {
         let tmp = TempDir::new().unwrap();
@@ -1371,6 +1374,7 @@ mod tests {
             .contains("mlops/evaluation/weights-and-biases"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_scan_skill_root_follows_symlinked_bundle_without_looping() {
         let tmp = TempDir::new().unwrap();
@@ -1725,7 +1729,11 @@ enabled = false
             .unwrap();
 
         let skill_root = tmp.path().join("hidden-tool/skills");
-        create_skill_dir(&skill_root, "visible-skill", &valid_skill_md("Visible Skill", "Kept"));
+        create_skill_dir(
+            &skill_root,
+            "visible-skill",
+            &valid_skill_md("Visible Skill", "Kept"),
+        );
         db::insert_custom_agent(
             &pool,
             &db::Agent {
@@ -1747,7 +1755,13 @@ enabled = false
 
         assert_eq!(result.agents_scanned, 1);
         assert_eq!(result.skills_by_agent.get("hidden-tool"), Some(&1));
-        assert_eq!(db::get_skills_for_agent(&pool, "hidden-tool").await.unwrap().len(), 1);
+        assert_eq!(
+            db::get_skills_for_agent(&pool, "hidden-tool")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2463,6 +2477,7 @@ enabled = false
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn test_separated_universal_root_manages_only_physically_installed_skills() {
         let tmp = TempDir::new().unwrap();

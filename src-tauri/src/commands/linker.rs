@@ -1060,8 +1060,10 @@ pub async fn uninstall_skill_from_agent_impl(
         .await?
         .is_some()
     {
-        return Err("비활성 설치는 제거할 수 없습니다. 활성 토글로 복원하거나 비활성 상태를 유지하세요."
-            .to_string());
+        return Err(
+            "비활성 설치는 제거할 수 없습니다. 활성 토글로 복원하거나 비활성 상태를 유지하세요."
+                .to_string(),
+        );
     }
 
     let installations = db::get_skill_installations(pool, skill_id).await?;

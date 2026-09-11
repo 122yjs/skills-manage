@@ -4,6 +4,10 @@ import {
   ArrowUpDown,
   Blocks,
   FolderOpen,
+  LayoutGrid,
+  List,
+  Plus,
+  X,
   RefreshCw,
   Search,
   Settings,
@@ -20,6 +24,7 @@ import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { SkillFolderCard } from "@/components/skill/SkillFolderCard";
 import { SkillListModeToggle } from "@/components/skill/SkillListModeToggle";
+import { LibraryFolderNav } from "@/components/central/LibraryFolderNav";
 import { InstallDialog } from "@/components/central/InstallDialog";
 import { CentralBundleDrawer } from "@/components/central/CentralBundleDrawer";
 import { PlatformInstallDrawer } from "@/components/central/PlatformInstallDrawer";
@@ -334,6 +339,22 @@ export function CentralSkillsView() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const [viewMode, setViewMode] = useSkillListViewMode("central");
   const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFolderPath, setSelectedFolderPath] = useState<string | null>(null);
+  const [layout, setLayout] = useState<"grid" | "list">(() => {
+    try {
+      return localStorage.getItem("skills-manage.centralLayout") === "list" ? "list" : "grid";
+    } catch {
+      return "grid";
+    }
+  });
+  function changeLayout(next: "grid" | "list") {
+    setLayout(next);
+    try {
+      localStorage.setItem("skills-manage.centralLayout", next);
+    } catch {
+      // 저장 공간이 막혀 있어도 이번 화면의 보기 전환은 유지한다.
+    }
+  }
   const [installTargetSkill, setInstallTargetSkill] =
     useState<SkillWithLinks | null>(null);
   const [deleteTargetSkill, setDeleteTargetSkill] =
@@ -385,7 +406,31 @@ export function CentralSkillsView() {
       ),
     [centralFolderSplit.groups]
   );
-  const visibleSkills = viewMode === "folders" ? centralFolderSplit.rootSkills : skills;
+  const folderOptions = useMemo(() => {
+    const folders = new Map(bundles.map((bundle) => [bundle.relativePath, {
+      name: bundle.name,
+      relativePath: bundle.relativePath,
+      skillCount: bundle.skillCount,
+    }]));
+    for (const group of centralFolderSplit.groups) {
+      folders.set(group.relativePath, group);
+    }
+    return [...folders.values()].sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true })
+    );
+  }, [bundles, centralFolderSplit.groups]);
+  // 새로고침이나 삭제로 사라진 폴더에 사용자가 갇히지 않도록 전체 목록으로 돌아간다.
+  useEffect(() => {
+    if (selectedFolderPath && !isLoading && !folderOptions.some((folder) => folder.relativePath === selectedFolderPath)) {
+      setSelectedFolderPath(null);
+    }
+  }, [folderOptions, isLoading, selectedFolderPath]);
+  const selectedFolder = folderOptions.find((folder) => folder.relativePath === selectedFolderPath);
+  const visibleSkills = selectedFolderPath !== null
+    ? selectedFolderPath === ""
+      ? centralFolderSplit.rootSkills
+      : centralFolderGroupsByPath.get(selectedFolderPath)?.skills ?? EMPTY_SKILLS
+    : viewMode === "folders" ? centralFolderSplit.rootSkills : skills;
   const searchableSkills = useMemo(
     () =>
       visibleSkills.map((skill) => ({
@@ -394,7 +439,6 @@ export function CentralSkillsView() {
       })),
     [visibleSkills]
   );
-  const isSearchActive = normalizedSearchQuery.length > 0;
 
   // Load central skills on mount.
   useEffect(() => {
@@ -414,7 +458,7 @@ export function CentralSkillsView() {
   }, [normalizedSearchQuery, searchableSkills, visibleSkills]);
 
   const filteredBundles = useMemo(() => {
-    if (viewMode !== "folders") return [];
+    if (viewMode !== "folders" || selectedFolderPath !== null) return [];
     if (!normalizedSearchQuery) return bundles;
     return bundles.filter((bundle) => {
       const bundleSearchText = buildSearchText([bundle.name, bundle.relativePath, bundle.path]);
@@ -426,7 +470,7 @@ export function CentralSkillsView() {
         ) ?? false
       );
     });
-  }, [bundles, centralFolderGroupsByPath, normalizedSearchQuery, viewMode]);
+  }, [bundles, centralFolderGroupsByPath, normalizedSearchQuery, selectedFolderPath, viewMode]);
 
   // Sort filtered skills.
   const sortedSkills = useMemo(() => {
@@ -451,9 +495,9 @@ export function CentralSkillsView() {
   }, [filteredSkills, sortDirection, sortField]);
 
   useEffect(() => {
-    if (!isSearchActive || !contentRef.current) return;
+    if (!contentRef.current) return;
     contentRef.current.scrollTop = 0;
-  }, [isSearchActive, normalizedSearchQuery]);
+  }, [normalizedSearchQuery, selectedFolderPath, viewMode]);
 
   function handleInstallClick(skill: SkillWithLinks) {
     setInstallTargetSkill(skill);
@@ -675,12 +719,24 @@ export function CentralSkillsView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex h-full min-h-0 flex-col lg:flex-row">
+      <LibraryFolderNav
+        folders={folderOptions}
+        totalCount={skills.length}
+        rootCount={centralFolderSplit.rootSkills.length}
+        selectedPath={selectedFolderPath}
+        onSelect={(path) => {
+          setSelectedFolderPath(path);
+          setViewMode("all");
+        }}
+      />
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Header */}
-      <div className="border-b border-border px-6 py-4 flex items-center justify-between gap-4">
-        <div>
+      <div className="border-b border-border px-5 py-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold">{t("central.title")}</h1>
+            <h1 className="truncate text-lg font-semibold tracking-tight">{selectedFolderPath === null ? t("central.title") : selectedFolderPath === "" ? t("libraryBrowser.rootSkills") : selectedFolder?.name}</h1>
+            <span className="rounded-md bg-muted/60 px-2 py-0.5 text-xs tabular-nums text-muted-foreground">{visibleSkills.length}</span>
             <Button
               variant="ghost"
               size="icon"
@@ -691,27 +747,29 @@ export function CentralSkillsView() {
               <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
             </Button>
           </div>
-          <p className="text-sm text-muted-foreground mt-0.5">
+          <p className="truncate text-xs text-muted-foreground mt-0.5" title={centralSkillsDir}>
             {centralSkillsDir}
           </p>
         </div>
-        <Button variant="outline" onClick={() => setIsGitHubImportOpen(true)}>
+        <Button size="sm" onClick={() => setIsGitHubImportOpen(true)}>
+          <Plus className="size-4" />
           {t("marketplace.githubImportSecondaryCta")}
         </Button>
       </div>
 
       {/* Search bar */}
-      <div className="px-6 py-3 border-b border-border">
-        <div className="flex flex-col gap-3 xl:flex-row xl:items-center">
+      <div className="px-5 py-3 border-b border-border bg-card/20">
+        <div className="flex flex-col gap-3">
           <div className="relative flex-1">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
             <Input
               placeholder={t("central.searchPlaceholder")}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 bg-muted/40"
+              className="h-9 pl-8 pr-9 bg-background"
               aria-label={t("central.searchPlaceholder")}
             />
+            {searchQuery && <button type="button" aria-label={t("libraryBrowser.clearSearch")} onClick={() => setSearchQuery("")} className="absolute right-1 top-0.5 flex size-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"><X className="size-3.5" /></button>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -764,13 +822,20 @@ export function CentralSkillsView() {
                 </button>
               ))}
             </div>
-            <SkillListModeToggle value={viewMode} onChange={setViewMode} />
+            <SkillListModeToggle value={viewMode} onChange={(mode) => { setViewMode(mode); setSelectedFolderPath(null); }} />
+            <div role="group" aria-label={t("libraryBrowser.layout")} className="ml-auto flex gap-1 rounded-lg border border-border p-0.5">
+              {(["grid", "list"] as const).map((mode) => (
+                <button key={mode} type="button" aria-label={t(`libraryBrowser.${mode}`)} title={t(`libraryBrowser.${mode}`)} aria-pressed={layout === mode} onClick={() => changeLayout(mode)} className={cn("flex size-8 items-center justify-center rounded-md transition-colors focus-visible:ring-2 focus-visible:ring-ring", layout === mode ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted/60")}>
+                  {mode === "grid" ? <LayoutGrid className="size-4" /> : <List className="size-4" />}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
 
       {/* Content */}
-      <div ref={contentRef} className="flex-1 overflow-auto p-6">
+      <div ref={contentRef} role="region" aria-label={t("libraryBrowser.skillResults")} className="@container min-h-0 flex-1 overflow-auto p-5">
         {isLoading ? (
           <EmptyState message={t("central.loading")} />
         ) : skills.length === 0 && bundles.length === 0 ? (
@@ -808,19 +873,21 @@ export function CentralSkillsView() {
             )}
 
             {filteredSkills.length === 0 && filteredBundles.length === 0 ? (
-              <EmptyState message={t("central.noMatch", { query: searchQuery })} />
+              <EmptyState message={searchQuery ? t("central.noMatch", { query: searchQuery }) : t("libraryBrowser.emptyFolder")} />
             ) : filteredSkills.length > 0 ? (
               <section className="space-y-3">
-                {viewMode === "folders" && (
+                {viewMode === "folders" && selectedFolderPath === null && (
                   <div className="flex items-center gap-2">
                     <Blocks className="size-4 text-primary" />
                     <h2 className="text-sm font-semibold">{t("skillFolder.topLevelSkills")}</h2>
                   </div>
                 )}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className={cn("grid gap-3", layout === "grid" ? "grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))]" : "grid-cols-1")}>
                   {sortedSkills.map((skill) => (
                     <UnifiedSkillCard
                       key={skill.id}
+                      layout={layout}
+                      className="library-skill-card"
                       name={skill.name}
                       description={skill.description}
                       translation={{
@@ -862,6 +929,12 @@ export function CentralSkillsView() {
             ) : null}
           </div>
         )}
+      </div>
+
+      <div role="status" className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-card/30 px-5 py-2 text-xs text-muted-foreground">
+        <span>{t("libraryBrowser.results", { count: sortedSkills.length })}{filteredBundles.length > 0 ? ` · ${t("libraryBrowser.folderCount", { count: filteredBundles.length })}` : ""}</span>
+        <span>{t("libraryBrowser.quickToggleHint")}</span>
+      </div>
       </div>
 
       {/* Install Dialog */}
