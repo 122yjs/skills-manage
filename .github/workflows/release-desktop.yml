@@ -53,6 +53,9 @@ jobs:
       - name: Build Windows bundles
         run: pnpm tauri build --target x86_64-pc-windows-msvc --bundles msi --no-sign --ci
 
+      - name: Test Windows symlink fallback policy
+        run: cargo test --manifest-path src-tauri/Cargo.toml windows_symlink_errors_use_copy_fallback
+
       - name: Prepare Windows assets
         shell: pwsh
         run: |
@@ -80,7 +83,7 @@ jobs:
           if-no-files-found: error
 
   build-macos:
-    name: Build macOS universal
+    name: Build macOS arm64
     runs-on: macos-15
     steps:
       - name: Checkout
@@ -102,7 +105,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
+          targets: aarch64-apple-darwin
 
       - name: Cache Rust artifacts
         uses: swatinem/rust-cache@v2
@@ -114,14 +117,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build macOS bundles
-        run: pnpm tauri build --target universal-apple-darwin --bundles app,dmg --no-sign --ci
+        run: pnpm tauri build --target aarch64-apple-darwin --bundles app,dmg --no-sign --ci
 
       - name: Prepare macOS assets
         shell: bash
         run: |
           set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          BUNDLE_ROOT="src-tauri/target/universal-apple-darwin/release/bundle"
+          BUNDLE_ROOT="src-tauri/target/aarch64-apple-darwin/release/bundle"
           mkdir -p release-assets
 
           APP_PATH=$(find "$BUNDLE_ROOT/macos" -maxdepth 1 -type d -name "*.app" | head -1 || true)
@@ -130,9 +133,9 @@ jobs:
           [ -n "$APP_PATH" ] || { echo "macOS .app bundle not found" >&2; exit 1; }
           [ -n "$DMG_PATH" ] || { echo "macOS .dmg bundle not found" >&2; exit 1; }
 
-          ditto -c -k --keepParent "$APP_PATH" "release-assets/skills-manage_${VERSION}_macos_universal.zip"
-          cp "$DMG_PATH" "release-assets/skills-manage_${VERSION}_macos_universal.dmg"
-          tar -C "$(dirname "$APP_PATH")" -czf "release-assets/skills-manage_${VERSION}_macos_universal.tar.gz" "$(basename "$APP_PATH")"
+          ditto -c -k --keepParent "$APP_PATH" "release-assets/skills-manage_${VERSION}_macos_arm64.zip"
+          cp "$DMG_PATH" "release-assets/skills-manage_${VERSION}_macos_arm64.dmg"
+          tar -C "$(dirname "$APP_PATH")" -czf "release-assets/skills-manage_${VERSION}_macos_arm64.tar.gz" "$(basename "$APP_PATH")"
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
