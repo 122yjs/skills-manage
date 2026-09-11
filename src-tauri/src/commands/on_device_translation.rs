@@ -251,7 +251,7 @@ mod macos {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::message_for_code;
 
