@@ -1,4 +1,11 @@
 {
+  "skillTransfer": {
+    "title": "移植到其他工具",
+    "action": "移植所选 {{count}} 个技能",
+    "selectVisible": "选择当前列表中的技能",
+    "selectSkill": "选择 {{name}}",
+    "description": "所选技能：{{names}}。保留原始文件并安装到目标工具。插件仅复制所选技能文件夹，不会安装独立工具或服务器。"
+  },
   "app": {
     "name": "skills-manage"
   },

@@ -19,6 +19,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
+import { canTransferSkill, skillSelectionKey, useSkillSelection } from "@/hooks/useSkillSelection";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import {
@@ -365,6 +367,8 @@ export function PlatformView() {
     );
   }, [visibleSkills, searchQuery]);
 
+  const transferSelection = useSkillSelection(filteredSkills, agentId);
+
   const filteredFolderGroups = useMemo(() => {
     if (viewMode !== "folders") return [];
     if (!searchQuery.trim()) return platformFolderSplit.groups;
@@ -450,6 +454,7 @@ export function PlatformView() {
                 ? t("platform.universalSource")
                 : skill.link_type,
         isReadOnly: skill.is_read_only ?? false,
+        sourceKind: skill.source_kind,
       })),
     [agentId, folderDrawerGroup, t]
   );
@@ -673,6 +678,8 @@ export function PlatformView() {
         </div>
       </div>
 
+      <SkillTransferToolbar selection={transferSelection} agents={agents} sourceAgentId={agentId} disabled={isLoading} />
+
       {/* Content */}
       <div ref={contentRef} className="flex-1 overflow-auto p-6">
         {isLoading ? (
@@ -739,6 +746,7 @@ export function PlatformView() {
                       return (
                         <UnifiedSkillCard
                           key={getSkillRowKey(skill)}
+                          checkbox={canTransferSkill(skill) ? { checked: transferSelection.selected.has(skillSelectionKey(skill)), onChange: () => transferSelection.toggle(skillSelectionKey(skill)) } : undefined}
                           name={skill.name}
                           description={skill.description}
                           translation={skill.file_path

@@ -1,4 +1,11 @@
 {
+  "skillTransfer": {
+    "title": "Transfer to other harnesses",
+    "action": "Transfer {{count}} selected",
+    "selectVisible": "Select visible skills",
+    "selectSkill": "Select {{name}}",
+    "description": "Selected skills: {{names}}. Keep the originals and install them in the target harnesses. For plugins, only selected skill folders are copied; separate tools and servers are not installed."
+  },
   "app": {
     "name": "skills-manage"
   },

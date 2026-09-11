@@ -11,6 +11,9 @@ import {
   DialogPortal,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
+import { Checkbox } from "@/components/ui/checkbox";
+import { useSkillSelection } from "@/hooks/useSkillSelection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
@@ -34,6 +37,7 @@ export interface SkillFolderDrawerSkill {
   readOnlyAgentIds?: string[];
   sourceLabel?: string;
   isReadOnly?: boolean;
+  sourceKind?: string | null;
 }
 
 interface SkillFolderDrawerProps {
@@ -89,6 +93,11 @@ export function SkillFolderDrawer({
       )
     );
   }, [normalizedQuery, skills]);
+  const transferSelection = useSkillSelection(filteredSkills.map((skill) => ({
+    id: skill.id, name: skill.name, row_id: skill.key,
+    source_kind: skill.sourceKind, is_read_only: skill.isReadOnly,
+  })), `${open}:${path ?? title}`);
+
   const selectedSkill =
     skills.find((skill) => skill.key === selectedKey) ?? filteredSkills[0] ?? skills[0] ?? null;
   const linkedAgentNamesById = new Map(
@@ -150,6 +159,9 @@ export function SkillFolderDrawer({
               </div>
               {meta && <div className="mt-3">{meta}</div>}
             </div>
+            <SkillTransferToolbar selection={transferSelection} agents={agents}
+              sourceAgentId={skills[0]?.agentId ?? undefined} disabled={loading}
+              onTransferred={onInstallationsChange} />
 
             <div className="grid min-h-0 flex-1 grid-cols-1 md:grid-cols-[300px_minmax(0,1fr)]">
               <aside className="flex min-h-0 flex-col border-b border-border md:border-b-0 md:border-r">
@@ -186,8 +198,13 @@ export function SkillFolderDrawer({
                         const isSelected = selectedSkill?.key === skill.key;
 
                         return (
+                          <div key={skill.key} className="flex items-start gap-2">
+                            {(!skill.isReadOnly || skill.sourceKind === "plugin" || skill.sourceKind === "compatibility") && (
+                              <Checkbox className="mt-3" checked={transferSelection.selected.has(skill.key)}
+                                onCheckedChange={() => transferSelection.toggle(skill.key)}
+                                aria-label={t("skillTransfer.selectSkill", { name: skill.name })} />
+                            )}
                           <button
-                            key={skill.key}
                             type="button"
                             onClick={() => setSelectedKey(skill.key)}
                             className={cn(
@@ -251,6 +268,7 @@ export function SkillFolderDrawer({
                               </div>
                             ) : null}
                           </button>
+                          </div>
                         );
                       })}
                     </div>

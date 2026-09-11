@@ -21,6 +21,8 @@ import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
+import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
+import { useSkillSelection } from "@/hooks/useSkillSelection";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { SkillFolderCard } from "@/components/skill/SkillFolderCard";
 import { SkillListModeToggle } from "@/components/skill/SkillListModeToggle";
@@ -499,6 +501,8 @@ export function CentralSkillsView() {
     contentRef.current.scrollTop = 0;
   }, [normalizedSearchQuery, selectedFolderPath, viewMode]);
 
+  const transferSelection = useSkillSelection(sortedSkills);
+
   function handleInstallClick(skill: SkillWithLinks) {
     setInstallTargetSkill(skill);
     setIsDialogOpen(true);
@@ -834,6 +838,8 @@ export function CentralSkillsView() {
         </div>
       </div>
 
+      <SkillTransferToolbar selection={transferSelection} agents={agents} disabled={isLoading} />
+
       {/* Content */}
       <div ref={contentRef} role="region" aria-label={t("libraryBrowser.skillResults")} className="@container min-h-0 flex-1 overflow-auto p-5">
         {isLoading ? (
@@ -886,6 +892,7 @@ export function CentralSkillsView() {
                   {sortedSkills.map((skill) => (
                     <UnifiedSkillCard
                       key={skill.id}
+                      checkbox={{ checked: transferSelection.selected.has(skill.id), onChange: () => transferSelection.toggle(skill.id) }}
                       layout={layout}
                       className="library-skill-card"
                       name={skill.name}

@@ -1278,6 +1278,7 @@ async fn centralize_plugin_bundle_impl(
     pool: &DbPool,
     source_agent_id: &str,
     source_label: &str,
+    row_id: Option<&str>,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     let observations = db::get_agent_skill_observations(pool, source_agent_id)
         .await?
@@ -1285,6 +1286,7 @@ async fn centralize_plugin_bundle_impl(
         .filter(|observation| {
             observation.source_kind == "plugin"
                 && observation.source_label.as_deref() == Some(source_label)
+                && row_id.is_none_or(|row_id| observation.row_id == row_id)
         })
         .collect::<Vec<_>>();
     if observations.is_empty() {
@@ -1345,7 +1347,10 @@ async fn centralize_plugin_bundle_impl(
             file_path: observation.file_path,
             canonical_path: None,
             is_central: false,
-            source: Some(format!("plugin:{source_label}")),
+            source: Some(row_id.map_or_else(
+                || format!("plugin:{source_label}"),
+                |row_id| format!("plugin-row:{source_agent_id}:{row_id}"),
+            )),
             content: None,
             scanned_at: chrono::Utc::now().to_rfc3339(),
         };
@@ -1393,7 +1398,7 @@ pub async fn install_plugin_skill_bundle_to_agents_impl(
     validate_batch_install_targets(pool, agent_ids).await?;
 
     let (imported, skipped) =
-        centralize_plugin_bundle_impl(pool, source_agent_id, source_label).await?;
+        centralize_plugin_bundle_impl(pool, source_agent_id, source_label, None).await?;
     let installs = batch_install_skills_to_agents_impl(pool, &imported, agent_ids).await?;
     Ok(SkillBundleInstallResult {
         imported,
@@ -1401,6 +1406,118 @@ pub async fn install_plugin_skill_bundle_to_agents_impl(
         succeeded: installs.succeeded,
         failed: installs.failed,
     })
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SkillTransferSource {
+    pub skill_id: String,
+    pub source_agent_id: Option<String>,
+    pub row_id: Option<String>,
+}
+
+/// 선택한 원본만 보관함으로 복사한 뒤 대상 하네스에 추가 설치한다.
+pub async fn transfer_skills_to_agents_impl(
+    pool: &DbPool,
+    sources: &[SkillTransferSource],
+    agent_ids: &[String],
+) -> Result<BatchInstallResult, String> {
+    if sources.is_empty() || agent_ids.is_empty() {
+        return Err("스킬과 대상 하네스를 선택해 주세요.".to_string());
+    }
+    // 공용 설치로의 전환은 기존 설치를 정리하므로 원본 보존 이식에서 제외한다.
+    if validate_batch_install_targets(pool, agent_ids).await? {
+        return Err("이식할 개별 하네스를 선택해 주세요.".to_string());
+    }
+    let mut result = BatchInstallResult {
+        succeeded: Vec::new(),
+        failed: Vec::new(),
+    };
+    for source in sources {
+        if agent_ids
+            .iter()
+            .all(|id| Some(id.as_str()) == source.source_agent_id.as_deref())
+        {
+            result.failed.push(FailedInstall {
+                agent_id: source.skill_id.clone(),
+                error: "원본과 다른 하네스를 선택해 주세요.".to_string(),
+            });
+            continue;
+        }
+        let prepared = async {
+            if let Some(row_id) = source.row_id.as_deref() {
+                let agent_id = source
+                    .source_agent_id
+                    .as_deref()
+                    .ok_or_else(|| "스킬의 원본 하네스가 없습니다.".to_string())?;
+                let observation = db::get_agent_skill_observations(pool, agent_id)
+                    .await?
+                    .into_iter()
+                    .find(|row| row.row_id == row_id && row.skill_id == source.skill_id)
+                    .ok_or_else(|| {
+                        "선택한 원본을 찾을 수 없습니다. 목록을 새로고침해 주세요.".to_string()
+                    })?;
+                if observation.source_kind != "plugin" {
+                    return Err("이 출처의 스킬은 직접 이식할 수 없습니다.".to_string());
+                }
+                let label = observation
+                    .source_label
+                    .as_deref()
+                    .ok_or_else(|| "플러그인 출처가 없습니다.".to_string())?;
+                let (_, skipped) =
+                    centralize_plugin_bundle_impl(pool, agent_id, label, Some(row_id)).await?;
+                if !skipped.is_empty() {
+                    // 같은 원본으로 만든 보관본만 재사용한다. 다른 출처는 덮어쓰지 않는다.
+                    let existing = db::get_skill_by_id(pool, &source.skill_id).await?;
+                    let expected_source = format!("plugin-row:{agent_id}:{row_id}");
+                    if existing.is_some_and(|skill| {
+                        skill.source.as_deref() == Some(expected_source.as_str())
+                            && skill.is_central
+                            && Path::new(&skill.file_path).is_file()
+                    }) {
+                        return Ok(());
+                    }
+                    return Err(
+                        "같은 이름의 스킬이 보관함에 있습니다. 기존 스킬을 확인해 주세요."
+                            .to_string(),
+                    );
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = prepared {
+            for agent_id in agent_ids {
+                result.failed.push(FailedInstall {
+                    agent_id: format!("{}:{agent_id}", source.skill_id),
+                    error: error.clone(),
+                });
+            }
+            continue;
+        }
+        let targets = agent_ids
+            .iter()
+            .filter(|id| Some(id.as_str()) != source.source_agent_id.as_deref())
+            .cloned()
+            .collect::<Vec<_>>();
+        let installed = batch_install_skills_to_agents_impl(
+            pool,
+            std::slice::from_ref(&source.skill_id),
+            &targets,
+        )
+        .await?;
+        result.succeeded.extend(installed.succeeded);
+        result.failed.extend(installed.failed);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn transfer_skills_to_agents(
+    state: State<'_, AppState>,
+    sources: Vec<SkillTransferSource>,
+    agent_ids: Vec<String>,
+) -> Result<BatchInstallResult, String> {
+    transfer_skills_to_agents_impl(&state.db, &sources, &agent_ids).await
 }
 
 /// 여러 설치 대상에 같은 스킬을 설치한다.
@@ -2785,6 +2902,118 @@ mod tests {
             !meta.file_type().is_symlink(),
             "batch copy install should create a real directory"
         );
+    }
+
+    #[tokio::test]
+    async fn transfer_selected_plugin_row_preserves_originals_and_omits_other_skills() {
+        let tmp = TempDir::new().unwrap();
+        let central = tmp.path().join("central");
+        let claude = tmp.path().join("claude");
+        let cursor = tmp.path().join("cursor");
+        let plugin = tmp.path().join("plugin");
+        let other_plugin = tmp.path().join("other-plugin");
+        let pool = setup_db(&central, &claude).await;
+        set_agent_dir(&pool, "cursor", &cursor).await;
+        mark_builtin_agent_installed(&cursor);
+        create_plugin_observation(&pool, &plugin, "first", "chosen", "Chosen original", true).await;
+        create_plugin_observation(&pool, &plugin, "first", "unselected", "Leave here", true).await;
+        create_plugin_observation(
+            &pool,
+            &other_plugin,
+            "second",
+            "chosen",
+            "Different original",
+            true,
+        )
+        .await;
+        let source_path = plugin.join("skills/chosen/SKILL.md");
+        let original = fs::read_to_string(&source_path).unwrap();
+        let source = SkillTransferSource {
+            skill_id: "chosen".into(),
+            source_agent_id: Some("claude-code".into()),
+            row_id: Some("claude-code::plugin::first::chosen".into()),
+        };
+        let result = transfer_skills_to_agents_impl(&pool, &[source.clone()], &["cursor".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.succeeded, vec!["chosen:cursor"]);
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            fs::read_to_string(cursor.join("chosen/SKILL.md")).unwrap(),
+            original
+        );
+        assert_eq!(fs::read_to_string(&source_path).unwrap(), original);
+        assert!(!cursor.join("unselected").exists());
+        assert!(!central.join("first/unselected").exists());
+        assert!(db::get_skill_by_id(&pool, "unselected")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(plugin.join("skills/unselected/SKILL.md").is_file());
+        let retry = transfer_skills_to_agents_impl(
+            &pool,
+            std::slice::from_ref(&source),
+            &["cursor".into()],
+        )
+        .await
+        .unwrap();
+        assert!(retry.failed.is_empty());
+        assert_eq!(retry.succeeded, vec!["chosen:cursor"]);
+        // 같은 이름의 다른 원본으로 바꾸려 해도 이미 이식한 파일을 덮어쓰지 않는다.
+        let conflicting = SkillTransferSource {
+            row_id: Some("claude-code::plugin::second::chosen".into()),
+            ..source
+        };
+        let result = transfer_skills_to_agents_impl(&pool, &[conflicting], &["cursor".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.failed.len(), 1);
+        assert!(result.succeeded.is_empty());
+        assert_eq!(
+            fs::read_to_string(cursor.join("chosen/SKILL.md")).unwrap(),
+            original
+        );
+    }
+
+    #[tokio::test]
+    async fn transfer_reports_missing_skill_and_keeps_successful_installation() {
+        let tmp = TempDir::new().unwrap();
+        let central = tmp.path().join("central");
+        let claude = tmp.path().join("claude");
+        let pool = setup_db(&central, &claude).await;
+        let original = create_central_skill(&central, "existing");
+        let sources = ["missing", "existing"].map(|id| SkillTransferSource {
+            skill_id: id.into(),
+            source_agent_id: None,
+            row_id: None,
+        });
+        let result = transfer_skills_to_agents_impl(&pool, &sources, &["claude-code".into()])
+            .await
+            .unwrap();
+        assert_eq!(result.succeeded, vec!["existing:claude-code"]);
+        assert_eq!(result.failed.len(), 1);
+        assert_eq!(result.failed[0].agent_id, "missing:claude-code");
+        assert!(original.join("SKILL.md").is_file());
+        assert!(claude.join("existing/SKILL.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn transfer_rejects_same_source_before_importing() {
+        let tmp = TempDir::new().unwrap();
+        let central = tmp.path().join("central");
+        let claude = tmp.path().join("claude");
+        let pool = setup_db(&central, &claude).await;
+        let source = SkillTransferSource {
+            skill_id: "chosen".into(),
+            source_agent_id: Some("claude-code".into()),
+            row_id: None,
+        };
+        let result = transfer_skills_to_agents_impl(&pool, &[source], &["claude-code".into()])
+            .await
+            .unwrap();
+        assert!(result.succeeded.is_empty());
+        assert_eq!(result.failed.len(), 1);
+        assert!(!central.exists());
     }
 
     #[tokio::test]

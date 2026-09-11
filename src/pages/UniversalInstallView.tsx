@@ -4,9 +4,10 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
+import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
+import { useSkillSelection } from "@/hooks/useSkillSelection";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -51,7 +52,6 @@ export function UniversalInstallView() {
   );
   const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
   const [query, setQuery] = useState("");
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
@@ -62,13 +62,6 @@ export function UniversalInstallView() {
     void getSkillsByAgent(UNIVERSAL_AGENT_ID);
     void loadUsageStatus().catch(() => undefined);
   }, [getSkillsByAgent, loadUsageStatus, scanGeneration]);
-
-  useEffect(() => {
-    const managedIds = new Set(usageStatuses
-      .find((status) => status.agent_id === UNIVERSAL_AGENT_ID)
-      ?.skills.map((skill) => skill.skill_id) ?? []);
-    setSelectedIds((current) => new Set([...current].filter((id) => managedIds.has(id))));
-  }, [usageStatuses]);
 
   const usageStatus = usageStatuses.find((status) => status.agent_id === UNIVERSAL_AGENT_ID);
   const usageBySkillId = useMemo(
@@ -104,24 +97,10 @@ export function UniversalInstallView() {
     );
   }, [managedSkills, query]);
 
-  const removableSkillIds = useMemo(
-    () => (usageStatus?.skills ?? []).map((skill) => skill.skill_id),
-    [usageStatus?.skills]
-  );
-  const allSelected = removableSkillIds.length > 0 && removableSkillIds.every((id) => selectedIds.has(id));
-
-  function toggleSkill(skillId: string) {
-    setSelectedIds((current) => {
-      const next = new Set(current);
-      if (next.has(skillId)) next.delete(skillId);
-      else next.add(skillId);
-      return next;
-    });
-  }
-
-  function toggleAll() {
-    setSelectedIds(allSelected ? new Set() : new Set(removableSkillIds));
-  }
+  const transferSelection = useSkillSelection(filteredSkills
+    .filter((skill) => !skill.is_read_only && usageBySkillId.has(skill.id))
+    .map((skill) => ({ id: skill.id, name: skill.name })));
+  const selectedIds = transferSelection.selected;
 
   async function removeSkills(skillIds: string[]) {
     setIsRemoving(true);
@@ -142,7 +121,7 @@ export function UniversalInstallView() {
         refreshCounts(),
       ]);
       setConfirmOpen(false);
-      setSelectedIds(new Set());
+      transferSelection.clear();
 
       if (failed > 0) {
         toast.error(t("universal.removePartial", { deleted, failed }));
@@ -306,18 +285,6 @@ export function UniversalInstallView() {
             className="bg-muted/40 pl-8"
           />
         </div>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Checkbox
-            id="universal-select-all"
-            checked={allSelected}
-            disabled={removableSkillIds.length === 0 || isMutationInProgress}
-            onCheckedChange={toggleAll}
-            aria-label={t("universal.selectAll")}
-          />
-          <label htmlFor="universal-select-all" className="cursor-pointer select-none">
-            {t("universal.selectAll")}
-          </label>
-        </div>
         <Button
           type="button"
           variant="destructive"
@@ -328,6 +295,9 @@ export function UniversalInstallView() {
           {t("universal.removeSelected", { count: selectedIds.size })}
         </Button>
       </div>
+
+      <SkillTransferToolbar selection={transferSelection} agents={agents}
+        sourceAgentId={UNIVERSAL_AGENT_ID} disabled={isMutationInProgress} />
 
       <div className="flex-1 overflow-auto p-6">
         {isLoading ? (
@@ -369,7 +339,7 @@ export function UniversalInstallView() {
                     ? undefined
                     : {
                         checked: selectedIds.has(skill.id),
-                        onChange: () => toggleSkill(skill.id),
+                        onChange: () => transferSelection.toggle(skill.id),
                         disabled: isMutationInProgress,
                       }}
                   sourceType={skill.file_path

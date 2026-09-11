@@ -281,6 +281,12 @@ export interface CollectionBatchInstallResult {
   failed: Array<{ agent_id: string; error: string }>;
 }
 
+export interface SkillTransferSource {
+  skill_id: string;
+  source_agent_id?: string;
+  row_id?: string;
+}
+
 // ─── Settings Types ───────────────────────────────────────────────────────────
 
 export type { RecoveryEntry } from "./recovery";

@@ -133,7 +133,7 @@ describe("UniversalInstallView", () => {
   it("selects and deletes active and inactive managed entries while keeping the custom library path", async () => {
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择当前列表中的技能" }));
     fireEvent.click(screen.getByRole("button", { name: "删除选中的 2 项安装" }));
 
     expect(screen.getByText("/Volumes/My Skill Library")).toBeInTheDocument();
@@ -159,7 +159,7 @@ describe("UniversalInstallView", () => {
 
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 
-    fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "选择当前列表中的技能" }));
     fireEvent.click(screen.getByRole("button", { name: "删除选中的 2 项安装" }));
     fireEvent.click(screen.getByRole("button", { name: "删除共享安装" }));
 

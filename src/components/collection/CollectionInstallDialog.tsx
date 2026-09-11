@@ -31,6 +31,8 @@ interface CollectionInstallDialogProps {
   skillCount: number;
   agents: AgentWithStatus[];
   description?: string;
+  title?: string;
+  selectDetectedByDefault?: boolean;
   onInstall: (
     agentIds: string[]
   ) => Promise<CollectionBatchInstallResult & { skipped?: string[] }>;
@@ -45,6 +47,8 @@ export function CollectionInstallDialog({
   skillCount,
   agents,
   description,
+  title,
+  selectDetectedByDefault = true,
   onInstall,
 }: CollectionInstallDialogProps) {
   const { t } = useTranslation();
@@ -62,7 +66,7 @@ export function CollectionInstallDialog({
     if (open) {
       // Default: select all detected agents.
       const initial = new Set<string>(
-        targetAgents.filter((a) => a.is_detected).map((a) => a.id)
+        targetAgents.filter((a) => selectDetectedByDefault && a.is_detected).map((a) => a.id)
       );
       setSelectedAgentIds(
         initial.has(UNIVERSAL_AGENT_ID)
@@ -105,10 +109,10 @@ export function CollectionInstallDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={(next) => { if (!isLoading) onOpenChange(next); }}>
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>{t("batchInstall.title", { name: collectionName })}</DialogTitle>
+          <DialogTitle>{title ?? t("batchInstall.title", { name: collectionName })}</DialogTitle>
           <DialogClose />
         </DialogHeader>
 
@@ -133,6 +137,7 @@ export function CollectionInstallDialog({
                     <Checkbox
                       id={checkboxId}
                       checked={isChecked}
+                      disabled={isLoading}
                       onCheckedChange={(checked) =>
                         handleToggle(agent.id, !!checked)
                       }

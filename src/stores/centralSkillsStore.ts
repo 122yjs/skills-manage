@@ -12,6 +12,7 @@ import {
   DeleteCentralSkillResult,
   SkillBundleInstallResult,
   SkillWithLinks,
+  SkillTransferSource,
 } from "@/types";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
@@ -92,6 +93,7 @@ interface CentralSkillsState {
   error: string | null;
 
   // Actions
+  transferSkills: (sources: SkillTransferSource[], agentIds: string[]) => Promise<BatchInstallResult>;
   loadCentralSkills: () => Promise<void>;
   loadCentralBundles: () => Promise<void>;
   loadCentralBundleDetail: (relativePath: string) => Promise<CentralSkillBundleDetail>;
@@ -141,6 +143,20 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
   deletingBundlePath: null,
   togglingAgentId: null,
   error: null,
+
+  transferSkills: async (sources, agentIds) => {
+    set({ isInstalling: true, error: null });
+    try {
+      return await invoke<BatchInstallResult>("transfer_skills_to_agents", { sources, agentIds });
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      await get().loadCentralSkills();
+      await useSkillUsageStore.getState().loadUsageStatus().catch(() => undefined);
+      set({ isInstalling: false });
+    }
+  },
 
   /**
    * Load all Central Skills with per-platform link status, along with the

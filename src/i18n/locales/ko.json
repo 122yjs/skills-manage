@@ -1,4 +1,11 @@
 {
+  "skillTransfer": {
+    "title": "다른 하네스로 이식",
+    "action": "선택한 {{count}}개 이식",
+    "selectVisible": "현재 목록 전체 선택",
+    "selectSkill": "{{name}} 선택",
+    "description": "선택한 스킬: {{names}}. 원본을 유지하고 대상 하네스에 추가 설치합니다. 플러그인은 선택한 스킬 폴더만 복사하며 별도 도구나 서버는 함께 설치되지 않습니다."
+  },
   "app": {
     "name": "skills-manage"
   },
