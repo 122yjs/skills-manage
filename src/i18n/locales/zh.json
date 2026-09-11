@@ -913,5 +913,22 @@
     "githubImportResultSkippedTitle": "已跳过项目",
     "githubImportResultSkippedNone": "没有跳过任何技能。",
     "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
+  },
+  "libraryBrowser": {
+    "folders": "浏览技能库",
+    "searchFolders": "搜索文件夹",
+    "allSkills": "所有技能",
+    "rootSkills": "独立技能",
+    "openFolder": "浏览 {{name}}",
+    "noFolders": "没有匹配的文件夹。",
+    "layout": "显示布局",
+    "grid": "卡片视图",
+    "list": "列表视图",
+    "clearSearch": "清除搜索",
+    "results": "{{count}} 个技能",
+    "folderCount": "{{count}} 个文件夹",
+    "quickToggleHint": "点击平台图标切换技能使用状态。",
+    "skillResults": "技能列表",
+    "emptyFolder": "此文件夹中没有技能。"
   }
 }

@@ -303,19 +303,19 @@ describe("Sidebar", () => {
   it("highlights active platform route in sidebar", () => {
     renderSidebar("/platform/claude-code");
     const claudeButton = screen.getByRole("button", { name: /Claude Code/ });
-    expect(claudeButton.className).toContain("bg-hover-bg");
+    expect(claudeButton).toHaveAttribute("aria-current", "page");
   });
 
   it("highlights Central Skills when on /central", () => {
     renderSidebar("/central");
     const centralButton = screen.getByRole("button", { name: /技能仓库/ });
-    expect(centralButton.className).toContain("bg-hover-bg");
+    expect(centralButton).toHaveAttribute("aria-current", "page");
   });
 
   it("설정 경로에서 사이드바 설정 메뉴를 활성화한다", () => {
     renderSidebar("/settings");
     const settingsLink = screen.getByRole("link", { name: /设置/ });
-    expect(settingsLink.className).toContain("bg-hover-bg");
+    expect(settingsLink).toHaveAttribute("aria-current", "page");
   });
 
   // ── Empty States ──────────────────────────────────────────────────────────
@@ -450,7 +450,7 @@ describe("Sidebar", () => {
     );
     // The collections icon button should be highlighted (exact match)
     const colButton = screen.getByRole("button", { name: "技能集合" });
-    expect(colButton.className).toContain("bg-hover-bg");
+    expect(colButton).toHaveAttribute("aria-current", "page");
   });
 
   // ── Discover ─────────────────────────────────────────────────────────────

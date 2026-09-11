@@ -41,7 +41,7 @@ export function DashboardSidebarFrame({
   return (
     <nav
       className={cn(
-        "flex h-full shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground transition-[width] duration-200",
+        "flex h-full shrink-0 flex-col border-r border-border bg-sidebar text-sidebar-foreground transition-[width] duration-200 motion-reduce:transition-none",
         expanded ? "w-56" : "w-14",
       )}
       aria-label={navLabel}
@@ -69,7 +69,7 @@ export function DashboardSidebarFrame({
         <button
           type="button"
           onClick={() => onExpandedChange(!expanded)}
-          className="cursor-pointer rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="flex size-8 items-center justify-center cursor-pointer rounded-md text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           aria-label={toggleLabel}
           title={toggleLabel}
         >
@@ -122,9 +122,9 @@ export function DashboardNavItem({
 }: DashboardNavItemProps) {
   const className = (active: boolean) =>
     cn(
-      "relative flex w-full items-center rounded-md transition-colors",
+      "relative flex min-h-9 w-full items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
       !active && "text-muted-foreground hover:bg-primary/10 hover:text-primary",
-      active && "bg-hover-bg font-medium text-white",
+      active && "bg-primary/10 font-medium text-primary ring-1 ring-inset ring-primary/20",
       expanded ? "gap-2.5 px-2.5 py-1.5 text-sm" : "justify-center px-1.5 py-2",
     );
 
@@ -139,7 +139,7 @@ export function DashboardNavItem({
               className={cn(
                 "shrink-0 rounded-full px-1.5 py-0.5 font-mono text-[10px] tabular-nums",
                 active
-                  ? "bg-white/20 text-white"
+                  ? "bg-primary/10 text-primary"
                   : "bg-muted/60 text-muted-foreground",
               )}
             >
@@ -150,7 +150,7 @@ export function DashboardNavItem({
       )}
       {active && (
         <span
-          className="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded-r bg-white"
+          className="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded-r bg-primary"
           aria-hidden="true"
         />
       )}

@@ -56,7 +56,7 @@ function PlatformToggleIcon({
     <button
       type="button"
       className={cn(
-        "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer",
+        "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         isLinked && !isReadOnly
           ? "text-primary hover:bg-primary/10"
           : "text-muted-foreground/40 hover:bg-muted/60 hover:text-muted-foreground",
@@ -88,6 +88,8 @@ export interface UnifiedSkillCardProps {
   name: string;
   description?: string;
   className?: string;
+  /** 목록 보기에서도 같은 카드와 설치 동작을 재사용한다. */
+  layout?: "grid" | "list";
   /** 설명 다국어 선택 및 번역에 필요한 스킬별 식별 정보. */
   translation?: SkillDescriptionTranslationMeta;
 
@@ -159,6 +161,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     name,
     description,
     className,
+    layout = "grid",
     translation,
     onClick,
     checkbox,
@@ -279,7 +282,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   return (
     <div
       className={cn(
-        "rounded-xl bg-card ring-1 ring-border shadow-sm p-3 flex flex-col transition-colors",
+        "rounded-xl bg-card ring-1 ring-border shadow-sm p-3 flex flex-col transition-colors hover:ring-primary/30 focus-within:ring-primary/50",
+        layout === "list" && "skill-card--list",
         checkbox?.checked && "ring-primary/40 bg-primary/5",
         isLoading && "opacity-50",
         className
@@ -299,14 +303,14 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
         )}
 
         {/* Main content */}
-        <div className="flex-1 min-w-0 space-y-1.5">
+        <div className="skill-card-content flex-1 min-w-0 space-y-1.5">
           {/* Row 1: Name + icon actions */}
           <div className="flex items-center justify-between gap-2">
             {/* Skill name — clickable if onDetail provided */}
             {onDetail ? (
               <button
                 ref={detailButtonRef}
-                className="font-medium text-sm text-foreground truncate hover:text-primary hover:underline text-left min-w-0 flex-1"
+                className="rounded-sm font-medium text-sm text-foreground truncate hover:text-primary hover:underline text-left min-w-0 flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={onDetail}
                 aria-label={t("central.viewDetailsLabel", { name })}
               >
@@ -516,7 +520,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
           {/* Row 3: Platform toggles (central) */}
           {hasPlatformIcons && (lobsterAgents.length > 0 || codingAgents.length > 0) && (
-            <div className="mt-auto space-y-1 pt-1">
+            <div className="skill-card-platforms mt-auto space-y-1 pt-1">
               {lobsterAgents.length > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="w-14 shrink-0 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
