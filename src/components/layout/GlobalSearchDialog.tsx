@@ -199,9 +199,18 @@ export function GlobalSearchDialog({
         onSelect: () => {
           close();
           if (skill.centralId) {
-            navigate(`/skill/${skill.centralId}`);
+            navigate(`/skill/${encodeURIComponent(skill.centralId)}`);
           } else if (skillAgents[0]) {
-            navigate(`/platform/${skillAgents[0].id}`);
+            const agent = skillAgents[0];
+            const source = skillsByAgent[agent.id]?.find(
+              (candidate) => normalizeSearchQuery(candidate.name) === normalizeSearchQuery(skill.name)
+            );
+            if (!source) return;
+            const params = new URLSearchParams({ agentId: agent.id });
+            if (source.row_id) params.set("rowId", source.row_id);
+            navigate(`/skill/${encodeURIComponent(source.id)}?${params}`, {
+              state: { from: { pageLabel: agent.display_name, route: `/platform/${agent.id}` } },
+            });
           }
         },
       });

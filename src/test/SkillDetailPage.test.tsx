@@ -57,6 +57,8 @@ const mockDetail: SkillDetailType = {
   installations: [],
 };
 
+const loadDetail = vi.fn();
+
 function applyStoreMocks(detail: SkillDetailType | null = mockDetail) {
   vi.mocked(useSkillDetailStore).mockImplementation((selector?: unknown) => {
     const state = {
@@ -70,7 +72,7 @@ function applyStoreMocks(detail: SkillDetailType | null = mockDetail) {
       isExplanationStreaming: false,
       explanationError: null,
       explanationErrorInfo: null,
-      loadDetail: vi.fn(),
+      loadDetail,
       loadCachedExplanation: vi.fn(),
       generateExplanation: vi.fn(),
       refreshExplanation: vi.fn(),
@@ -113,6 +115,13 @@ function renderPage(
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("SkillDetailPage", () => {
+  it("검색 URL의 플랫폼과 출처 행을 상세 조회에 전달한다", () => {
+    renderPage("/skill/frontend-design?agentId=codex&rowId=codex%3A%3Aplugin%2Fskill");
+    expect(loadDetail).toHaveBeenCalledWith({
+      skillId: "frontend-design", agentId: "codex", rowId: "codex::plugin/skill",
+    });
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     applyStoreMocks();

@@ -12,6 +12,7 @@ import {
   DeleteCentralSkillResult,
   SkillBundleInstallResult,
   SkillWithLinks,
+  SkillDetail,
   SkillTransferSource,
 } from "@/types";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
@@ -95,6 +96,7 @@ interface CentralSkillsState {
   // Actions
   transferSkills: (sources: SkillTransferSource[], agentIds: string[]) => Promise<BatchInstallResult>;
   loadCentralSkills: () => Promise<void>;
+  loadInstallTarget: (skillId: string) => Promise<SkillWithLinks>;
   loadCentralBundles: () => Promise<void>;
   loadCentralBundleDetail: (relativePath: string) => Promise<CentralSkillBundleDetail>;
   clearCentralBundleDetail: () => void;
@@ -239,6 +241,25 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
    * Install a skill to one or more agents. Refreshes the skill list after
    * a successful (or partial) install so link status icons update.
    */
+  // 보관함 밖에 설치된 스킬도 원본을 중앙화하기 전에 설치 대상을 고를 수 있다.
+  loadInstallTarget: async (skillId) => {
+    const cached = get().skills.find((skill) => skill.id === skillId);
+    if (cached) return cached;
+    const detail = await invoke<SkillDetail>("get_skill_detail", { skillId });
+    return {
+      id: detail.id,
+      name: detail.name,
+      description: detail.description,
+      file_path: detail.file_path,
+      canonical_path: detail.canonical_path,
+      is_central: detail.is_central,
+      source: detail.source,
+      scanned_at: detail.scanned_at,
+      linked_agents: detail.installations.map((installation) => installation.agent_id),
+      read_only_agents: detail.read_only_agents,
+    };
+  },
+
   installSkill: async (skillId, agentIds, method) => {
     set({ isInstalling: true, error: null });
     try {

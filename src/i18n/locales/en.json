@@ -281,6 +281,8 @@
   "universal": {
     "title": "Shared Install (.agents)",
     "description": "Tools that support this path read the same installed skills. Originals remain in the Skill Library.",
+    "claudeWarningTitle": "Not automatically available in Claude Code",
+    "claudeWarningDescription": "Claude Code reads skills from ~/.claude/skills. Select skills below, then choose Transfer → Claude Code to install them separately.",
     "searchPlaceholder": "Search shared installs...",
     "selectAll": "Select all",
     "removeSelected": "Delete {{count}} selected installs",

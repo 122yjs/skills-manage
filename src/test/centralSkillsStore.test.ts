@@ -517,3 +517,21 @@ describe("centralSkillsStore", () => {
     expect(state.togglingAgentId).toBeNull();
   });
 });
+
+
+describe("보관함 밖 스킬 설치 준비", () => {
+  it("보관함에 없는 스킬도 상세 조회로 설치 상태를 가져온다", async () => {
+    useCentralSkillsStore.setState({ skills: [] });
+    vi.mocked(invoke).mockResolvedValueOnce({
+      id: "grill-me", name: "grill-me", is_central: false,
+      file_path: "/tmp/grill-me/SKILL.md", canonical_path: null,
+      description: "Interview", source: null, scanned_at: "now",
+      installations: [{ agent_id: "codex" }], read_only_agents: [],
+    });
+    const target = await useCentralSkillsStore.getState().loadInstallTarget("grill-me");
+    expect(invoke).toHaveBeenCalledWith("get_skill_detail", { skillId: "grill-me" });
+    expect(target.linked_agents).toEqual(["codex"]);
+    expect(target.is_central).toBe(false);
+    expect(useCentralSkillsStore.getState().skills).toEqual([]);
+  });
+});

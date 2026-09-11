@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Blocks, Loader2, Search, Share2, Trash2 } from "lucide-react";
+import { AlertTriangle, Blocks, Loader2, Search, Share2, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
@@ -229,6 +229,13 @@ export function UniversalInstallView() {
           {formatPathForDisplay(agent?.global_skills_dir ?? "~/.agents/skills/")}
         </p>
         <p className="mt-1 text-xs text-muted-foreground">{t("universal.description")}</p>
+        <div role="note" className="mt-3 flex gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <div>
+            <p className="font-semibold">{t("universal.claudeWarningTitle")}</p>
+            <p className="mt-1 text-muted-foreground">{t("universal.claudeWarningDescription")}</p>
+          </div>
+        </div>
         {usageStatus?.skills.length ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <p className="text-xs text-muted-foreground">

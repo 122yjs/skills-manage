@@ -81,6 +81,7 @@ export function PlatformView() {
 
   const centralSkills = useCentralSkillsStore((state) => state.skills);
   const centralAgents = useCentralSkillsStore((state) => state.agents);
+  const loadInstallTarget = useCentralSkillsStore((state) => state.loadInstallTarget);
   const loadCentralSkills = useCentralSkillsStore((state) => state.loadCentralSkills);
   const installSkill = useCentralSkillsStore((state) => state.installSkill);
   const installPluginBundle = useCentralSkillsStore(
@@ -148,14 +149,15 @@ export function PlatformView() {
     }
   }, [centralSkills.length, loadCentralSkills]);
 
-  function handleInstallClick(skillId: string) {
-    const target = centralSkills.find((s) => s.id === skillId);
-    if (!target) {
-      toast.error(t("central.installError", { error: t("platform.notFound") }));
-      return;
+  async function handleInstallClick(skillId: string) {
+    try {
+      const target = centralSkills.find((skill) => skill.id === skillId)
+        ?? await loadInstallTarget(skillId);
+      setInstallTargetSkill(target);
+      setIsDialogOpen(true);
+    } catch (err) {
+      toast.error(t("central.installError", { error: String(err) }));
     }
-    setInstallTargetSkill(target);
-    setIsDialogOpen(true);
   }
 
   async function handleInstall(skillId: string, agentIds: string[], method: string) {

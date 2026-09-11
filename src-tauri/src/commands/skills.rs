@@ -747,9 +747,12 @@ async fn get_skill_detail_with_row_impl(
     agent_id: Option<&str>,
     row_id: Option<&str>,
 ) -> Result<SkillDetail, String> {
-    if let Some(agent_id) = agent_id {
-        if let Some(detail) = get_observation_detail(pool, skill_id, agent_id, row_id).await? {
-            return Ok(detail);
+    // 관리 설치 목록은 스킬 ID를 행 ID로 사용한다. 실제 출처 행 ID와 구분한다.
+    if row_id != Some(skill_id) {
+        if let Some(agent_id) = agent_id {
+            if let Some(detail) = get_observation_detail(pool, skill_id, agent_id, row_id).await? {
+                return Ok(detail);
+            }
         }
     }
 
@@ -2977,6 +2980,59 @@ mod tests {
             detail.collections.is_empty(),
             "plugin detail should not expose collection management state"
         );
+    }
+
+    #[tokio::test]
+    async fn managed_list_row_opens_detail_even_with_observations() {
+        let pool = setup_test_db().await;
+        let skill = make_skill("grill-me", "grill-me", false);
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: skill.id.clone(),
+                agent_id: "codex".into(),
+                installed_path: "/tmp/grill-me".into(),
+                link_type: "copy".into(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "codex",
+                "codex::/tmp/grill-me",
+                "grill-me",
+                "grill-me",
+                "/tmp/grill-me",
+                "user",
+                "/tmp",
+                false,
+            ),
+        )
+        .await
+        .unwrap();
+        let rows = db::get_skills_for_agent(&pool, "codex").await.unwrap();
+        let row = rows.iter().find(|row| row.id == "grill-me").unwrap();
+        let detail =
+            get_skill_detail_with_row_impl(&pool, &row.id, Some("codex"), Some(&row.row_id))
+                .await
+                .unwrap();
+        assert_eq!(detail.file_path, skill.file_path);
+        assert!(!detail.is_read_only);
+        assert_eq!(detail.installations.len(), 1);
+        // 출처를 지정했는데 일치하지 않으면 다른 원본으로 대체하면 안 된다.
+        assert!(get_skill_detail_with_row_impl(
+            &pool,
+            &row.id,
+            Some("codex"),
+            Some("codex::missing"),
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

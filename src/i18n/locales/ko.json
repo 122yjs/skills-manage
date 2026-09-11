@@ -281,6 +281,8 @@
   "universal": {
     "title": "공용 설치 (.agents)",
     "description": "이 경로를 지원하는 여러 도구가 함께 읽는 설치 목록입니다. 보관함의 원본은 그대로 유지됩니다.",
+    "claudeWarningTitle": "Claude Code에는 자동 적용되지 않습니다",
+    "claudeWarningDescription": "Claude Code는 ~/.claude/skills의 스킬을 읽습니다. 아래에서 스킬을 선택한 뒤 ‘이식’ → ‘Claude Code’로 별도 설치하세요.",
     "searchPlaceholder": "공용 설치 검색...",
     "selectAll": "전체 선택",
     "removeSelected": "선택 {{count}}개 설치 삭제",

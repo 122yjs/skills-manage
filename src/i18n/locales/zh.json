@@ -281,6 +281,8 @@
   "universal": {
     "title": "共享安装 (.agents)",
     "description": "支持此路径的多个工具会读取同一安装列表，技能原件仍保留在技能仓库中。",
+    "claudeWarningTitle": "不会自动应用到 Claude Code",
+    "claudeWarningDescription": "Claude Code 从 ~/.claude/skills 读取技能。请在下方选择技能，然后通过“移植” → “Claude Code”单独安装。",
     "searchPlaceholder": "搜索共享安装...",
     "selectAll": "全选",
     "removeSelected": "删除选中的 {{count}} 项安装",

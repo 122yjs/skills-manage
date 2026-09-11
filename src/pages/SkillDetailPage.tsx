@@ -92,6 +92,9 @@ export function SkillDetailPage() {
   const { skillId } = useParams<{ skillId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const agentId = params.get("agentId") ?? undefined;
+  const rowId = params.get("rowId") ?? undefined;
 
   // Pull the current skill's display name from the store so the breadcrumb
   // matches the rendered `<h1>` inside `SkillDetailView` once detail loads.
@@ -125,7 +128,7 @@ export function SkillDetailPage() {
     <div className="flex flex-col h-full">
       <PageHeader from={from} skillLabel={skillLabel} onBack={handleGoBack} />
       <div className="flex-1 min-h-0">
-        <SkillDetailView skillId={skillId} variant="page" leading={null} />
+        <SkillDetailView key={`${skillId}:${agentId ?? ""}:${rowId ?? ""}`} skillId={skillId} agentId={agentId} rowId={rowId} variant="page" leading={null} />
       </div>
     </div>
   );

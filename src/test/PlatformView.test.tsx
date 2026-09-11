@@ -357,6 +357,10 @@ function buildCentralSkillsStoreState(overrides = {}) {
     skills: [],
     agents: [mockAgent],
     loadCentralSkills: mockLoadCentralSkills,
+    loadInstallTarget: vi.fn().mockResolvedValue({
+      id: "frontend-design", name: "frontend-design", linked_agents: ["claude-code"],
+      read_only_agents: [], is_central: false,
+    }),
     installSkill: mockInstallSkill,
     ...overrides,
   };
@@ -400,6 +404,13 @@ function NavigationHarness() {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("PlatformView", () => {
+  it("보관함에 없는 플랫폼 스킬의 설치 창을 연다", async () => {
+    renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /将 frontend-design 安装到平台/i }));
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(screen.getByRole("dialog")).toHaveTextContent("frontend-design");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();

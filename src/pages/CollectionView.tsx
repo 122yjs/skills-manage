@@ -57,6 +57,7 @@ export function CollectionView() {
 
   const centralSkills = useCentralSkillsStore((s) => s.skills);
   const centralAgents = useCentralSkillsStore((s) => s.agents);
+  const loadInstallTarget = useCentralSkillsStore((state) => state.loadInstallTarget);
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const installCentralSkill = useCentralSkillsStore((s) => s.installSkill);
 
@@ -150,14 +151,15 @@ export function CollectionView() {
     location.pathname,
   ]);
 
-  function handleInstallSingleSkillClick(skillId: string) {
-    const target = centralSkills.find((s) => s.id === skillId);
-    if (!target) {
-      toast.error(t("central.installError", { error: t("platform.notFound") }));
-      return;
+  async function handleInstallSingleSkillClick(skillId: string) {
+    try {
+      const target = centralSkills.find((skill) => skill.id === skillId)
+        ?? await loadInstallTarget(skillId);
+      setInstallTargetSkill(target);
+      setIsSingleInstallOpen(true);
+    } catch (err) {
+      toast.error(t("central.installError", { error: String(err) }));
     }
-    setInstallTargetSkill(target);
-    setIsSingleInstallOpen(true);
   }
 
   async function handleInstallSingleSkill(skillId: string, agentIds: string[], method: string) {

@@ -1,5 +1,5 @@
-import { render, screen, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { GlobalSearchDialog } from "@/components/layout/GlobalSearchDialog";
@@ -16,6 +16,11 @@ vi.mock("@/stores/platformStore", () => ({ usePlatformStore: vi.fn() }));
 vi.mock("@/stores/skillStore", () => ({ useSkillStore: vi.fn() }));
 
 const getSkillsByAgent = vi.fn();
+function Destination() {
+  const location = useLocation();
+  return <output data-testid="destination">{location.pathname}{location.search}</output>;
+}
+
 
 describe("GlobalSearchDialog", () => {
   beforeEach(() => {
@@ -104,6 +109,19 @@ describe("GlobalSearchDialog", () => {
         getSkillsByAgent,
       } as never)
     );
+  });
+
+  it("검색한 플랫폼 스킬의 정확한 출처 상세로 바로 이동한다", () => {
+    render(<MemoryRouter>
+      <GlobalSearchDialog open onOpenChange={vi.fn()} onAction={vi.fn()} />
+      <Destination />
+    </MemoryRouter>);
+    fireEvent.click(screen.getByText("Shared Tool"));
+    const destination = screen.getByTestId("destination").textContent!;
+    const url = new URL(destination, "https://test.local");
+    expect(url.pathname).toBe("/skill/shared-tool");
+    expect(url.searchParams.get("agentId")).toBe("codex");
+    expect(url.searchParams.get("rowId")).toBe("codex::shared-tool");
   });
 
   it("감지된 공용 호환 도구는 찾고 미설치 도구는 숨긴다", () => {
