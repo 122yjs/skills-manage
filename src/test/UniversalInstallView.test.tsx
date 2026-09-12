@@ -184,7 +184,7 @@ describe("UniversalInstallView", () => {
 
     expect(screen.getByRole("dialog", { name: "删除 共享安装 (.agents) 的受管理安装？" })).toBeInTheDocument();
     expect(screen.getByText("技能仓库中的原件会保留。")).toBeInTheDocument();
-    expect(screen.getByText("仍有 1 个外部提供的技能可用。")).toBeInTheDocument();
+    expect(screen.getByText("不会删除其他来源的 1 个技能。这些技能不一定是公用安装。")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "删除受管理安装" }));
 

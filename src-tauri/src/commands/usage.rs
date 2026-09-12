@@ -779,6 +779,15 @@ pub async fn get_skill_usage_status_impl(pool: &DbPool) -> Result<Vec<UsageStatu
         let mut external_skill_ids = db::get_agent_skill_observations(pool, &agent.id)
             .await?
             .into_iter()
+            // 같은 설치의 스캔 결과를 삭제 후에도 남는 외부 스킬로 세지 않는다.
+            // 같은 이름이라도 다른 경로의 플러그인이나 공용 설치는 별개다.
+            .filter(|observation| {
+                !active.iter().any(|installation| {
+                    Path::new(&installation.installed_path) == Path::new(&observation.dir_path)
+                }) && !paused.iter().any(|installation| {
+                    Path::new(&installation.installed_path) == Path::new(&observation.dir_path)
+                })
+            })
             .map(|observation| observation.skill_id)
             .collect::<std::collections::BTreeSet<_>>();
         if agent.id != "universal" {
@@ -1587,6 +1596,58 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_observation_is_not_counted_as_external_but_other_sources_are() {
+        let temp = TempDir::new().unwrap();
+        let (pool, central, agent) = setup(&temp).await;
+        add_skill(&pool, &central, &agent, "sample", "copy").await;
+        let mut observation = db::AgentSkillObservation {
+            row_id: "managed-row".into(),
+            agent_id: "claude-code".into(),
+            skill_id: "sample".into(),
+            name: "sample".into(),
+            description: None,
+            file_path: agent.join("sample/SKILL.md").to_string_lossy().into_owned(),
+            dir_path: agent.join("sample").to_string_lossy().into_owned(),
+            source_kind: "user".into(),
+            source_root: agent.to_string_lossy().into_owned(),
+            source_label: None,
+            link_type: "copy".into(),
+            symlink_target: None,
+            is_read_only: false,
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+        };
+        db::upsert_agent_skill_observation(&pool, &observation)
+            .await
+            .unwrap();
+        let statuses = get_skill_usage_status_impl(&pool).await.unwrap();
+        let status = statuses
+            .iter()
+            .find(|s| s.agent_id == "claude-code")
+            .unwrap();
+        assert_eq!(status.active_count, 1);
+        assert_eq!(status.external_count, 0);
+
+        // 이름이 같아도 다른 경로의 플러그인은 삭제 대상이 아니다.
+        observation.row_id = "plugin-row".into();
+        observation.dir_path = "/plugins/sample".into();
+        observation.file_path = "/plugins/sample/SKILL.md".into();
+        observation.source_kind = "plugin".into();
+        observation.is_read_only = true;
+        db::upsert_agent_skill_observation(&pool, &observation)
+            .await
+            .unwrap();
+        let statuses = get_skill_usage_status_impl(&pool).await.unwrap();
+        assert_eq!(
+            statuses
+                .iter()
+                .find(|s| s.agent_id == "claude-code")
+                .unwrap()
+                .external_count,
+            1
         );
     }
 
