@@ -30,9 +30,9 @@ interface SkillDetailState {
   loadCachedExplanation: (skillId: string, lang: string) => Promise<void>;
   generateExplanation: (skillId: string, content: string, lang: string) => Promise<void>;
   refreshExplanation: (skillId: string, content: string, lang: string) => Promise<void>;
-  installSkill: (skillId: string, agentId: string) => Promise<void>;
+  installSkill: (skillId: string, agentId: string) => Promise<boolean>;
   uninstallSkill: (skillId: string, agentId: string) => Promise<void>;
-  refreshInstallations: (skillId: string) => Promise<void>;
+  refreshInstallations: (skillId: string) => Promise<boolean>;
   cleanupExplanationListeners: () => void;
   reset: () => void;
 }
@@ -317,7 +317,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
         installingAgentId: null,
         error: "Installing skills requires the Tauri desktop runtime.",
       });
-      return;
+      return false;
     }
     try {
       await invoke("install_skill_to_agent", {
@@ -334,8 +334,10 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       );
       setActiveDetailRequestFromDetail(detailRequest, detail);
       set({ detail, installingAgentId: null });
+      return true;
     } catch (err) {
       set({ error: String(err), installingAgentId: null });
+      return false;
     }
   },
 
@@ -370,7 +372,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
 
   refreshInstallations: async (skillId: string) => {
     if (!isTauriRuntime()) {
-      return;
+      return true;
     }
     try {
       const detailRequest = getActiveDetailRequest(skillId);
@@ -383,9 +385,12 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
         detail,
         content: state.content,
         isLoading: state.isLoading,
+        error: null,
       }));
+      return true;
     } catch (err) {
       set({ error: String(err) });
+      return false;
     }
   },
 

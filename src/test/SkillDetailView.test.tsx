@@ -9,14 +9,22 @@ import {
   UsageStatus,
 } from "../types";
 
-const { mockTauriInvoke, mockIsTauriRuntime } = vi.hoisted(() => ({
+const { mockTauriInvoke, mockIsTauriRuntime, mockToastError } = vi.hoisted(() => ({
   mockTauriInvoke: vi.fn(),
   mockIsTauriRuntime: vi.fn(() => true),
+  mockToastError: vi.fn(),
 }));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: mockTauriInvoke,
   isTauriRuntime: mockIsTauriRuntime,
+}));
+
+vi.mock("sonner", () => ({
+  toast: {
+    error: mockToastError,
+    success: vi.fn(),
+  },
 }));
 
 // ─── Mock stores ──────────────────────────────────────────────────────────────
@@ -220,6 +228,7 @@ const mockDirectoryTree: SkillDirectoryNodeType[] = [
 const mockLoadDetail = vi.fn();
 const mockInstallSkill = vi.fn();
 const mockUninstallSkill = vi.fn();
+const mockDeleteSkillFromAgent = vi.fn();
 const mockLoadCachedExplanation = vi.fn();
 const mockGenerateExplanation = vi.fn();
 const mockRefreshExplanation = vi.fn();
@@ -275,6 +284,7 @@ function buildSkillUsageStoreState(overrides = {}) {
     updatingSkillKeys: {},
     updatingAgentIds: {},
     setSkillUsage: mockSetSkillUsage,
+    deleteSkillFromAgent: mockDeleteSkillFromAgent,
     ...overrides,
   };
 }
@@ -318,6 +328,7 @@ describe("SkillDetailView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSetSkillUsage.mockResolvedValue(undefined);
+    mockDeleteSkillFromAgent.mockResolvedValue(undefined);
     mockIsTauriRuntime.mockImplementation(() => {
       const w = window as unknown as {
         __TAURI__?: unknown;
@@ -487,7 +498,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByText("~/.claude/skills/frontend-design/SKILL.md")).toBeInTheDocument();
     expect(screen.getByText("~/.claude/skills")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的激活状态/i })
+      screen.getByRole("button", { name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i })
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /加入技能集/i })
@@ -504,17 +515,19 @@ describe("SkillDetailView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows platform toggle icons for non-central agents", () => {
+  it("shows platform rows for non-central agents", () => {
     renderView();
-    // Each non-central agent should have a toggle icon button
-    const toggleButtons = screen.getAllByRole("button", {
-      name: /切换 .* 的激活状态/i,
-    });
-    // 2 non-central agents (claude-code, cursor)
-    expect(toggleButtons).toHaveLength(2);
+    expect(screen.getByText("Claude Code")).toBeInTheDocument();
+    expect(screen.getByText("Cursor")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i })
+    ).toBeInTheDocument();
   });
 
-  it("top-aligns platform group labels when the icon grid wraps", () => {
+  it("groups platform rows by lobster and coding categories", () => {
     const platformAgents: AgentWithStatus[] = [
       {
         id: "openclaw",
@@ -541,25 +554,21 @@ describe("SkillDetailView", () => {
     renderView("frontend-design", "page", { skipMockSetup: true });
 
     const installRegion = screen.getByRole("region", { name: /安装状态/i });
-    const codingLabel = within(installRegion).getByText("编程类");
-    const codingGroup = codingLabel.parentElement;
-    const codingIconGrid = codingLabel.nextElementSibling;
-
-    expect(codingGroup).toHaveClass("items-start");
-    expect(codingLabel).toHaveClass("h-6", "items-center");
-    expect(codingIconGrid).toHaveClass("min-w-0", "flex-1", "flex-wrap");
+    expect(within(installRegion).getByText("龙虾类")).toBeInTheDocument();
+    expect(within(installRegion).getByText("编程类")).toBeInTheDocument();
+    expect(within(installRegion).getByText("OpenClaw")).toBeInTheDocument();
+    expect(within(installRegion).getByText("Claude Code")).toBeInTheDocument();
   });
 
-  it("shows platform name in tooltip on toggle icon", () => {
+  it("shows platform name in the managed install action tooltip", () => {
     renderView();
-    // Claude Code is installed — tooltip includes linked status
-    const claudeToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
+    const claudeDelete = screen.getByRole("button", {
+      name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
     });
-    expect(claudeToggle).toHaveAttribute("title", expect.stringContaining("Claude Code"));
+    expect(claudeDelete).toHaveAttribute("title", expect.stringContaining("Claude Code"));
   });
 
-  it("marks installed platform icons as pressed and fully visible", () => {
+  it("shows installed and active status separately", () => {
     renderView();
 
     const claudeToggle = screen.getByRole("button", {
@@ -567,20 +576,19 @@ describe("SkillDetailView", () => {
     });
 
     expect(claudeToggle).toHaveAttribute("aria-pressed", "true");
-    expect(claudeToggle).toHaveClass("text-primary");
-    expect(claudeToggle.querySelector("svg")).toHaveClass("opacity-100", "grayscale-0");
+    expect(screen.getAllByText("已安装").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已激活").length).toBeGreaterThan(0);
   });
 
-  it("dims uninstalled app icons with grayscale opacity", () => {
+  it("shows an install action and not-installed status for an uninstalled platform", () => {
     renderView();
 
-    const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
+    const cursorInstall = screen.getByRole("button", {
+      name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i,
     });
 
-    expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
-    expect(cursorToggle).toHaveClass("text-muted-foreground/40");
-    expect(cursorToggle.querySelector("img")).toHaveClass("opacity-40", "grayscale");
+    expect(cursorInstall).toBeEnabled();
+    expect(screen.getAllByText("未安装").length).toBeGreaterThan(0);
   });
 
   it("marks read-only universal platform icons as shared but not directly installed", () => {
@@ -592,30 +600,47 @@ describe("SkillDetailView", () => {
     });
     renderView("frontend-design", "page", { skipMockSetup: true });
 
-    const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
+    const cursorShared = screen.getByRole("button", {
+      name: /Cursor.*共享目录可用|Cursor.*shared directory/i,
     });
 
-    expect(cursorToggle).toHaveAttribute("aria-pressed", "false");
-    expect(cursorToggle).toBeDisabled();
-    expect(cursorToggle).toHaveClass("text-muted-foreground/40");
-    expect(cursorToggle.querySelector("img")).toHaveClass("opacity-40", "grayscale");
-    fireEvent.click(cursorToggle);
+    expect(cursorShared).toBeDisabled();
+    expect(screen.getByText("共享只读")).toBeInTheDocument();
+    fireEvent.click(cursorShared);
     expect(mockInstallSkill).not.toHaveBeenCalled();
+    expect(mockDeleteSkillFromAgent).not.toHaveBeenCalled();
   });
 
-  it("calls installSkill when unlinked platform icon is clicked", async () => {
+  it("calls installSkill when the direct platform install action is clicked", async () => {
     renderView();
-    // Cursor is NOT installed
-    const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
+    const cursorInstall = screen.getByRole("button", {
+      name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i,
     });
-    fireEvent.click(cursorToggle);
+    fireEvent.click(cursorInstall);
     await waitFor(() => {
       expect(mockInstallSkill).toHaveBeenCalledWith("frontend-design", "cursor");
     });
     expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
     expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
+  });
+
+  it("shows an install failure toast while keeping the loaded detail visible", async () => {
+    mockInstallSkill.mockResolvedValueOnce(false);
+    renderView();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i,
+      })
+    );
+
+    await waitFor(() => {
+      expect(mockToastError).toHaveBeenCalledWith(expect.stringContaining("安装失败"));
+    });
+    expect(screen.getByRole("heading", { name: /frontend-design/i })).toBeInTheDocument();
+    expect(screen.getByTestId("react-markdown")).toHaveTextContent("# Frontend Design");
+    expect(mockRefreshCounts).not.toHaveBeenCalled();
+    expect(mockRefreshInstallations).not.toHaveBeenCalled();
   });
 
   it("pauses a linked platform icon without uninstalling its managed file", async () => {
@@ -664,6 +689,198 @@ describe("SkillDetailView", () => {
       expect(mockSetSkillUsage).toHaveBeenCalledWith("frontend-design", "claude-code", true);
     });
     expect(mockInstallSkill).not.toHaveBeenCalled();
+  });
+
+  it("shows a direct install action for each platform without an installation", async () => {
+    renderView();
+
+    const installButton = screen.getByRole("button", {
+      name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i,
+    });
+    expect(installButton).toBeInTheDocument();
+
+    fireEvent.click(installButton);
+
+    await waitFor(() => {
+      expect(mockInstallSkill).toHaveBeenCalledWith("frontend-design", "cursor");
+    });
+    expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
+    expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
+  });
+
+  it("keeps delete available for an inactive managed install", async () => {
+    applyStoreMocks(
+      {},
+      {},
+      {
+        statuses: [
+          {
+            agent_id: "claude-code",
+            active_count: 0,
+            paused_count: 1,
+            external_count: 0,
+            skills: [
+              {
+                skill_id: "frontend-design",
+                name: "frontend-design",
+                enabled: false,
+                paused_by_bulk: false,
+              },
+            ],
+          },
+        ],
+      }
+    );
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const activeToggle = screen.getByRole("button", {
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
+    });
+    expect(activeToggle).toHaveAttribute("aria-pressed", "false");
+
+    const deleteButton = screen.getByRole("button", {
+      name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
+    });
+    expect(deleteButton).toBeInTheDocument();
+
+    fireEvent.click(deleteButton);
+    const confirmButton = screen.getByRole("button", {
+      name: /确认删除|Confirm delete/i,
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => {
+      expect(mockDeleteSkillFromAgent).toHaveBeenCalledWith(
+        "frontend-design",
+        "claude-code"
+      );
+    });
+    expect(mockSetSkillUsage).not.toHaveBeenCalled();
+    expect(mockRefreshCounts).toHaveBeenCalledTimes(1);
+    expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
+  });
+
+  it("blocks reinstall when deleting the last native source leaves detail unavailable", async () => {
+    mockRefreshInstallations.mockResolvedValueOnce(false);
+    applyStoreMocks({
+      detail: {
+        ...mockDetail,
+        is_central: false,
+        source: "native",
+        source_kind: null,
+        canonical_path: undefined,
+      },
+    });
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
+      })
+    );
+    fireEvent.click(screen.getByRole("button", { name: /确认删除|Confirm delete/i }));
+
+    const unavailableButton = await screen.findByRole("button", {
+      name: /Claude Code.*安装来源|Claude Code.*Install actions are unavailable/i,
+    });
+    expect(unavailableButton).toBeDisabled();
+    expect(screen.getAllByText(/无法确认安装来源|Install source unavailable/i).length).toBeGreaterThan(0);
+    expect(
+      screen.queryByRole("button", {
+        name: /安装 frontend-design 到 Claude Code|Install frontend-design to Claude Code/i,
+      })
+    ).not.toBeInTheDocument();
+  });
+
+  it("cancels a pending platform deletion without calling the delete action", async () => {
+    renderView();
+
+    const deleteButton = screen.getByRole("button", {
+      name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
+    });
+    fireEvent.click(deleteButton);
+
+    expect(
+      screen.getByRole("button", { name: /确认删除|Confirm delete/i })
+    ).toBeInTheDocument();
+
+    // InlineConfirmAction은 행 바깥을 누르면 확인 상태를 취소한다.
+    fireEvent.pointerDown(document.body);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("button", { name: /확인 삭제|确认删除|Confirm delete/i })
+      ).not.toBeInTheDocument();
+    });
+    expect(mockDeleteSkillFromAgent).not.toHaveBeenCalled();
+  });
+
+  it("does not expose platform install or delete actions for a read-only source", () => {
+    applyStoreMocks({
+      detail: mockPluginDetail,
+      content: mockPluginContent,
+    });
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const installRegion = screen.getByRole("region", { name: /安装状态|Installation status/i });
+    expect(
+      within(installRegion).queryByRole("button", { name: /安装到|Install to/i })
+    ).not.toBeInTheDocument();
+    expect(
+      within(installRegion).queryByRole("button", { name: /删除|Delete|卸载|Uninstall/i })
+    ).not.toBeInTheDocument();
+    expect(mockInstallSkill).not.toHaveBeenCalled();
+    expect(mockDeleteSkillFromAgent).not.toHaveBeenCalled();
+  });
+
+  it("disables repeated actions for a platform while the selected skill action is loading", () => {
+    applyStoreMocks(
+      {},
+      {},
+      { updatingSkillKeys: { "claude-code::frontend-design": true } }
+    );
+    renderView("frontend-design", "page", { skipMockSetup: true });
+
+    const activeToggle = screen.getByRole("button", {
+      name: /切换 frontend-design \(Claude Code\) 的激活状态/i,
+    });
+    const deleteButton = screen.getByRole("button", {
+      name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
+    });
+
+    expect(activeToggle).toBeDisabled();
+    expect(deleteButton).toBeDisabled();
+    fireEvent.click(activeToggle);
+    fireEvent.click(deleteButton);
+    expect(mockDeleteSkillFromAgent).not.toHaveBeenCalled();
+  });
+
+  it("allows only one delete request while the deletion is in progress", async () => {
+    let releaseDelete: (() => void) | undefined;
+    const pendingDelete = new Promise<void>((resolve) => {
+      releaseDelete = resolve;
+    });
+    mockDeleteSkillFromAgent.mockReturnValueOnce(pendingDelete);
+    renderView();
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从 Claude Code 删除 frontend-design 安装|Delete frontend-design installation from Claude Code/i,
+      })
+    );
+    const confirmButton = screen.getByRole("button", {
+      name: /确认删除|Confirm delete/i,
+    });
+    fireEvent.click(confirmButton);
+
+    await waitFor(() => expect(confirmButton).toBeDisabled());
+    fireEvent.click(confirmButton);
+    expect(mockDeleteSkillFromAgent).toHaveBeenCalledTimes(1);
+
+    releaseDelete?.();
+    await waitFor(() => {
+      expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design");
+    });
   });
 
   // ── Collections ───────────────────────────────────────────────────────────
@@ -1267,7 +1484,7 @@ describe("SkillDetailView", () => {
     expect(screen.getByTestId("react-markdown")).toHaveTextContent("# User Frontend Design");
     expect(screen.getByRole("button", { name: /加入技能集/i })).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /切换 frontend-design \(Cursor\) 的激活状态/i })
+      screen.getByRole("button", { name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i })
     ).toBeInTheDocument();
     expect(screen.queryByText(/只读来源|Read-only source/i)).toBeNull();
   });
@@ -1310,17 +1527,17 @@ describe("SkillDetailView", () => {
 
   // ── Spinner during install/uninstall ──────────────────────────────────────
 
-  it("disables toggle icon when that agent is installing", () => {
+  it("disables the install action when that agent is installing", () => {
     applyStoreMocks({ installingAgentId: "cursor" });
     render(
       <MemoryRouter>
         <SkillDetailView skillId="frontend-design" variant="page" />
       </MemoryRouter>
     );
-    const cursorToggle = screen.getByRole("button", {
-      name: /切换 frontend-design \(Cursor\) 的激活状态/i,
+    const cursorInstall = screen.getByRole("button", {
+      name: /安装 frontend-design 到 Cursor|Install frontend-design to Cursor/i,
     });
-    expect(cursorToggle).toBeDisabled();
+    expect(cursorInstall).toBeDisabled();
   });
 
   // ── CollectionPickerDialog integration ────────────────────────────────────

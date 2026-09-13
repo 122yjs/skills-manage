@@ -16,8 +16,10 @@ import {
   Monitor,
   FolderOpen,
   Lock,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { SkillFrontmatterCard } from "@/components/skill/SkillFrontmatterCard";
 import { parseFrontmatter } from "@/lib/frontmatter";
@@ -39,7 +41,10 @@ import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import {
+  isSkillUsageBusyError,
+  useSkillUsageStore,
+} from "@/stores/skillUsageStore";
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 
@@ -108,52 +113,139 @@ function ReadOnlySourceBadge() {
   );
 }
 
-// ─── Platform Toggle Icon (compact install/uninstall) ─────────────────────────
+// ─── 플랫폼 설치 행 ──────────────────────────────────────────────────────────
 
-interface PlatformToggleIconProps {
+interface PlatformInstallRowProps {
   agent: AgentWithStatus;
   skillName: string;
   isInstalled: boolean;
+  isUnavailable: boolean;
+  actionsUnavailable: boolean;
+  usage?: UsageSkillStatus;
   isReadOnly: boolean;
   isLoading: boolean;
-  onToggle: () => void;
+  isDeleteLoading: boolean;
+  onInstall: () => void;
+  onToggleUsage: () => void;
+  onDelete: () => void;
 }
 
-function PlatformToggleIcon({
+function PlatformInstallRow({
   agent,
   skillName,
   isInstalled,
+  isUnavailable,
+  actionsUnavailable,
+  usage,
   isReadOnly,
   isLoading,
-  onToggle,
-}: PlatformToggleIconProps) {
+  isDeleteLoading,
+  onInstall,
+  onToggleUsage,
+  onDelete,
+}: PlatformInstallRowProps) {
   const { t } = useTranslation();
   const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
+  const isActive = usage?.enabled ?? isInstalled;
+  const installationStatus = isUnavailable
+    ? t("detail.installUnavailable")
+    : isReadOnly
+    ? t("platformDrawer.statusShared")
+    : isInstalled
+      ? t("platformDrawer.statusInstalled")
+      : t("platformDrawer.statusNotInstalled");
+
   return (
-    <button
+    <div
       className={cn(
-        "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors cursor-pointer",
-        isInstalled && !isReadOnly
-          ? "text-primary hover:bg-primary/10"
-          : "text-muted-foreground/40 hover:bg-muted/60 hover:text-muted-foreground",
-        isReadOnly && "cursor-default hover:bg-transparent",
-        isLoading && "animate-pulse pointer-events-none"
+        "rounded-lg border border-border bg-card px-3 py-2.5",
+        isLoading && "opacity-70"
       )}
-      title={`${displayName}${isInstalled && !isReadOnly ? ` — ${t("skillUsage.active")}` : ""}`}
-      aria-label={t("skillUsage.toggleSkill", { name: `${skillName} (${displayName})` })}
-      aria-pressed={isInstalled && !isReadOnly}
-      disabled={isLoading || isReadOnly}
-      onClick={onToggle}
     >
-      <PlatformIcon
-        agentId={agent.id}
-        className={cn(
-          "size-4 shrink-0 transition-all",
-          isInstalled && !isReadOnly ? "opacity-100 grayscale-0" : "opacity-40 grayscale"
+      <div className="flex min-w-0 items-center gap-2">
+        <PlatformIcon agentId={agent.id} className="size-5 shrink-0 text-muted-foreground" size={20} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-xs font-medium text-foreground">{displayName}</div>
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+            <span>{installationStatus}</span>
+            {!isReadOnly && isInstalled && (
+              <span>{isActive ? t("skillUsage.active") : t("skillUsage.paused")}</span>
+            )}
+            {!agent.is_detected && <span>{t("installDialog.notDetected")}</span>}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5">
+        {isUnavailable || actionsUnavailable ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled
+            aria-label={t("detail.installUnavailableAria", { platform: displayName })}
+          >
+            {t("detail.installUnavailable")}
+          </Button>
+        ) : isReadOnly ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled
+            aria-label={t("platformDrawer.sharedAria", { platform: displayName })}
+          >
+            {t("installDialog.alwaysIncluded")}
+          </Button>
+        ) : !isInstalled ? (
+          <Button
+            type="button"
+            size="sm"
+            disabled={isLoading}
+            aria-label={t("platformDrawer.installAria", {
+              skill: skillName,
+              platform: displayName,
+            })}
+            onClick={onInstall}
+          >
+            {isLoading ? <Loader2 className="size-3.5 animate-spin" /> : null}
+            {t("common.install")}
+          </Button>
+        ) : (
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isLoading}
+              aria-label={t("skillUsage.toggleSkill", {
+                name: `${skillName} (${displayName})`,
+              })}
+              aria-pressed={isActive}
+              onClick={onToggleUsage}
+            >
+              {isActive ? t("skillUsage.pause") : t("skillUsage.resume")}
+            </Button>
+            <InlineConfirmAction
+              onConfirm={onDelete}
+              disabled={isLoading}
+              isLoading={isDeleteLoading}
+              idleTitle={t("skillUsage.deleteSkill", {
+                name: skillName,
+                platform: displayName,
+              })}
+              idleAriaLabel={t("skillUsage.deleteSkill", {
+                name: skillName,
+                platform: displayName,
+              })}
+              confirmLabel={t("common.confirmDelete")}
+              icon={<><Trash2 className="size-3.5" />{t("common.delete")}</>}
+              className="h-8 w-auto gap-1.5 px-2.5"
+            />
+          </>
         )}
-        size={16}
-      />
-    </button>
+      </div>
+    </div>
   );
 }
 
@@ -164,8 +256,13 @@ interface PlatformToggleGroupProps {
   installationMap: Map<string, SkillInstallation>;
   usageMap: Map<string, UsageSkillStatus>;
   readOnlyAgentIds: Set<string>;
+  removedAgentIds: Set<string>;
+  actionsUnavailable: boolean;
   loadingAgentIds: Set<string>;
-  onToggle: (agentId: string) => void;
+  deletingAgentId: string | null;
+  onInstall: (agentId: string) => void;
+  onToggleUsage: (agentId: string) => void;
+  onDelete: (agentId: string) => void;
 }
 
 function PlatformToggleGroup({
@@ -175,31 +272,43 @@ function PlatformToggleGroup({
   installationMap,
   usageMap,
   readOnlyAgentIds,
+  removedAgentIds,
+  actionsUnavailable,
   loadingAgentIds,
-  onToggle,
+  deletingAgentId,
+  onInstall,
+  onToggleUsage,
+  onDelete,
 }: PlatformToggleGroupProps) {
   if (agents.length === 0) return null;
 
   return (
-    <div className="flex items-start gap-1">
-      <span className="flex h-6 w-12 shrink-0 items-center text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+    <div className="space-y-1.5">
+      <span className="flex items-center text-[10px] font-medium text-muted-foreground/70 uppercase tracking-wider">
         {label}
       </span>
-      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5">
+      <div className="space-y-1.5">
         {agents.map((agent) => (
           (() => {
             const usage = usageMap.get(agent.id);
             const isManaged = Boolean(usage) || installationMap.has(agent.id);
+            const isRemoved = removedAgentIds.has(agent.id);
             const isReadOnly = readOnlyAgentIds.has(agent.id) && !isManaged;
             return (
-              <PlatformToggleIcon
+              <PlatformInstallRow
                 key={agent.id}
                 agent={agent}
                 skillName={skillName}
-                isInstalled={(usage?.enabled ?? installationMap.has(agent.id)) || isReadOnly}
+                isInstalled={!isRemoved && (Boolean(usage) || installationMap.has(agent.id))}
+                isUnavailable={isRemoved}
+                actionsUnavailable={actionsUnavailable}
+                usage={isRemoved ? undefined : usage}
                 isReadOnly={isReadOnly}
                 isLoading={loadingAgentIds.has(agent.id)}
-                onToggle={() => onToggle(agent.id)}
+                isDeleteLoading={deletingAgentId === agent.id}
+                onInstall={() => onInstall(agent.id)}
+                onToggleUsage={() => onToggleUsage(agent.id)}
+                onDelete={() => onDelete(agent.id)}
               />
             );
           })()
@@ -382,6 +491,7 @@ export function SkillDetailView({
   const usageUpdatingSkillKeys = useSkillUsageStore((s) => s.updatingSkillKeys);
   const usageUpdatingAgentIds = useSkillUsageStore((s) => s.updatingAgentIds);
   const setSkillUsage = useSkillUsageStore((s) => s.setSkillUsage);
+  const deleteSkillFromAgent = useSkillUsageStore((s) => s.deleteSkillFromAgent);
 
   // Local state for filePath mode
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -411,6 +521,10 @@ export function SkillDetailView({
   // Local UI state
   const [activeTab, setActiveTab] = useState<PreviewTab>("markdown");
   const [isCollectionPickerOpen, setIsCollectionPickerOpen] = useState(false);
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
+  const [removedAgentIds, setRemovedAgentIds] = useState<Set<string>>(new Set());
+  const mutationAgentIdsRef = useRef(new Set<string>());
+  const [mutationAgentIds, setMutationAgentIds] = useState<Set<string>>(new Set());
   const [showErrorDetails, setShowErrorDetails] = useState(false);
   const addToCollectionButtonRef = useRef<HTMLButtonElement | null>(null);
   const selectedFilePath = selectedFile?.path ?? null;
@@ -422,6 +536,16 @@ export function SkillDetailView({
     return detail?.dir_path ?? null;
   }, [detail?.dir_path, discoverMetadata?.dirPath, filePath, isFileMode]);
   const skillFilePath = isFileMode ? filePath ?? null : detail?.file_path ?? null;
+
+  useEffect(() => {
+    setRemovedAgentIds(new Set());
+  }, [skillId]);
+
+  useEffect(() => {
+    if (detail) {
+      setRemovedAgentIds(new Set());
+    }
+  }, [detail]);
 
   useEffect(() => {
     if (detail?.is_read_only && isCollectionPickerOpen) {
@@ -576,38 +700,120 @@ export function SkillDetailView({
       .filter(
         (agent) =>
           installingAgentId === agent.id ||
+          deletingAgentId === agent.id ||
           usageUpdatingSkillKeys[`${agent.id}::${skillId ?? ""}`] ||
           usageUpdatingAgentIds[agent.id]
       )
       .map((agent) => agent.id)
   );
+  if (mutationAgentIds.size > 0) {
+    // 설치 상태 갱신과 스캔이 엇갈리지 않도록 상세 화면의 변경은 한 번에 하나만 처리한다.
+    targetAgents.forEach((agent) => loadingAgentIds.add(agent.id));
+  }
   const readOnlyAgentIds = new Set(detail?.read_only_agents ?? []);
   const skillCollections = detail?.collections ?? [];
 
   // ── Handlers ─────────────────────────────────────────────────────────────
 
-  async function handleToggle(agentId: string) {
-    if (!skillId || detail?.is_read_only) return;
-    const isInstalled = installationMap.has(agentId);
-    const usage = usageMap.get(agentId);
-    if (readOnlyAgentIds.has(agentId) && !usage && !isInstalled) return;
+  function beginAgentMutation(agentId: string): boolean {
+    if (loadingAgentIds.size > 0 || mutationAgentIdsRef.current.size > 0) return false;
+    mutationAgentIdsRef.current.add(agentId);
+    setMutationAgentIds((current) => new Set(current).add(agentId));
+    return true;
+  }
+
+  function endAgentMutation(agentId: string) {
+    mutationAgentIdsRef.current.delete(agentId);
+    setMutationAgentIds((current) => {
+      const next = new Set(current);
+      next.delete(agentId);
+      return next;
+    });
+  }
+
+  async function handleInstall(agentId: string) {
+    if (!skillId || detail?.is_read_only || removedAgentIds.size > 0) return;
+    if (readOnlyAgentIds.has(agentId) || installationMap.has(agentId) || usageMap.has(agentId)) return;
+    if (!beginAgentMutation(agentId)) return;
     try {
-      if (usage || isInstalled) {
-        await setSkillUsage(skillId, agentId, !(usage?.enabled ?? true));
-      } else {
-        await installSkill(skillId, agentId);
+      const installed = await installSkill(skillId, agentId);
+      if (installed === false) {
+        toast.error(t("detail.installError", { error: t("detail.installFailed") }));
+        return;
       }
-      await Promise.all([
-        refreshCounts(),
-        refreshInstallations(skillId),
-      ]);
+      await refreshCounts();
+      const refreshed = await refreshInstallations(skillId);
+      if (refreshed !== false) {
+        setRemovedAgentIds((current) => {
+          if (!current.has(agentId)) return current;
+          const next = new Set(current);
+          next.delete(agentId);
+          return next;
+        });
+      }
       await onInstallationsChange?.();
     } catch (err) {
-      toast.error(
-        usage || isInstalled
-          ? t("skillUsage.updateError", { error: String(err) })
-          : t("detail.installError", { error: String(err) })
+      toast.error(t("detail.installError", { error: String(err) }));
+    } finally {
+      endAgentMutation(agentId);
+    }
+  }
+
+  async function handleToggleUsage(agentId: string) {
+    if (!skillId || detail?.is_read_only || removedAgentIds.size > 0) return;
+    const usage = usageMap.get(agentId);
+    const isInstalled = Boolean(usage) || installationMap.has(agentId);
+    if (!isInstalled || (readOnlyAgentIds.has(agentId) && !usage && !installationMap.has(agentId))) return;
+    if (!beginAgentMutation(agentId)) return;
+    try {
+      await setSkillUsage(skillId, agentId, !(usage?.enabled ?? true));
+      await refreshCounts();
+      await refreshInstallations(skillId);
+      await onInstallationsChange?.();
+    } catch (err) {
+      toast.error(t("skillUsage.updateError", { error: String(err) }));
+    } finally {
+      endAgentMutation(agentId);
+    }
+  }
+
+  async function handleDelete(agentId: string) {
+    if (!skillId || detail?.is_read_only || removedAgentIds.size > 0) return;
+    const usage = usageMap.get(agentId);
+    const isManaged = Boolean(usage) || installationMap.has(agentId);
+    if (!isManaged || (readOnlyAgentIds.has(agentId) && !isManaged)) return;
+    if (!beginAgentMutation(agentId)) return;
+
+    setDeletingAgentId(agentId);
+    try {
+      await deleteSkillFromAgent(skillId, agentId);
+      setRemovedAgentIds((current) => new Set(current).add(agentId));
+      // 스캔으로 목록을 먼저 최신화한 뒤 상세 설치 상태를 다시 읽는다.
+      await refreshCounts();
+      const refreshed = await refreshInstallations(skillId);
+      if (refreshed !== false) {
+        setRemovedAgentIds((current) => {
+          if (!current.has(agentId)) return current;
+          const next = new Set(current);
+          next.delete(agentId);
+          return next;
+        });
+      }
+      await onInstallationsChange?.();
+      const agent = agents.find((candidate) => candidate.id === agentId);
+      toast.success(
+        t("skillUsage.deleteSkillSuccess", {
+          name: detail?.name ?? skillId,
+          platform: getAgentDisplayName(agent ?? { id: agentId, display_name: agentId }, t("sidebar.universal")),
+        })
       );
+    } catch (err) {
+      if (!isSkillUsageBusyError(err)) {
+        toast.error(t("skillUsage.deleteError", { error: String(err) }));
+      }
+    } finally {
+      setDeletingAgentId(null);
+      endAgentMutation(agentId);
     }
   }
 
@@ -712,7 +918,7 @@ export function SkillDetailView({
       </div>
 
       {/* ── ContentArea ──────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="relative flex-1 min-h-0 overflow-hidden">
         {/* Loading state */}
         {isLoading && (
           <div className="flex items-center justify-center h-full gap-2 text-muted-foreground">
@@ -722,7 +928,7 @@ export function SkillDetailView({
         )}
 
         {/* Error state */}
-        {!isLoading && error && (
+        {!isLoading && error && !hasData && (
           <div className="flex items-center justify-center h-full">
             <div className="text-center space-y-2">
               <p className="text-sm text-destructive">{error}</p>
@@ -734,6 +940,23 @@ export function SkillDetailView({
                 {t("detail.retry")}
               </Button>
             </div>
+          </div>
+        )}
+
+        {hasData && !isLoading && error && (
+          <div
+            role="alert"
+            className="absolute inset-x-4 top-2 z-20 flex items-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive shadow-sm"
+          >
+            <p className="min-w-0 flex-1 break-words">{error}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              onClick={() => detailRequest && loadDetail(detailRequest)}
+            >
+              {t("detail.retry")}
+            </Button>
           </div>
         )}
 
@@ -752,7 +975,7 @@ export function SkillDetailView({
         )}
 
         {/* ── TwoColumnLayout: LeftPreview + RightSidebar ────────────────── */}
-        {!isLoading && !error && hasData && (
+        {!isLoading && hasData && (
           <div
             className="flex h-full flex-col md:flex-row"
             data-testid="skill-detail-two-column-layout"
@@ -1071,6 +1294,62 @@ export function SkillDetailView({
                     </section>
                   )}
 
+                  {/* 설치 상태 — 긴 메타데이터 경로보다 먼저 플랫폼 동작을 보여 준다. */}
+                  <section aria-label={t("detail.installStatusRegion")}>
+                    <SectionLabel>{t("detail.installStatus")}</SectionLabel>
+                    <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+                      {t("detail.applicationScopeHelp")}
+                    </p>
+                    <div className="space-y-1.5">
+                      {detail.is_read_only ? (
+                        <p className="text-xs leading-relaxed text-muted-foreground">
+                          {t("detail.readOnlyInstallBlocked", {
+                            defaultValue: i18n.language.startsWith("zh")
+                              ? "只读观测副本不可安装或卸载。"
+                              : "Install and uninstall are unavailable for read-only observed copies.",
+                          })}
+                        </p>
+                      ) : targetAgents.length === 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                          {t("detail.noPlatforms")}
+                        </p>
+                      ) : (
+                        <>
+                          <PlatformToggleGroup
+                            label={t("sidebar.categoryLobster")}
+                            agents={lobsterAgents}
+                            skillName={detail.name}
+                            installationMap={installationMap}
+                            usageMap={usageMap}
+                            readOnlyAgentIds={readOnlyAgentIds}
+                            removedAgentIds={removedAgentIds}
+                            actionsUnavailable={removedAgentIds.size > 0}
+                            loadingAgentIds={loadingAgentIds}
+                            deletingAgentId={deletingAgentId}
+                            onInstall={handleInstall}
+                            onToggleUsage={handleToggleUsage}
+                            onDelete={handleDelete}
+                          />
+                          <PlatformToggleGroup
+                            label={t("sidebar.categoryCoding")}
+                            agents={codingAgents}
+                            skillName={detail.name}
+                            installationMap={installationMap}
+                            usageMap={usageMap}
+                            readOnlyAgentIds={readOnlyAgentIds}
+                            removedAgentIds={removedAgentIds}
+                            actionsUnavailable={removedAgentIds.size > 0}
+                            loadingAgentIds={loadingAgentIds}
+                            deletingAgentId={deletingAgentId}
+                            onInstall={handleInstall}
+                            onToggleUsage={handleToggleUsage}
+                            onDelete={handleDelete}
+                          />
+                        </>
+                      )}
+                    </div>
+                  </section>
+
                   {/* Metadata */}
                   <section aria-label={t("detail.metadataRegion")}>
                     <SectionLabel>{t("detail.metadata")}</SectionLabel>
@@ -1102,52 +1381,6 @@ export function SkillDetailView({
                         label={t("detail.scannedAt")}
                         value={new Date(detail.scanned_at).toLocaleString()}
                       />
-                    </div>
-                  </section>
-
-                  {/* Install Status — compact icon grid */}
-                  <section aria-label={t("detail.installStatusRegion")}>
-                    <SectionLabel>{t("detail.installStatus")}</SectionLabel>
-                    <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
-                      {t("detail.applicationScopeHelp")}
-                    </p>
-                    <div className="space-y-1.5">
-                      {detail.is_read_only ? (
-                        <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t("detail.readOnlyInstallBlocked", {
-                            defaultValue: i18n.language.startsWith("zh")
-                              ? "只读观测副本不可安装或卸载。"
-                              : "Install and uninstall are unavailable for read-only observed copies.",
-                          })}
-                        </p>
-                      ) : targetAgents.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">
-                          {t("detail.noPlatforms")}
-                        </p>
-                      ) : (
-                        <>
-                          <PlatformToggleGroup
-                            label={t("sidebar.categoryLobster")}
-                            agents={lobsterAgents}
-                            skillName={detail.name}
-                            installationMap={installationMap}
-                            usageMap={usageMap}
-                            readOnlyAgentIds={readOnlyAgentIds}
-                            loadingAgentIds={loadingAgentIds}
-                            onToggle={handleToggle}
-                          />
-                          <PlatformToggleGroup
-                            label={t("sidebar.categoryCoding")}
-                            agents={codingAgents}
-                            skillName={detail.name}
-                            installationMap={installationMap}
-                            usageMap={usageMap}
-                            readOnlyAgentIds={readOnlyAgentIds}
-                            loadingAgentIds={loadingAgentIds}
-                            onToggle={handleToggle}
-                          />
-                        </>
-                      )}
                     </div>
                   </section>
 

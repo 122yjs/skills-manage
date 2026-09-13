@@ -272,12 +272,20 @@ describe("skillDetailStore", () => {
     expect(useSkillDetailStore.getState().installingAgentId).toBeNull();
   });
 
-  it("sets error when install fails", async () => {
+  it("returns false on install failure and keeps the loaded detail visible", async () => {
+    useSkillDetailStore.setState({
+      detail: mockDetail,
+      content: mockContent,
+    });
     vi.mocked(invoke).mockRejectedValueOnce(new Error("Permission denied"));
-    await useSkillDetailStore.getState().installSkill("frontend-design", "cursor");
+    await expect(
+      useSkillDetailStore.getState().installSkill("frontend-design", "cursor")
+    ).resolves.toBe(false);
     const state = useSkillDetailStore.getState();
     expect(state.error).toContain("Permission denied");
     expect(state.installingAgentId).toBeNull();
+    expect(state.detail).toEqual(mockDetail);
+    expect(state.content).toBe(mockContent);
   });
 
   // ── uninstallSkill ────────────────────────────────────────────────────────
@@ -334,7 +342,9 @@ describe("skillDetailStore", () => {
 
     vi.mocked(invoke).mockResolvedValueOnce(mockDetailAfterInstall);
 
-    await useSkillDetailStore.getState().refreshInstallations("frontend-design");
+    await expect(
+      useSkillDetailStore.getState().refreshInstallations("frontend-design")
+    ).resolves.toBe(true);
 
     const state = useSkillDetailStore.getState();
     expect(invoke).toHaveBeenCalledWith("get_skill_detail", {
@@ -343,6 +353,30 @@ describe("skillDetailStore", () => {
     expect(state.detail?.installations).toHaveLength(2);
     expect(state.content).toBe(mockContent);
     expect(state.isLoading).toBe(false);
+  });
+
+  it("keeps the last native detail when its source disappears during refresh", async () => {
+    useSkillDetailStore.setState({
+      detail: {
+        ...mockDetail,
+        is_central: false,
+        source: "native",
+        source_kind: null,
+        canonical_path: undefined,
+      },
+      content: mockContent,
+    });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("Skill 'frontend-design' not found"));
+
+    await expect(
+      useSkillDetailStore.getState().refreshInstallations("frontend-design")
+    ).resolves.toBe(false);
+
+    const state = useSkillDetailStore.getState();
+    expect(state.detail?.source).toBe("native");
+    expect(state.detail?.installations).toHaveLength(1);
+    expect(state.content).toBe(mockContent);
+    expect(state.error).toContain("frontend-design");
   });
 
   it("refreshInstallations reuses the active Claude row identity after a row-aware load", async () => {
