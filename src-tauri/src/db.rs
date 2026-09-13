@@ -85,6 +85,22 @@ pub struct AgentSkillObservation {
     pub scanned_at: String,
 }
 
+/// 플랫폼 설정으로 제어한 외부 스킬의 원래 설정값을 보존한다.
+///
+/// `source_path`를 함께 키로 써서 이름이 같은 다른 출처와 섞이지 않게
+/// 한다. 실제 Claude 설정은 이름 단위이므로 Adapter가 범위를 별도로
+/// 확인해 사용자에게 알려 준다.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct PlatformSkillControl {
+    pub agent_id: String,
+    pub source_path: String,
+    pub skill_name: String,
+    pub state: String,
+    pub original_value: Option<String>,
+    pub applied_value: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Agent {
     pub id: String,
@@ -213,6 +229,22 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             symlink_target TEXT,
             is_read_only   BOOLEAN NOT NULL DEFAULT 0,
             scanned_at     TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS platform_skill_controls (
+            agent_id       TEXT NOT NULL,
+            source_path    TEXT NOT NULL,
+            skill_name     TEXT NOT NULL,
+            state          TEXT NOT NULL,
+            original_value TEXT,
+            applied_value  TEXT NOT NULL,
+            updated_at     TEXT NOT NULL,
+            PRIMARY KEY (agent_id, source_path)
         )",
     )
     .execute(pool)
@@ -1545,6 +1577,101 @@ pub async fn get_agent_skill_observations(
     .bind(agent_id)
     .fetch_all(pool)
     .await
+    .map_err(|e| e.to_string())
+}
+
+/// 플랫폼별 외부 스킬 제어 기록을 반환한다. 스캔에서 관측 행이 사라져도
+/// 적용 삭제 기록을 유지해야 하므로 외래 키를 두지 않는다.
+pub async fn get_platform_skill_control(
+    pool: &DbPool,
+    agent_id: &str,
+    source_path: &str,
+) -> Result<Option<PlatformSkillControl>, String> {
+    sqlx::query_as::<_, PlatformSkillControl>(
+        "SELECT * FROM platform_skill_controls
+         WHERE agent_id = ? AND source_path = ?",
+    )
+    .bind(agent_id)
+    .bind(source_path)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn get_platform_skill_controls(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<Vec<PlatformSkillControl>, String> {
+    sqlx::query_as::<_, PlatformSkillControl>(
+        "SELECT * FROM platform_skill_controls
+         WHERE agent_id = ?
+         ORDER BY skill_name, source_path",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+pub async fn upsert_platform_skill_control(
+    pool: &DbPool,
+    control: &PlatformSkillControl,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO platform_skill_controls
+         (agent_id, source_path, skill_name, state, original_value, applied_value, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(agent_id, source_path) DO UPDATE SET
+           skill_name = excluded.skill_name,
+           state = excluded.state,
+           original_value = excluded.original_value,
+           applied_value = excluded.applied_value,
+           updated_at = excluded.updated_at",
+    )
+    .bind(&control.agent_id)
+    .bind(&control.source_path)
+    .bind(&control.skill_name)
+    .bind(&control.state)
+    .bind(&control.original_value)
+    .bind(&control.applied_value)
+    .bind(&control.updated_at)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub async fn delete_platform_skill_control(
+    pool: &DbPool,
+    agent_id: &str,
+    source_path: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM platform_skill_controls
+         WHERE agent_id = ? AND source_path = ?",
+    )
+    .bind(agent_id)
+    .bind(source_path)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub async fn delete_platform_skill_controls_by_name(
+    pool: &DbPool,
+    agent_id: &str,
+    skill_name: &str,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM platform_skill_controls
+         WHERE agent_id = ? AND skill_name = ?",
+    )
+    .bind(agent_id)
+    .bind(skill_name)
+    .execute(pool)
+    .await
+    .map(|_| ())
     .map_err(|e| e.to_string())
 }
 

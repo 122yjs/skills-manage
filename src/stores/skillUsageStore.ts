@@ -1,10 +1,24 @@
 import { create } from "zustand";
 
 import { invoke, isTauriRuntime } from "@/lib/tauri";
-import type { UsageSkillStatus, UsageStatus } from "@/types";
+import type {
+  PlatformSkillControlStatus,
+  UsageSkillStatus,
+  UsageStatus,
+} from "@/types";
 
 function skillActionKey(agentId: string, skillId: string) {
   return `${agentId}::${skillId}`;
+}
+
+function platformControlKey(agentId: string, sourcePath: string) {
+  return `${agentId}::${sourcePath}`;
+}
+
+export interface PlatformSkillControlTarget {
+  skillId: string;
+  skillName: string;
+  sourcePath: string;
 }
 
 export const SKILL_USAGE_BUSY_ERROR_CODE = "SKILL_USAGE_BUSY";
@@ -80,6 +94,8 @@ interface SkillUsageState {
   updatingSkillKeys: Record<string, boolean>;
   updatingAgentIds: Record<string, boolean>;
   error: string | null;
+  platformControlsByAgent: Record<string, PlatformSkillControlStatus[]>;
+  updatingPlatformControlKeys: Record<string, boolean>;
 
   loadUsageStatus: () => Promise<void>;
   setSkillUsage: (skillId: string, agentId: string, enabled: boolean) => Promise<void>;
@@ -88,6 +104,20 @@ interface SkillUsageState {
   deletePlatformInstallations: (agentId: string) => Promise<DeletePlatformInstallationsResult>;
   getUsageStatus: (agentId: string) => UsageStatus | undefined;
   getSkillUsage: (agentId: string, skillId: string) => UsageSkillStatus | undefined;
+  loadPlatformSkillControls: (agentId: string) => Promise<void>;
+  setPlatformSkillControl: (
+    agentId: string,
+    target: PlatformSkillControlTarget,
+    enabled: boolean
+  ) => Promise<void>;
+  deletePlatformSkillControl: (
+    agentId: string,
+    target: PlatformSkillControlTarget
+  ) => Promise<void>;
+  reapplyPlatformSkillControl: (
+    agentId: string,
+    target: PlatformSkillControlTarget
+  ) => Promise<void>;
 }
 
 /**
@@ -100,6 +130,8 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
   updatingSkillKeys: {},
   updatingAgentIds: {},
   error: null,
+  platformControlsByAgent: {},
+  updatingPlatformControlKeys: {},
 
   loadUsageStatus: async () => {
     set({ isLoading: true, error: null });
@@ -299,4 +331,152 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
     get().statuses
       .find((status) => status.agent_id === agentId)
       ?.skills.find((skill) => skill.skill_id === skillId),
+
+  loadPlatformSkillControls: async (agentId) => {
+    if (!isTauriRuntime()) {
+      set((state) => ({
+        platformControlsByAgent: {
+          ...state.platformControlsByAgent,
+          [agentId]: [],
+        },
+      }));
+      return;
+    }
+    try {
+      const controls = await invoke<PlatformSkillControlStatus[]>(
+        "get_platform_skill_controls",
+        { agentId }
+      );
+      set((state) => ({
+        platformControlsByAgent: {
+          ...state.platformControlsByAgent,
+          [agentId]: controls ?? [],
+        },
+      }));
+    } catch (error) {
+      set({ error: String(error) });
+      throw error;
+    }
+  },
+
+  setPlatformSkillControl: async (agentId, target, enabled) => {
+    const actionKey = platformControlKey(agentId, target.sourcePath);
+    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+      throw new SkillUsageBusyError();
+    }
+    set((state) => ({
+      updatingPlatformControlKeys: {
+        ...state.updatingPlatformControlKeys,
+        [actionKey]: true,
+      },
+      error: null,
+    }));
+    try {
+      if (!isTauriRuntime()) {
+        throw new Error("플랫폼 스킬 제어는 데스크톱 앱에서만 사용할 수 있습니다.");
+      }
+      await invoke("set_platform_skill_control", {
+        agentId,
+        skillId: target.skillId,
+        skillName: target.skillName,
+        sourcePath: target.sourcePath,
+        enabled,
+      });
+      await get().loadPlatformSkillControls(agentId);
+    } catch (error) {
+      try {
+        await get().loadPlatformSkillControls(agentId);
+      } catch {
+        // 원래 제어 오류를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingPlatformControlKeys = { ...state.updatingPlatformControlKeys };
+        delete updatingPlatformControlKeys[actionKey];
+        return { updatingPlatformControlKeys };
+      });
+    }
+  },
+
+  deletePlatformSkillControl: async (agentId, target) => {
+    const actionKey = platformControlKey(agentId, target.sourcePath);
+    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+      throw new SkillUsageBusyError();
+    }
+    set((state) => ({
+      updatingPlatformControlKeys: {
+        ...state.updatingPlatformControlKeys,
+        [actionKey]: true,
+      },
+      error: null,
+    }));
+    try {
+      if (!isTauriRuntime()) {
+        throw new Error("플랫폼 스킬 제어는 데스크톱 앱에서만 사용할 수 있습니다.");
+      }
+      await invoke("delete_platform_skill_control", {
+        agentId,
+        skillId: target.skillId,
+        skillName: target.skillName,
+        sourcePath: target.sourcePath,
+      });
+      await get().loadPlatformSkillControls(agentId);
+    } catch (error) {
+      try {
+        await get().loadPlatformSkillControls(agentId);
+      } catch {
+        // 원래 제어 오류를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingPlatformControlKeys = { ...state.updatingPlatformControlKeys };
+        delete updatingPlatformControlKeys[actionKey];
+        return { updatingPlatformControlKeys };
+      });
+    }
+  },
+
+  reapplyPlatformSkillControl: async (agentId, target) => {
+    const actionKey = platformControlKey(agentId, target.sourcePath);
+    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+      throw new SkillUsageBusyError();
+    }
+    set((state) => ({
+      updatingPlatformControlKeys: {
+        ...state.updatingPlatformControlKeys,
+        [actionKey]: true,
+      },
+      error: null,
+    }));
+    try {
+      if (!isTauriRuntime()) {
+        throw new Error("플랫폼 스킬 제어는 데스크톱 앱에서만 사용할 수 있습니다.");
+      }
+      await invoke("reapply_platform_skill_control", {
+        agentId,
+        skillId: target.skillId,
+        skillName: target.skillName,
+        sourcePath: target.sourcePath,
+      });
+      await get().loadPlatformSkillControls(agentId);
+    } catch (error) {
+      try {
+        await get().loadPlatformSkillControls(agentId);
+      } catch {
+        // 원래 제어 오류를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingPlatformControlKeys = { ...state.updatingPlatformControlKeys };
+        delete updatingPlatformControlKeys[actionKey];
+        return { updatingPlatformControlKeys };
+      });
+    }
+  },
 }));

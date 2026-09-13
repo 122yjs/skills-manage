@@ -1644,7 +1644,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn test_omp_scan_roots_include_agents_user_location() {
         let tmp = TempDir::new().unwrap();

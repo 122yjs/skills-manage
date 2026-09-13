@@ -135,6 +135,7 @@
     "add": "추가",
     "create": "만들기",
     "close": "닫기",
+    "reapply": "다시 적용",
     "retry": "다시 시도",
     "loading": "불러오는 중...",
     "search": "검색",
@@ -219,6 +220,7 @@
   "skillUsage": {
     "active": "활성",
     "paused": "비활성",
+    "unavailable": "확인 불가",
     "toggleSkill": "{{name}} 활성 상태 전환",
     "togglePlatform": "{{name}}에 설치된 스킬 전체 활성 상태 전환",
     "platformSwitchLabel": "스킬 상태",
@@ -250,7 +252,13 @@
     "deletePlatformSuccessExternal": "{{name}}에 설치된 스킬 {{count}}개를 삭제했습니다. 다른 출처의 스킬 {{external}}개는 유지됩니다.",
     "deletePlatformPartial": "{{name}}에 설치된 스킬 {{deleted}}개를 삭제했고 {{failed}}개는 삭제하지 못했습니다.",
     "deletePlatformPartialExternal": "{{name}}에 설치된 스킬 {{deleted}}개를 삭제했고 {{failed}}개는 삭제하지 못했습니다. 다른 출처의 스킬 {{external}}개는 유지됩니다.",
-    "deleteError": "설치된 스킬을 삭제하지 못했습니다: {{error}}"
+    "deleteError": "설치된 스킬을 삭제하지 못했습니다: {{error}}",
+    "platformControlUnavailable": "이 플랫폼의 독립 제어를 확인하지 못했습니다.",
+    "platformControlDelete": "{{platform}}에서 {{name}} 적용 삭제",
+    "platformControlDeleteConfirm": "{{platform}}에서 {{name}} 적용만 삭제",
+    "platformControlDeleteSuccess": "{{platform}}에서 {{name}} 적용을 삭제했습니다.",
+    "platformControlReapply": "{{platform}}에 {{name}} 적용",
+    "platformControlReapplySuccess": "{{platform}}에 {{name}} 적용을 다시 활성화했습니다."
   },
   "storage": {
     "title": "스킬 보관함 위치",

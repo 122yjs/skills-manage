@@ -72,6 +72,11 @@ pub fn run() {
             commands::usage::set_platform_usage,
             commands::usage::delete_skill_from_agent,
             commands::usage::delete_platform_installations,
+            // Platform skill controls
+            commands::platform_skill_control::get_platform_skill_controls,
+            commands::platform_skill_control::set_platform_skill_control,
+            commands::platform_skill_control::delete_platform_skill_control,
+            commands::platform_skill_control::reapply_platform_skill_control,
             // Skills
             commands::skills::get_skills_by_agent,
             commands::skills::get_central_skills,

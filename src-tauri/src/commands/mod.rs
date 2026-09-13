@@ -6,6 +6,7 @@ pub mod github_import;
 pub mod linker;
 pub mod marketplace;
 pub mod on_device_translation;
+pub mod platform_skill_control;
 pub mod recovery;
 pub mod repository_descriptions;
 pub mod scanner;

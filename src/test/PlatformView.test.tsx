@@ -322,6 +322,10 @@ const mockSetSkillUsage = vi.fn();
 const mockSetPlatformUsage = vi.fn();
 const mockDeleteSkillFromAgent = vi.fn();
 const mockDeletePlatformInstallations = vi.fn();
+const mockLoadPlatformSkillControls = vi.fn();
+const mockSetPlatformSkillControl = vi.fn();
+const mockDeletePlatformSkillControl = vi.fn();
+const mockReapplyPlatformSkillControl = vi.fn();
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseSkillStore = vi.mocked(useSkillStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
@@ -421,6 +425,10 @@ describe("PlatformView", () => {
     mockSetPlatformUsage.mockReset().mockResolvedValue(undefined);
     mockDeleteSkillFromAgent.mockReset().mockResolvedValue(undefined);
     mockDeletePlatformInstallations.mockReset().mockResolvedValue({ deleted: [], failed: [] });
+    mockLoadPlatformSkillControls.mockReset().mockResolvedValue(undefined);
+    mockSetPlatformSkillControl.mockReset().mockResolvedValue(undefined);
+    mockDeletePlatformSkillControl.mockReset().mockResolvedValue(undefined);
+    mockReapplyPlatformSkillControl.mockReset().mockResolvedValue(undefined);
     useSkillUsageStore.setState({
       statuses: [
         {
@@ -443,6 +451,12 @@ describe("PlatformView", () => {
       setPlatformUsage: mockSetPlatformUsage,
       deleteSkillFromAgent: mockDeleteSkillFromAgent,
       deletePlatformInstallations: mockDeletePlatformInstallations,
+      platformControlsByAgent: {},
+      updatingPlatformControlKeys: {},
+      loadPlatformSkillControls: mockLoadPlatformSkillControls,
+      setPlatformSkillControl: mockSetPlatformSkillControl,
+      deletePlatformSkillControl: mockDeletePlatformSkillControl,
+      reapplyPlatformSkillControl: mockReapplyPlatformSkillControl,
     });
     installDefaultStoreMocks();
   });
@@ -824,6 +838,198 @@ describe("PlatformView", () => {
         name: /切换 shared-skill 的激活状态/i,
       })
     ).not.toBeInTheDocument();
+  });
+
+  it("shows the shared source toggle and sends a platform-scoped change", async () => {
+    const sharedSkill: ScannedSkill = {
+      id: "shared-public",
+      row_id: "claude-code::compatibility::shared-public",
+      name: "shared-public",
+      description: "Shared compatibility source",
+      file_path: "/Users/test/.agents/skills/shared-public/SKILL.md",
+      dir_path: "/Users/test/.agents/skills/shared-public",
+      link_type: "native",
+      is_central: false,
+      source_kind: "compatibility",
+      source_root: "/Users/test/.agents/skills",
+      is_read_only: true,
+    };
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({ skillsByAgent: { "claude-code": [sharedSkill] } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      platformControlsByAgent: {
+        "claude-code": [{
+          agent_id: "claude-code",
+          skill_id: sharedSkill.id,
+          row_id: sharedSkill.row_id!,
+          skill_name: sharedSkill.name,
+          source_path: sharedSkill.dir_path,
+          source_kind: "compatibility",
+          state: "active",
+          supported: true,
+          can_toggle: true,
+          can_delete: true,
+          can_reapply: false,
+          reason: null,
+          requires_reload: true,
+          scope: "name",
+          affected_source_count: 1,
+          adapter: "claude-skill-overrides",
+          config_path: "/Users/test/.claude/settings.json",
+        }],
+      },
+    });
+
+    renderPlatformView();
+
+    const toggle = screen.getByRole("switch", { name: /shared-public.*활성 상태|shared-public.*激活状态/i });
+    expect(toggle).toBeChecked();
+    expect(screen.getAllByText(/새 세션|新会话|reload/i).length).toBeGreaterThan(0);
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockSetPlatformSkillControl).toHaveBeenCalledWith(
+        "claude-code",
+        {
+          skillId: sharedSkill.id,
+          skillName: sharedSkill.name,
+          sourcePath: sharedSkill.dir_path,
+        },
+        false
+      );
+    });
+  });
+
+  it("shows unsupported controls as unavailable and keeps the switch disabled", () => {
+    const unsupportedSkill: ScannedSkill = {
+      id: "cursor-public",
+      name: "cursor-public",
+      description: "Cursor compatibility source",
+      file_path: "/Users/test/.agents/skills/cursor-public/SKILL.md",
+      dir_path: "/Users/test/.agents/skills/cursor-public",
+      link_type: "native",
+      is_central: false,
+      source_kind: "compatibility",
+      source_root: "/Users/test/.agents/skills",
+      is_read_only: true,
+    };
+    mockUsePlatformStore.mockImplementation((selector?: unknown) => {
+      const state = buildPlatformStoreState({ agents: [mockCursorAgent], skillsByAgent: { cursor: 1 } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({ skillsByAgent: { cursor: [unsupportedSkill] } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      platformControlsByAgent: {
+        cursor: [{
+          agent_id: "cursor",
+          skill_id: unsupportedSkill.id,
+          row_id: unsupportedSkill.row_id ?? "cursor-public",
+          skill_name: unsupportedSkill.name,
+          source_path: unsupportedSkill.dir_path,
+          source_kind: "compatibility",
+          state: "unsupported",
+          supported: false,
+          can_toggle: false,
+          can_delete: false,
+          can_reapply: false,
+          reason: "Cursor의 공용 출처 독립 제어를 확인하지 못했습니다.",
+          requires_reload: false,
+          scope: "path",
+          affected_source_count: 1,
+          adapter: "unsupported",
+          config_path: null,
+        }],
+      },
+    });
+
+    renderPlatformView("cursor");
+
+    expect(screen.getByText(/无法确认|Unavailable|확인 불가/)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /cursor-public/i })).toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("shows a deleted shared application as reapply instead of an active toggle", async () => {
+    const deletedSkill: ScannedSkill = {
+      id: "deleted-public",
+      row_id: "claude-code::compatibility::deleted-public",
+      name: "deleted-public",
+      description: "Deleted shared application",
+      file_path: "/Users/test/.agents/skills/deleted-public/SKILL.md",
+      dir_path: "/Users/test/.agents/skills/deleted-public",
+      link_type: "native",
+      is_central: false,
+      source_kind: "compatibility",
+      source_root: "/Users/test/.agents/skills",
+      is_read_only: true,
+    };
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({ skillsByAgent: { "claude-code": [deletedSkill] } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      platformControlsByAgent: {
+        "claude-code": [{
+          agent_id: "claude-code",
+          skill_id: deletedSkill.id,
+          row_id: deletedSkill.row_id!,
+          skill_name: deletedSkill.name,
+          source_path: deletedSkill.dir_path,
+          source_kind: "compatibility",
+          state: "deleted",
+          supported: true,
+          can_toggle: false,
+          can_delete: false,
+          can_reapply: true,
+          reason: null,
+          requires_reload: true,
+          scope: "name",
+          affected_source_count: 1,
+          adapter: "claude-skill-overrides",
+          config_path: "/Users/test/.claude/settings.json",
+        }],
+      },
+    });
+
+    renderPlatformView();
+
+    expect(screen.queryByRole("switch", { name: /deleted-public/i })).not.toBeInTheDocument();
+    const reapply = screen.getByRole("button", { name: /重新应用|Reapply|再次应用/i });
+    fireEvent.click(reapply);
+    await waitFor(() => {
+      expect(mockReapplyPlatformSkillControl).toHaveBeenCalledWith("claude-code", {
+        skillId: deletedSkill.id,
+        skillName: deletedSkill.name,
+        sourcePath: deletedSkill.dir_path,
+      });
+    });
+  });
+
+  it("shows nested folder matches as individual cards while searching", async () => {
+    window.localStorage.setItem("skills-manage.skillListViewMode.platform", "folders");
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({ skillsByAgent: { "claude-code": mockNestedPlatformSkills } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView();
+    fireEvent.change(screen.getByPlaceholderText(/검색 기술|搜索技能/), {
+      target: { value: "nested-helper" },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /nested-helper.*详情|nested-helper.*detail/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /打开目录 toolkit|Open folder toolkit/i })).not.toBeInTheDocument();
+    });
   });
 
   it("renders usage switches for managed platform skills", () => {
@@ -1508,6 +1714,10 @@ describe("PlatformView 공용 설치 판정", () => {
     mockSetPlatformUsage.mockReset().mockResolvedValue(undefined);
     mockDeleteSkillFromAgent.mockReset().mockResolvedValue(undefined);
     mockDeletePlatformInstallations.mockReset().mockResolvedValue({ deleted: [], failed: [] });
+    mockLoadPlatformSkillControls.mockReset().mockResolvedValue(undefined);
+    mockSetPlatformSkillControl.mockReset().mockResolvedValue(undefined);
+    mockDeletePlatformSkillControl.mockReset().mockResolvedValue(undefined);
+    mockReapplyPlatformSkillControl.mockReset().mockResolvedValue(undefined);
     useSkillUsageStore.setState({
       statuses: [],
       isLoading: false,
@@ -1519,6 +1729,12 @@ describe("PlatformView 공용 설치 판정", () => {
       setPlatformUsage: mockSetPlatformUsage,
       deleteSkillFromAgent: mockDeleteSkillFromAgent,
       deletePlatformInstallations: mockDeletePlatformInstallations,
+      platformControlsByAgent: {},
+      updatingPlatformControlKeys: {},
+      loadPlatformSkillControls: mockLoadPlatformSkillControls,
+      setPlatformSkillControl: mockSetPlatformSkillControl,
+      deletePlatformSkillControl: mockDeletePlatformSkillControl,
+      reapplyPlatformSkillControl: mockReapplyPlatformSkillControl,
     });
     installDefaultStoreMocks();
   });

@@ -37,7 +37,10 @@ import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { cn } from "@/lib/utils";
 import { isUniversalSource, UNIVERSAL_AGENT_ID } from "@/lib/agents";
-import { ScannedSkill, SkillWithLinks } from "@/types";
+import { ScannedSkill, SkillWithLinks, type PlatformSkillControlStatus } from "@/types";
+
+const EMPTY_PLATFORM_CONTROLS: PlatformSkillControlStatus[] = [];
+const EMPTY_PLATFORM_CONTROL_UPDATES: Record<string, boolean> = {};
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
 
@@ -95,6 +98,12 @@ export function PlatformView() {
     (state) => state.deletePlatformInstallations
   );
   const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
+  const platformControls = useSkillUsageStore(
+    (state) => state.platformControlsByAgent?.[agentId ?? ""] ?? EMPTY_PLATFORM_CONTROLS
+  );
+  const updatingPlatformControlKeys = useSkillUsageStore(
+    (state) => state.updatingPlatformControlKeys ?? EMPTY_PLATFORM_CONTROL_UPDATES
+  );
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
@@ -129,6 +138,10 @@ export function PlatformView() {
     if (agentId) {
       getSkillsByAgent(agentId);
       void loadUsageStatus().catch(() => undefined);
+      const loadPlatformSkillControls = useSkillUsageStore.getState().loadPlatformSkillControls;
+      if (typeof loadPlatformSkillControls === "function") {
+        void loadPlatformSkillControls(agentId).catch(() => undefined);
+      }
     }
   }, [agentId, getSkillsByAgent, loadUsageStatus, scanGeneration]);
 
@@ -184,6 +197,68 @@ export function PlatformView() {
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
     } catch (err) {
       toast.error(t("skillUsage.updateError", { error: String(err) }));
+    }
+  }
+
+  async function handlePlatformControlChange(skill: ScannedSkill, enabled: boolean) {
+    if (!agentId) return;
+    const setPlatformSkillControl = useSkillUsageStore.getState().setPlatformSkillControl;
+    if (typeof setPlatformSkillControl !== "function") {
+      toast.error(t("skillUsage.platformControlUnavailable"));
+      return;
+    }
+    try {
+      await setPlatformSkillControl(
+        agentId,
+        { skillId: skill.id, skillName: skill.name, sourcePath: skill.dir_path },
+        enabled
+      );
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  async function handleDeletePlatformControl(skill: ScannedSkill) {
+    if (!agentId) return;
+    const deletePlatformSkillControl = useSkillUsageStore.getState().deletePlatformSkillControl;
+    if (typeof deletePlatformSkillControl !== "function") {
+      toast.error(t("skillUsage.platformControlUnavailable"));
+      return;
+    }
+    try {
+      await deletePlatformSkillControl(agentId, {
+        skillId: skill.id,
+        skillName: skill.name,
+        sourcePath: skill.dir_path,
+      });
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      toast.success(t("skillUsage.platformControlDeleteSuccess", { name: skill.name }));
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.deleteError", { error: String(error) }));
+    }
+  }
+
+  async function handleReapplyPlatformControl(skill: ScannedSkill) {
+    if (!agentId) return;
+    const reapplyPlatformSkillControl = useSkillUsageStore.getState().reapplyPlatformSkillControl;
+    if (typeof reapplyPlatformSkillControl !== "function") {
+      toast.error(t("skillUsage.platformControlUnavailable"));
+      return;
+    }
+    try {
+      await reapplyPlatformSkillControl(agentId, {
+        skillId: skill.id,
+        skillName: skill.name,
+        sourcePath: skill.dir_path,
+      });
+      await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      toast.success(t("skillUsage.platformControlReapplySuccess", { name: skill.name }));
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
     }
   }
 
@@ -337,7 +412,9 @@ export function PlatformView() {
     [platformFolderSplit.groups]
   );
   const visibleSkills =
-    viewMode === "folders" ? platformFolderSplit.rootSkills : sourceFilteredSkills;
+    viewMode === "folders" && !searchQuery.trim()
+      ? platformFolderSplit.rootSkills
+      : sourceFilteredSkills;
 
   const sourceCounts = useMemo(() => {
     const counts: Record<ClaudeSourceFilter, number> = {
@@ -373,19 +450,7 @@ export function PlatformView() {
 
   const filteredFolderGroups = useMemo(() => {
     if (viewMode !== "folders") return [];
-    if (!searchQuery.trim()) return platformFolderSplit.groups;
-    const q = searchQuery.toLowerCase();
-    return platformFolderSplit.groups.filter(
-      (group) =>
-        group.name.toLowerCase().includes(q) ||
-        group.path.toLowerCase().includes(q) ||
-        group.skills.some(
-          (skill) =>
-            skill.id.toLowerCase().includes(q) ||
-            skill.name.toLowerCase().includes(q) ||
-            skill.description?.toLowerCase().includes(q)
-        )
-    );
+    return searchQuery.trim() ? [] : platformFolderSplit.groups;
   }, [platformFolderSplit.groups, searchQuery, viewMode]);
 
   useEffect(() => {
@@ -739,6 +804,20 @@ export function PlatformView() {
                   {filteredSkills.map((skill) => (
                     (() => {
                       const usage = usageBySkillId.get(skill.id);
+                      const platformControl = platformControls.find(
+                        (control) =>
+                          control.source_path === skill.dir_path ||
+                          // Codex Adapter는 공식 설정의 path 키를 보존하기 위해
+                          // SKILL.md 파일 경로를 DB에 저장한다. 카드의 출처 키는
+                          // 폴더 경로이므로 파일 별칭도 함께 비교한다.
+                          (agent.id === "codex" && control.source_path === skill.file_path) ||
+                          control.row_id === getSkillRowKey(skill)
+                      );
+                      const isManagedInstallation =
+                        platformControl?.adapter === "managed-installation" ||
+                        Boolean(usage && !skill.is_read_only);
+                      const isDeletedPlatformControl =
+                        !isManagedInstallation && platformControl?.state === "deleted";
                       const hasExternalCounterpart = skills.some(
                         (candidate) =>
                           candidate.id === skill.id &&
@@ -763,7 +842,7 @@ export function PlatformView() {
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
                           isUniversalSource={isUniversalSource(skill, universalRoot)}
-                          usageControl={usage && !skill.is_read_only
+                          usageControl={isManagedInstallation && usage
                             ? {
                                 enabled: usage.enabled,
                                 pausedByBulk: usage.paused_by_bulk,
@@ -773,13 +852,41 @@ export function PlatformView() {
                                     (usageUpdatingAgentIds[agentId] ?? false)
                                   : false,
                               }
-                            : undefined}
+                            : platformControl && !isDeletedPlatformControl
+                              ? {
+                                  // 지원 여부와 확인된 active 상태가 모두 있어야만 켠 것으로
+                                  // 표시한다. unsupported/unknown은 성공한 활성 상태가 아니다.
+                                  enabled:
+                                    platformControl.supported && platformControl.state === "active",
+                                  onCheckedChange: (enabled) =>
+                                    void handlePlatformControlChange(skill, enabled),
+                                  isLoading:
+                                    updatingPlatformControlKeys[
+                                      `${agentId}::${skill.dir_path}`
+                                    ] ?? false,
+                                  disabledReason: platformControl.supported
+                                    ? undefined
+                                    : platformControl.reason ?? t("skillUsage.platformControlUnavailable"),
+                                  state: platformControl.state,
+                                }
+                              : undefined}
+                          platformControlNotice={
+                            platformControl?.supported
+                              ? [
+                                  platformControl.reason,
+                                  platformControl.requires_reload ? t("skillUsage.reloadHint") : undefined,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ") || undefined
+                              : undefined
+                          }
                           externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
                           isLoading={
                             agentId
                               ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false) ||
                                 (usageUpdatingSkillKeys[`${agentId}::${skill.id}`] ?? false) ||
-                                (usageUpdatingAgentIds[agentId] ?? false)
+                                (usageUpdatingAgentIds[agentId] ?? false) ||
+                                (updatingPlatformControlKeys[`${agentId}::${skill.dir_path}`] ?? false)
                               : false
                           }
                           onDetail={() => handleOpenDrawer(skill)}
@@ -794,11 +901,37 @@ export function PlatformView() {
                               : undefined
                           }
                           onUninstallFromPlatform={
-                            usage && !skill.is_read_only
+                            isManagedInstallation && usage
                               ? () => void handleDeleteSkill(skill.id)
+                              : platformControl?.can_delete
+                                ? () => void handleDeletePlatformControl(skill)
+                                : undefined
+                          }
+                          uninstallFromLabel={
+                            platformControl?.can_delete
+                              ? t("skillUsage.platformControlDelete", {
+                                  name: skill.name,
+                                  platform: agent.display_name,
+                                })
+                              : t("skillUsage.deleteSkill", {
+                                  name: skill.name,
+                                  platform: agent.display_name,
+                                })
+                          }
+                          uninstallConfirmLabel={
+                            platformControl?.can_delete
+                              ? t("skillUsage.platformControlDeleteConfirm", {
+                                  name: skill.name,
+                                  platform: agent.display_name,
+                                })
                               : undefined
                           }
-                          uninstallFromLabel={t("skillUsage.deleteSkill", {
+                          onReapplyPlatform={
+                            isDeletedPlatformControl && platformControl?.can_reapply
+                              ? () => void handleReapplyPlatformControl(skill)
+                              : undefined
+                          }
+                          reapplyPlatformLabel={t("skillUsage.platformControlReapply", {
                             name: skill.name,
                             platform: agent.display_name,
                           })}

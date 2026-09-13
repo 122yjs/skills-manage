@@ -3188,7 +3188,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(detail.file_path, cursor_dir.join("SKILL.md").to_string_lossy());
+        assert_eq!(
+            detail.file_path,
+            cursor_dir.join("SKILL.md").to_string_lossy()
+        );
         assert_eq!(detail.dir_path, cursor_dir.to_string_lossy());
         assert_eq!(detail.name, "Cursor Demo");
         assert_eq!(detail.description.as_deref(), Some("locally edited copy"));

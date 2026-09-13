@@ -217,6 +217,27 @@ export interface UsageStatus {
   skills: UsageSkillStatus[];
 }
 
+/** 플랫폼 설정 Adapter가 확인한 한 출처의 실제 제어 상태다. */
+export interface PlatformSkillControlStatus {
+  agent_id: string;
+  skill_id: string;
+  row_id: string;
+  skill_name: string;
+  source_path: string;
+  source_kind?: ClaudeSourceKind | null;
+  state: "active" | "inactive" | "deleted" | "unsupported" | string;
+  supported: boolean;
+  can_toggle: boolean;
+  can_delete: boolean;
+  can_reapply: boolean;
+  reason?: string | null;
+  requires_reload: boolean;
+  scope: "path" | "name" | string;
+  affected_source_count: number;
+  adapter: string;
+  config_path?: string | null;
+}
+
 // ─── Skill Description Translation Types ────────────────────────────────────
 
 /** 저장소의 SKILL.md 또는 README가 직접 제공한 언어별 설명. */

@@ -12,6 +12,7 @@ import {
   Loader2,
   Lock,
   Trash2,
+  RotateCcw,
 } from "lucide-react";
 import type { MouseEventHandler, Ref } from "react";
 import { useTranslation } from "react-i18next";
@@ -127,7 +128,14 @@ export interface UnifiedSkillCardProps {
     pausedByBulk?: boolean;
     onCheckedChange: (enabled: boolean) => void;
     isLoading?: boolean;
+    disabledReason?: string;
+    state?: "active" | "inactive" | "deleted" | "unsupported" | string;
   };
+  /** 적용 삭제 상태에서만 표시하는 명시적 재적용 동작. */
+  onReapplyPlatform?: () => void;
+  reapplyPlatformLabel?: string;
+  /** 지원 범위가 이름 단위처럼 넓어질 때 보여 주는 안내. */
+  platformControlNotice?: string;
   /** 비활성으로 바꿔도 남아 있는 공용/플러그인 제공 항목 수다. */
   externalUsageCount?: number;
 
@@ -144,6 +152,7 @@ export interface UnifiedSkillCardProps {
   onUninstallFromPlatform?: () => void;
   onManageUniversal?: () => void;
   uninstallFromLabel?: string;
+  uninstallConfirmLabel?: string;
   onDeleteFromCentral?: () => void;
   deleteFromCentralLabel?: string;
   deleteFromCentralRequiresDialog?: boolean;
@@ -175,6 +184,9 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     isUniversalSource,
     isExternallyManaged,
     usageControl,
+    onReapplyPlatform,
+    reapplyPlatformLabel,
+    platformControlNotice,
     externalUsageCount = 0,
     isInstalled,
     tags,
@@ -186,6 +198,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onUninstallFromPlatform,
     onManageUniversal,
     uninstallFromLabel,
+    uninstallConfirmLabel,
     onDeleteFromCentral,
     deleteFromCentralLabel,
     deleteFromCentralRequiresDialog,
@@ -204,6 +217,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallToCentral ||
     onInstallToPlatform ||
     onUninstallFromPlatform ||
+    onReapplyPlatform ||
     onManageUniversal ||
     onDeleteFromCentral ||
     onInstall ||
@@ -368,9 +382,22 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     isLoading={isLoading}
                     idleTitle={uninstallFromLabel ?? t("common.uninstall")}
                     idleAriaLabel={uninstallFromLabel ?? t("common.uninstall")}
-                    confirmLabel={t("common.confirmDelete")}
+                    confirmLabel={uninstallConfirmLabel ?? t("common.confirmDelete")}
                     icon={<X className="size-4" />}
                   />
+                )}
+
+                {onReapplyPlatform && (
+                  <button
+                    type="button"
+                    onClick={onReapplyPlatform}
+                    disabled={isLoading}
+                    title={reapplyPlatformLabel ?? t("common.reapply")}
+                    aria-label={reapplyPlatformLabel ?? t("common.reapply")}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:cursor-default disabled:opacity-50"
+                  >
+                    {isLoading ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+                  </button>
                 )}
 
                 {onManageUniversal && (
@@ -454,17 +481,33 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             {usageControl && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70">
                 <span>
-                  {usageControl.enabled
+                  {usageControl.state === "unsupported" ||
+                  (usageControl.state &&
+                    !["active", "inactive", "deleted"].includes(usageControl.state))
+                    ? t("skillUsage.unavailable")
+                    : usageControl.enabled
                     ? t("skillUsage.active")
                     : t("skillUsage.paused")}
                 </span>
                 <Switch
                   checked={usageControl.enabled}
-                  disabled={usageControl.isLoading}
+                  disabled={usageControl.isLoading || Boolean(usageControl.disabledReason) || usageControl.state === "deleted"}
                   onCheckedChange={usageControl.onCheckedChange}
                   aria-label={t("skillUsage.toggleSkill", { name })}
                   className="h-4 w-7 [&_[data-slot=switch-thumb]]:size-3 [&_[data-slot=switch-thumb]]:group-data-[checked]/switch:translate-x-3"
                 />
+              </span>
+            )}
+
+            {usageControl?.disabledReason && (
+              <span className="text-[10px] text-amber-700 dark:text-amber-300" title={usageControl.disabledReason}>
+                {usageControl.disabledReason}
+              </span>
+            )}
+
+            {platformControlNotice && !usageControl?.disabledReason && (
+              <span className="text-[10px] text-muted-foreground" title={platformControlNotice}>
+                {platformControlNotice}
               </span>
             )}
 

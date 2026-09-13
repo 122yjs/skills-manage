@@ -135,6 +135,7 @@
     "add": "Add",
     "create": "Create",
     "close": "Close",
+    "reapply": "Reapply",
     "retry": "Retry",
     "loading": "Loading...",
     "search": "Search",
@@ -219,6 +220,7 @@
   "skillUsage": {
     "active": "Active",
     "paused": "Inactive",
+    "unavailable": "Unavailable",
     "toggleSkill": "Toggle active status of {{name}}",
     "togglePlatform": "Toggle active status of all managed skills on {{name}}",
     "platformSwitchLabel": "Managed skills",
@@ -250,7 +252,13 @@
     "deletePlatformSuccessExternal": "Deleted {{count}} managed install(s) from {{name}}. {{external}} skills from other sources were excluded.",
     "deletePlatformPartial": "Deleted {{deleted}} managed install(s) from {{name}}; {{failed}} could not be deleted.",
     "deletePlatformPartialExternal": "Deleted {{deleted}} managed install(s) from {{name}}; {{failed}} could not be deleted. {{external}} skills from other sources were excluded.",
-    "deleteError": "Could not delete managed installs: {{error}}"
+    "deleteError": "Could not delete managed installs: {{error}}",
+    "platformControlUnavailable": "Independent control is not verified for this platform.",
+    "platformControlDelete": "Delete {{name}} from {{platform}}",
+    "platformControlDeleteConfirm": "Delete only {{name}} from {{platform}}",
+    "platformControlDeleteSuccess": "Deleted {{name}} from {{platform}}.",
+    "platformControlReapply": "Reapply {{name}} to {{platform}}",
+    "platformControlReapplySuccess": "Reapplied {{name}} to {{platform}}."
   },
   "storage": {
     "title": "Skill Library location",

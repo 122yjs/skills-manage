@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
-use tauri::{State};
+use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
@@ -35,7 +35,10 @@ struct ResolvedSkillTarget {
 static SKILL_MUTATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub(crate) async fn mutation_lock() -> MutexGuard<'static, ()> {
-    SKILL_MUTATION_LOCK.get_or_init(|| Mutex::new(())).lock().await
+    SKILL_MUTATION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .await
 }
 
 const MAX_SKILL_FILES: usize = 5_000;
@@ -215,7 +218,9 @@ fn remote_files(
             return Err(format!("Unsupported repository path: {relative}"));
         }
         if bytes.len() > MAX_SKILL_FILE_BYTES {
-            return Err(format!("Repository file is too large to update safely: {relative}"));
+            return Err(format!(
+                "Repository file is too large to update safely: {relative}"
+            ));
         }
         total_bytes = total_bytes.saturating_add(bytes.len());
         if files.len() >= MAX_SKILL_FILES || total_bytes > MAX_SKILL_BYTES {
@@ -226,7 +231,11 @@ fn remote_files(
     if files.is_empty() || !files.contains_key("SKILL.md") {
         return Err(format!(
             "GitHub source path '{}' does not contain SKILL.md",
-            if source_path.is_empty() { "." } else { source_path }
+            if source_path.is_empty() {
+                "."
+            } else {
+                source_path
+            }
         ));
     }
     Ok(files)
@@ -245,7 +254,11 @@ fn manifest_from_remote_files(files: &BTreeMap<String, Vec<u8>>) -> SkillManifes
     }
 }
 
-fn collect_local_files(root: &Path, current: &Path, out: &mut BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+fn collect_local_files(
+    root: &Path,
+    current: &Path,
+    out: &mut BTreeMap<String, Vec<u8>>,
+) -> Result<(), String> {
     let mut entries = fs::read_dir(current)
         .map_err(|error| format!("Failed to read '{}': {error}", current.display()))?
         .collect::<Result<Vec<_>, _>>()
@@ -265,7 +278,10 @@ fn collect_local_files(root: &Path, current: &Path, out: &mut BTreeMap<String, V
             collect_local_files(root, &path, out)?;
         } else if metadata.is_file() {
             if metadata.len() as usize > MAX_SKILL_FILE_BYTES {
-                return Err(format!("Skill file is too large to update safely: {}", path.display()));
+                return Err(format!(
+                    "Skill file is too large to update safely: {}",
+                    path.display()
+                ));
             }
             let relative = path
                 .strip_prefix(root)
@@ -275,7 +291,9 @@ fn collect_local_files(root: &Path, current: &Path, out: &mut BTreeMap<String, V
             let bytes = fs::read(&path)
                 .map_err(|error| format!("Failed to read '{}': {error}", path.display()))?;
             let current_size = out.values().map(Vec::len).sum::<usize>();
-            if out.len() >= MAX_SKILL_FILES || current_size.saturating_add(bytes.len()) > MAX_SKILL_BYTES {
+            if out.len() >= MAX_SKILL_FILES
+                || current_size.saturating_add(bytes.len()) > MAX_SKILL_BYTES
+            {
                 return Err("Local skill payload exceeds the safe update limit".to_string());
             }
             out.insert(relative, bytes);
@@ -290,12 +308,18 @@ fn manifest_from_local_directory(root: &Path) -> Result<SkillManifest, String> {
     let metadata = fs::symlink_metadata(root)
         .map_err(|error| format!("Skill target is unavailable '{}': {error}", root.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(format!("Skill target is not a managed directory: {}", root.display()));
+        return Err(format!(
+            "Skill target is not a managed directory: {}",
+            root.display()
+        ));
     }
     let mut files = BTreeMap::new();
     collect_local_files(root, root, &mut files)?;
     if !files.contains_key("SKILL.md") {
-        return Err(format!("Skill target does not contain SKILL.md: {}", root.display()));
+        return Err(format!(
+            "Skill target does not contain SKILL.md: {}",
+            root.display()
+        ));
     }
     Ok(manifest_from_remote_files(&files))
 }
@@ -336,7 +360,10 @@ fn parse_manifest(value: Option<&str>) -> Option<SkillManifest> {
     value.and_then(|value| serde_json::from_str(value).ok())
 }
 
-async fn resolve_target(pool: &DbPool, request: &SkillTargetRequest) -> Result<ResolvedSkillTarget, String> {
+async fn resolve_target(
+    pool: &DbPool,
+    request: &SkillTargetRequest,
+) -> Result<ResolvedSkillTarget, String> {
     let detail = skills::get_skill_detail_with_row_impl(
         pool,
         &request.skill_id,
@@ -434,22 +461,38 @@ async fn fetch_remote_snapshot(
         .await
         .map_err(|error| error.to_string())?;
     if !repo_response.status().is_success() {
-        return Err(format!("GitHub repository lookup returned {}", repo_response.status()));
+        return Err(format!(
+            "GitHub repository lookup returned {}",
+            repo_response.status()
+        ));
     }
-    let repo_value: serde_json::Value = repo_response.json().await.map_err(|error| error.to_string())?;
-    let repository_id = repo_value.get("id").and_then(|value| value.as_u64()).map(|id| id.to_string());
+    let repo_value: serde_json::Value = repo_response
+        .json()
+        .await
+        .map_err(|error| error.to_string())?;
+    let repository_id = repo_value
+        .get("id")
+        .and_then(|value| value.as_u64())
+        .map(|id| id.to_string());
 
     let commit_api = format!(
         "https://api.github.com/repos/{}/{}/commits/{}",
         repo.owner, repo.repo, ref_name
     );
-    let commit_response = github_import::send_with_auth_fallback(&client, &commit_api, auth.as_deref())
+    let commit_response =
+        github_import::send_with_auth_fallback(&client, &commit_api, auth.as_deref())
+            .await
+            .map_err(|error| error.to_string())?;
+    if !commit_response.status().is_success() {
+        return Err(format!(
+            "GitHub ref lookup returned {}",
+            commit_response.status()
+        ));
+    }
+    let commit_value: serde_json::Value = commit_response
+        .json()
         .await
         .map_err(|error| error.to_string())?;
-    if !commit_response.status().is_success() {
-        return Err(format!("GitHub ref lookup returned {}", commit_response.status()));
-    }
-    let commit_value: serde_json::Value = commit_response.json().await.map_err(|error| error.to_string())?;
     let commit_oid = commit_value
         .get("sha")
         .and_then(|value| value.as_str())
@@ -468,16 +511,28 @@ async fn fetch_remote_snapshot(
         repo: repo.repo,
         ref_name,
         commit_oid,
-        source_path: if source_path.trim().is_empty() { ".".into() } else { source_path.trim_matches('/').into() },
+        source_path: if source_path.trim().is_empty() {
+            ".".into()
+        } else {
+            source_path.trim_matches('/').into()
+        },
         snapshot,
         manifest,
     })
 }
 
-fn classify_state(base: Option<&SkillManifest>, local: &SkillManifest, remote: &SkillManifest) -> OriginSyncState {
+fn classify_state(
+    base: Option<&SkillManifest>,
+    local: &SkillManifest,
+    remote: &SkillManifest,
+) -> OriginSyncState {
     match base {
         None => {
-            if local == remote { OriginSyncState::LocalMatchesRemote } else { OriginSyncState::UnknownBaseline }
+            if local == remote {
+                OriginSyncState::LocalMatchesRemote
+            } else {
+                OriginSyncState::UnknownBaseline
+            }
         }
         Some(base) if local == base && remote == base => OriginSyncState::UpToDate,
         Some(base) if local == base && remote != base => OriginSyncState::RemoteUpdate,
@@ -487,29 +542,43 @@ fn classify_state(base: Option<&SkillManifest>, local: &SkillManifest, remote: &
     }
 }
 
-async fn check_origin_impl(pool: &DbPool, target: &ResolvedSkillTarget) -> Result<SkillOriginStatus, String> {
+async fn check_origin_impl(
+    pool: &DbPool,
+    target: &ResolvedSkillTarget,
+) -> Result<SkillOriginStatus, String> {
     let origin = load_origin(pool, &target.target_key)
         .await?
         .ok_or_else(|| "This skill is not linked to a GitHub origin".to_string())?;
     let local = manifest_from_local_directory(&target.target_path)?;
     let repo_url = format!("https://github.com/{}/{}", origin.owner, origin.repo);
-    let remote = match fetch_remote_snapshot(pool, &repo_url, &origin.source_path, Some(&origin.ref_name)).await {
-        Ok(remote) => remote,
-        Err(error) => {
-            let now = Utc::now().to_rfc3339();
-            sqlx::query("UPDATE skill_origins SET last_error = ?, updated_at = ? WHERE binding_id = ?")
+    let remote =
+        match fetch_remote_snapshot(pool, &repo_url, &origin.source_path, Some(&origin.ref_name))
+            .await
+        {
+            Ok(remote) => remote,
+            Err(error) => {
+                let now = Utc::now().to_rfc3339();
+                sqlx::query(
+                    "UPDATE skill_origins SET last_error = ?, updated_at = ? WHERE binding_id = ?",
+                )
                 .bind(&error)
                 .bind(&now)
                 .bind(&origin.binding_id)
                 .execute(pool)
                 .await
                 .map_err(|db_error| db_error.to_string())?;
-            return Err(error);
-        }
-    };
-    if let (Some(expected), Some(actual)) = (origin.repository_id.as_deref(), remote.repository_id.as_deref()) {
+                return Err(error);
+            }
+        };
+    if let (Some(expected), Some(actual)) = (
+        origin.repository_id.as_deref(),
+        remote.repository_id.as_deref(),
+    ) {
         if expected != actual {
-            return Err("The GitHub repository identity changed; relink the origin before updating".to_string());
+            return Err(
+                "The GitHub repository identity changed; relink the origin before updating"
+                    .to_string(),
+            );
         }
     }
     let base = parse_manifest(origin.base_manifest_json.as_deref());
@@ -529,7 +598,9 @@ async fn check_origin_impl(pool: &DbPool, target: &ResolvedSkillTarget) -> Resul
     .execute(pool)
     .await
     .map_err(|error| error.to_string())?;
-    let refreshed = load_origin(pool, &target.target_key).await?.expect("origin exists");
+    let refreshed = load_origin(pool, &target.target_key)
+        .await?
+        .expect("origin exists");
     let empty = SkillManifest::default();
     Ok(SkillOriginStatus {
         origin: origin_info(&refreshed, !target.is_read_only),
@@ -661,12 +732,17 @@ pub async fn prepare_skill_update(
     let status = check_origin_impl(&state.db, &target).await?;
     let requires_local_change_confirmation = matches!(
         status.state,
-        OriginSyncState::LocalChanges | OriginSyncState::Diverged | OriginSyncState::UnknownBaseline
+        OriginSyncState::LocalChanges
+            | OriginSyncState::Diverged
+            | OriginSyncState::UnknownBaseline
     );
     if requires_local_change_confirmation && !request.allow_local_changes {
         return Err("LOCAL_CHANGES_REQUIRE_CONFIRMATION".to_string());
     }
-    if matches!(status.state, OriginSyncState::UpToDate | OriginSyncState::LocalMatchesRemote) {
+    if matches!(
+        status.state,
+        OriginSyncState::UpToDate | OriginSyncState::LocalMatchesRemote
+    ) {
         return Err("Skill already matches the selected GitHub origin".to_string());
     }
     let local = manifest_from_local_directory(&target.target_path)?;
@@ -713,8 +789,12 @@ fn write_stage(files: &BTreeMap<String, Vec<u8>>, stage: &Path) -> Result<(), St
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Failed to create staged directory: {error}"))?;
         }
-        fs::write(&destination, bytes)
-            .map_err(|error| format!("Failed to write staged file '{}': {error}", destination.display()))?;
+        fs::write(&destination, bytes).map_err(|error| {
+            format!(
+                "Failed to write staged file '{}': {error}",
+                destination.display()
+            )
+        })?;
     }
     scanner::parse_skill_md(&stage.join("SKILL.md"))
         .ok_or_else(|| "Updated SKILL.md has invalid frontmatter".to_string())?;
@@ -753,27 +833,34 @@ pub async fn apply_skill_update(
         return Err(format!("Update operation is not applicable: {state_value}"));
     }
     let binding_id: String = row.get("binding_id");
-    let origin = sqlx::query_as::<_, SkillOriginRow>("SELECT * FROM skill_origins WHERE binding_id = ?")
-        .bind(&binding_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "GitHub origin binding no longer exists".to_string())?;
+    let origin =
+        sqlx::query_as::<_, SkillOriginRow>("SELECT * FROM skill_origins WHERE binding_id = ?")
+            .bind(&binding_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "GitHub origin binding no longer exists".to_string())?;
     let target = PathBuf::from(&origin.target_path);
     let target_key: String = row.get("expected_target_key");
-    let current_key = target.canonicalize().unwrap_or_else(|_| target.clone()).to_string_lossy().into_owned();
+    let current_key = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.clone())
+        .to_string_lossy()
+        .into_owned();
     if current_key != target_key {
         return Err("PLAN_STALE: skill target changed".to_string());
     }
     let current_manifest = manifest_from_local_directory(&target)?;
-    let expected_manifest: SkillManifest = serde_json::from_str(&row.get::<String, _>("expected_local_manifest_json"))
-        .map_err(|error| error.to_string())?;
+    let expected_manifest: SkillManifest =
+        serde_json::from_str(&row.get::<String, _>("expected_local_manifest_json"))
+            .map_err(|error| error.to_string())?;
     if current_manifest != expected_manifest {
         return Err("PLAN_STALE: local skill changed after preview".to_string());
     }
     let remote_commit_oid: String = row.get("remote_commit_oid");
-    let expected_remote_manifest: SkillManifest = serde_json::from_str(&row.get::<String, _>("remote_manifest_json"))
-        .map_err(|error| error.to_string())?;
+    let expected_remote_manifest: SkillManifest =
+        serde_json::from_str(&row.get::<String, _>("remote_manifest_json"))
+            .map_err(|error| error.to_string())?;
     let repo_url = format!("https://github.com/{}/{}", origin.owner, origin.repo);
     let remote = fetch_remote_snapshot(
         &state.db,
@@ -792,8 +879,13 @@ pub async fn apply_skill_update(
     if current_manifest != expected_manifest {
         return Err("PLAN_STALE: local skill changed while fetching the update".to_string());
     }
-    let parent = target.parent().ok_or_else(|| "Skill target has no parent directory".to_string())?;
-    let name = target.file_name().and_then(|value| value.to_str()).unwrap_or("skill");
+    let parent = target
+        .parent()
+        .ok_or_else(|| "Skill target has no parent directory".to_string())?;
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("skill");
     let stage = parent.join(format!(".{name}.skillsmanage-stage-{}", Uuid::new_v4()));
     let quarantine = parent.join(format!(".{name}.skillsmanage-old-{}", Uuid::new_v4()));
     if let Err(error) = write_stage(&files, &stage) {
@@ -822,7 +914,10 @@ pub async fn apply_skill_update(
         recovery::backup_copy_installation(&state.db, &installation).await
     } else {
         remove_tree(&stage);
-        return Err("This target is outside the managed vault and has no managed installation backup path".to_string());
+        return Err(
+            "This target is outside the managed vault and has no managed installation backup path"
+                .to_string(),
+        );
     };
     let recovery_entry = match recovery_result {
         Ok(entry) => entry,
@@ -923,10 +1018,15 @@ pub async fn reconcile_incomplete_updates(pool: &DbPool) -> Result<(), String> {
         let binding_id: String = row.get("binding_id");
         let target = PathBuf::from(row.get::<String, _>("expected_target_key"));
         let remote_commit_oid: String = row.get("remote_commit_oid");
-        let remote_manifest: SkillManifest = serde_json::from_str(&row.get::<String, _>("remote_manifest_json"))
-            .map_err(|error| error.to_string())?;
-        let stage_path = row.get::<Option<String>, _>("stage_path").map(PathBuf::from);
-        let quarantine_path = row.get::<Option<String>, _>("quarantine_path").map(PathBuf::from);
+        let remote_manifest: SkillManifest =
+            serde_json::from_str(&row.get::<String, _>("remote_manifest_json"))
+                .map_err(|error| error.to_string())?;
+        let stage_path = row
+            .get::<Option<String>, _>("stage_path")
+            .map(PathBuf::from);
+        let quarantine_path = row
+            .get::<Option<String>, _>("quarantine_path")
+            .map(PathBuf::from);
 
         let target_is_remote = target.exists()
             && manifest_from_local_directory(&target)
@@ -958,7 +1058,10 @@ pub async fn reconcile_incomplete_updates(pool: &DbPool) -> Result<(), String> {
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| error.to_string())?;
-            transaction.commit().await.map_err(|error| error.to_string())?;
+            transaction
+                .commit()
+                .await
+                .map_err(|error| error.to_string())?;
             if let Some(path) = quarantine_path.as_deref() {
                 remove_tree(path);
             }
@@ -971,7 +1074,10 @@ pub async fn reconcile_incomplete_updates(pool: &DbPool) -> Result<(), String> {
         if !target.exists() {
             if let Some(quarantine) = quarantine_path.as_deref().filter(|path| path.exists()) {
                 fs::rename(quarantine, &target).map_err(|error| {
-                    format!("Failed to restore interrupted GitHub update '{}': {error}", target.display())
+                    format!(
+                        "Failed to restore interrupted GitHub update '{}': {error}",
+                        target.display()
+                    )
                 })?;
                 if let Some(path) = stage_path.as_deref() {
                     remove_tree(path);
@@ -1024,12 +1130,42 @@ mod tests {
 
     #[test]
     fn three_way_state_distinguishes_remote_local_and_diverged() {
-        let base = SkillManifest { entries: vec![ManifestEntry { path: "SKILL.md".into(), size: 1, sha256: "a".into() }] };
-        let local = SkillManifest { entries: vec![ManifestEntry { path: "SKILL.md".into(), size: 1, sha256: "b".into() }] };
-        let remote = SkillManifest { entries: vec![ManifestEntry { path: "SKILL.md".into(), size: 1, sha256: "c".into() }] };
-        assert_eq!(classify_state(Some(&base), &base, &remote), OriginSyncState::RemoteUpdate);
-        assert_eq!(classify_state(Some(&base), &local, &base), OriginSyncState::LocalChanges);
-        assert_eq!(classify_state(Some(&base), &local, &remote), OriginSyncState::Diverged);
-        assert_eq!(classify_state(None, &remote, &remote), OriginSyncState::LocalMatchesRemote);
+        let base = SkillManifest {
+            entries: vec![ManifestEntry {
+                path: "SKILL.md".into(),
+                size: 1,
+                sha256: "a".into(),
+            }],
+        };
+        let local = SkillManifest {
+            entries: vec![ManifestEntry {
+                path: "SKILL.md".into(),
+                size: 1,
+                sha256: "b".into(),
+            }],
+        };
+        let remote = SkillManifest {
+            entries: vec![ManifestEntry {
+                path: "SKILL.md".into(),
+                size: 1,
+                sha256: "c".into(),
+            }],
+        };
+        assert_eq!(
+            classify_state(Some(&base), &base, &remote),
+            OriginSyncState::RemoteUpdate
+        );
+        assert_eq!(
+            classify_state(Some(&base), &local, &base),
+            OriginSyncState::LocalChanges
+        );
+        assert_eq!(
+            classify_state(Some(&base), &local, &remote),
+            OriginSyncState::Diverged
+        );
+        assert_eq!(
+            classify_state(None, &remote, &remote),
+            OriginSyncState::LocalMatchesRemote
+        );
     }
 }

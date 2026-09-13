@@ -135,6 +135,7 @@
     "add": "添加",
     "create": "创建",
     "close": "关闭",
+    "reapply": "重新应用",
     "retry": "重试",
     "loading": "加载中...",
     "search": "搜索",
@@ -219,6 +220,7 @@
   "skillUsage": {
     "active": "已激活",
     "paused": "未激活",
+    "unavailable": "无法确认",
     "toggleSkill": "切换 {{name}} 的激活状态",
     "togglePlatform": "切换 {{name}} 中全部受管理技能的激活状态",
     "platformSwitchLabel": "受管理技能",
@@ -250,7 +252,13 @@
     "deletePlatformSuccessExternal": "已从 {{name}} 删除 {{count}} 项受管理安装。其他来源的 {{external}} 个技能不在删除范围内。",
     "deletePlatformPartial": "已从 {{name}} 删除 {{deleted}} 项受管理安装；{{failed}} 项未能删除。",
     "deletePlatformPartialExternal": "已从 {{name}} 删除 {{deleted}} 项受管理安装；{{failed}} 项未能删除。其他来源的 {{external}} 个技能不在删除范围内。",
-    "deleteError": "无法删除受管理安装：{{error}}"
+    "deleteError": "无法删除受管理安装：{{error}}",
+    "platformControlUnavailable": "尚未验证此平台的独立控制能力。",
+    "platformControlDelete": "从 {{platform}} 删除 {{name}} 应用",
+    "platformControlDeleteConfirm": "仅从 {{platform}} 删除 {{name}} 应用",
+    "platformControlDeleteSuccess": "已从 {{platform}} 删除 {{name}} 应用。",
+    "platformControlReapply": "将 {{name}} 重新应用到 {{platform}}",
+    "platformControlReapplySuccess": "已将 {{name}} 重新应用到 {{platform}}。"
   },
   "storage": {
     "title": "技能仓库位置",

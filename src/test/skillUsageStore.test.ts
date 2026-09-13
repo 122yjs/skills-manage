@@ -32,6 +32,8 @@ describe("skillUsageStore", () => {
       updatingSkillKeys: {},
       updatingAgentIds: {},
       error: null,
+      platformControlsByAgent: {},
+      updatingPlatformControlKeys: {},
     });
   });
 
@@ -163,5 +165,59 @@ describe("skillUsageStore", () => {
   it("marks duplicate deletion errors so views can avoid showing a false failure toast", () => {
     expect(isSkillUsageBusyError(new SkillUsageBusyError())).toBe(true);
     expect(isSkillUsageBusyError(new Error("delete failed"))).toBe(false);
+  });
+
+  it("loads platform controls with the stable source path", async () => {
+    const control = {
+      agent_id: "claude-code",
+      skill_id: "shared-skill",
+      row_id: "claude-code::shared-skill",
+      skill_name: "shared-skill",
+      source_path: "/tmp/skills/shared-skill",
+      source_kind: "compatibility",
+      state: "inactive",
+      supported: true,
+      can_toggle: true,
+      can_delete: true,
+      can_reapply: false,
+      reason: null,
+      requires_reload: true,
+      scope: "name",
+      affected_source_count: 2,
+      adapter: "claude-skill-overrides",
+      config_path: "/tmp/.claude/settings.json",
+    };
+    vi.mocked(invoke).mockResolvedValueOnce([control]);
+
+    await useSkillUsageStore.getState().loadPlatformSkillControls("claude-code");
+
+    expect(invoke).toHaveBeenCalledWith("get_platform_skill_controls", {
+      agentId: "claude-code",
+    });
+    expect(useSkillUsageStore.getState().platformControlsByAgent["claude-code"]).toEqual([control]);
+  });
+
+  it("updates a platform control and reloads actual state after the command", async () => {
+    const target = {
+      skillId: "shared-skill",
+      skillName: "shared-skill",
+      sourcePath: "/tmp/skills/shared-skill",
+    };
+    const refreshed = { ...target, state: "inactive" };
+    vi.mocked(invoke).mockResolvedValueOnce(undefined).mockResolvedValueOnce([refreshed]);
+
+    await useSkillUsageStore.getState().setPlatformSkillControl("claude-code", target, false);
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "set_platform_skill_control", {
+      agentId: "claude-code",
+      skillId: target.skillId,
+      skillName: target.skillName,
+      sourcePath: target.sourcePath,
+      enabled: false,
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "get_platform_skill_controls", {
+      agentId: "claude-code",
+    });
+    expect(useSkillUsageStore.getState().updatingPlatformControlKeys).toEqual({});
   });
 });
