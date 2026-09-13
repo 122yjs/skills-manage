@@ -440,6 +440,77 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    // GitHub 원본 추적은 scanner가 매번 갱신하는 `skills.source`와 분리한다.
+    // 같은 논리 스킬이라도 중앙 원본과 플랫폼 copy는 서로 다른 파일 상태를
+    // 가질 수 있으므로 실제 대상 경로(target_key)마다 독립적으로 연결한다.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS skill_origins (
+            binding_id              TEXT PRIMARY KEY,
+            target_key              TEXT NOT NULL UNIQUE,
+            skill_id                TEXT NOT NULL,
+            agent_id                TEXT,
+            row_id                  TEXT,
+            target_path             TEXT NOT NULL,
+            provider                TEXT NOT NULL,
+            repository_id           TEXT,
+            owner                   TEXT NOT NULL,
+            repo                    TEXT NOT NULL,
+            source_path             TEXT NOT NULL,
+            ref_name                TEXT NOT NULL,
+            baseline_state          TEXT NOT NULL DEFAULT 'unknown',
+            base_commit_oid         TEXT,
+            base_manifest_json      TEXT,
+            last_applied_commit_oid TEXT,
+            last_applied_at         TEXT,
+            last_checked_at         TEXT,
+            last_remote_commit_oid  TEXT,
+            last_remote_manifest_json TEXT,
+            last_error              TEXT,
+            binding_version         INTEGER NOT NULL DEFAULT 1,
+            created_at              TEXT NOT NULL,
+            updated_at              TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS skill_update_operations (
+            operation_id       TEXT PRIMARY KEY,
+            binding_id         TEXT NOT NULL,
+            state              TEXT NOT NULL,
+            expected_target_key TEXT NOT NULL,
+            expected_local_manifest_json TEXT NOT NULL,
+            remote_commit_oid  TEXT NOT NULL,
+            remote_manifest_json TEXT NOT NULL,
+            stage_path         TEXT,
+            quarantine_path    TEXT,
+            recovery_entry_id  TEXT,
+            error              TEXT,
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    ensure_column(
+        pool,
+        "skill_update_operations",
+        "stage_path",
+        "ALTER TABLE skill_update_operations ADD COLUMN stage_path TEXT",
+    )
+    .await?;
+    ensure_column(
+        pool,
+        "skill_update_operations",
+        "quarantine_path",
+        "ALTER TABLE skill_update_operations ADD COLUMN quarantine_path TEXT",
+    )
+    .await?;
+
     ensure_column(
         pool,
         "skill_registries",
@@ -2538,6 +2609,8 @@ mod tests {
             "scan_directories",
             "settings",
             "skill_description_translations",
+            "skill_origins",
+            "skill_update_operations",
         ];
         for table in &tables {
             let result = sqlx::query(&format!("SELECT COUNT(*) as cnt FROM {}", table))

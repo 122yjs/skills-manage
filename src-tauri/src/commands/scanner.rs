@@ -268,7 +268,11 @@ const NESTED_SCAN_SKIP_DIRS: &[&str] = &[
 fn should_skip_nested_scan_dir(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| NESTED_SCAN_SKIP_DIRS.contains(&name))
+        .is_some_and(|name| {
+            NESTED_SCAN_SKIP_DIRS.contains(&name)
+                || name.contains(".skillsmanage-stage-")
+                || name.contains(".skillsmanage-old-")
+        })
 }
 
 fn scanned_skill_from_dir(entry_path: &Path, is_central: bool) -> Option<ScannedSkill> {
@@ -313,6 +317,9 @@ fn scan_skill_root_recursive(
     if current_dir == app_data_dir().join("paused-installations") {
         return;
     }
+    if should_skip_nested_scan_dir(current_dir) {
+        return;
+    }
 
     let metadata = if options.follow_symlinks {
         std::fs::metadata(current_dir)
@@ -331,7 +338,7 @@ fn scan_skill_root_recursive(
         return;
     }
 
-    if !options.nested || depth >= options.max_depth || should_skip_nested_scan_dir(current_dir) {
+    if !options.nested || depth >= options.max_depth {
         return;
     }
 
@@ -731,6 +738,8 @@ fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
 /// Core scanning logic, separated from the Tauri command layer so it can be
 /// unit-tested without a running Tauri runtime.
 pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
+    // GitHub 원본 교체와 전체 스캔이 동시에 파일 트리를 관찰하지 않게 한다.
+    let _mutation_guard = super::skill_origin::mutation_lock().await;
     // `is_enabled`은 화면 목록 표시 상태다. 숨긴 플랫폼도 스캔하여
     // 설치 기록과 스킬 상태를 최신으로 유지한다.
     let agents = db::get_all_agents(pool).await?;
@@ -1432,6 +1441,31 @@ mod tests {
         assert_eq!(skills[0].name, "Direct Shared");
         assert!(skills[0].dir_path.ends_with("shared-skill"));
         assert!(!skills[0].dir_path.contains("bundle/shared-skill"));
+    }
+
+    #[test]
+    fn test_scan_skill_root_ignores_update_stage_and_quarantine_directories() {
+        let tmp = TempDir::new().unwrap();
+        create_skill_dir(
+            tmp.path(),
+            "real-skill",
+            &valid_skill_md("Real Skill", "Visible"),
+        );
+        create_skill_dir(
+            &tmp.path().join(".demo.skillsmanage-stage-123"),
+            "staged-skill",
+            &valid_skill_md("Staged Skill", "Must stay hidden"),
+        );
+        create_skill_dir(
+            &tmp.path().join(".demo.skillsmanage-old-456"),
+            "old-skill",
+            &valid_skill_md("Old Skill", "Must stay hidden"),
+        );
+
+        let skills = scan_skill_root(tmp.path(), false, ScanDirectoryOptions::nested());
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, "real-skill");
     }
 
     // ── scan_all_skills_impl ──────────────────────────────────────────────────

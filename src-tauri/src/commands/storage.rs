@@ -666,6 +666,35 @@ async fn update_database_paths(
         .map_err(|e| e.to_string())?;
     }
 
+    // GitHub 원본 연결은 실제 물리 대상 경로에 귀속된다. 보관함 이동 뒤에도
+    // 같은 원본 연결이 유지되도록 대상 경로와 키를 함께 옮긴다.
+    let origins = sqlx::query("SELECT binding_id, target_key, target_path FROM skill_origins")
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    for row in origins {
+        let binding_id = row.get::<String, _>("binding_id");
+        let target_key = row.get::<String, _>("target_key");
+        let target_path = row.get::<String, _>("target_path");
+        let Some(new_target_path) = replace_path_prefix(&target_path, old_root, new_root) else {
+            continue;
+        };
+        let new_target_key = replace_path_prefix(&target_key, old_root, new_root)
+            .unwrap_or_else(|| new_target_path.clone());
+        sqlx::query(
+            "UPDATE skill_origins
+             SET target_key = ?, target_path = ?, binding_version = binding_version + 1, updated_at = ?
+             WHERE binding_id = ?",
+        )
+        .bind(new_target_key)
+        .bind(new_target_path)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(binding_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
     for skill in skill_locations {
         let canonical_path = new_root.join(&skill.relative_dir);

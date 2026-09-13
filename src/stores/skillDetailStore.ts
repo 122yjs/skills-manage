@@ -13,6 +13,7 @@ import { useSkillUsageStore } from "@/stores/skillUsageStore";
 interface SkillDetailState {
   detail: SkillDetail | null;
   content: string | null;
+  contentRevision: number;
   isLoading: boolean;
   /** Agent ID currently being installed/uninstalled (null = idle). */
   installingAgentId: string | null;
@@ -184,6 +185,7 @@ async function setupExplanationListeners(
 export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   detail: null,
   content: null,
+  contentRevision: 0,
   isLoading: false,
   installingAgentId: null,
   error: null,
@@ -221,7 +223,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
       const content = await invoke<string>("read_file_by_path", {
         path: detail.file_path,
       });
-      set({ detail, content, isLoading: false });
+      set((state) => ({ detail, content, isLoading: false, contentRevision: state.contentRevision + 1 }));
     } catch (err) {
       set({ error: String(err), isLoading: false });
     }
@@ -405,6 +407,7 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
     set({
       detail: null,
       content: null,
+      contentRevision: 0,
       isLoading: false,
       installingAgentId: null,
       error: null,

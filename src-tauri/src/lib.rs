@@ -36,6 +36,9 @@ pub fn run() {
                 db::init_database(&pool)
                     .await
                     .expect("Failed to initialize database schema");
+                commands::skill_origin::reconcile_incomplete_updates(&pool)
+                    .await
+                    .expect("Failed to reconcile interrupted skill updates");
                 commands::storage::initialize_storage(&pool)
                     .await
                     .expect("Failed to initialize Central vault storage")
@@ -84,6 +87,13 @@ pub fn run() {
             commands::repository_descriptions::get_repository_skill_descriptions,
             commands::skills::list_skill_directory,
             commands::skills::open_in_file_manager,
+            // GitHub origin tracking / safe updates
+            commands::skill_origin::get_skill_origin,
+            commands::skill_origin::link_skill_origin,
+            commands::skill_origin::unlink_skill_origin,
+            commands::skill_origin::check_skill_origin,
+            commands::skill_origin::prepare_skill_update,
+            commands::skill_origin::apply_skill_update,
             // Collections
             commands::collections::create_collection,
             commands::collections::get_collections,

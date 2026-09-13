@@ -117,6 +117,68 @@ export interface SkillDetailRequest {
   rowId?: string;
 }
 
+// ─── GitHub Origin / Update Types ────────────────────────────────────────────
+
+export interface SkillOriginInfo {
+  bindingId: string;
+  targetKey: string;
+  targetPath: string;
+  repositoryId?: string | null;
+  owner: string;
+  repo: string;
+  sourcePath: string;
+  refName: string;
+  baselineState: "verified" | "unknown" | string;
+  baseCommitOid?: string | null;
+  lastAppliedCommitOid?: string | null;
+  lastAppliedAt?: string | null;
+  lastCheckedAt?: string | null;
+  lastRemoteCommitOid?: string | null;
+  lastError?: string | null;
+  bindingVersion: number;
+  canUpdate: boolean;
+}
+
+export type OriginSyncState =
+  | "unknown_baseline"
+  | "up_to_date"
+  | "remote_update"
+  | "local_changes"
+  | "diverged"
+  | "local_matches_remote";
+
+export interface ManifestChangeSummary {
+  added: number;
+  modified: number;
+  removed: number;
+}
+
+export interface SkillOriginStatus {
+  origin: SkillOriginInfo;
+  state: OriginSyncState;
+  localVsRemote: ManifestChangeSummary;
+  localVsBase: ManifestChangeSummary;
+  remoteVsBase: ManifestChangeSummary;
+  remoteCommitOid: string;
+}
+
+export interface SkillUpdatePlan {
+  operationId: string;
+  bindingId: string;
+  targetPath: string;
+  remoteCommitOid: string;
+  state: OriginSyncState;
+  changes: ManifestChangeSummary;
+  requiresLocalChangeConfirmation: boolean;
+}
+
+export interface SkillUpdateResult {
+  operationId: string;
+  bindingId: string;
+  appliedCommitOid: string;
+  recoveryEntryId?: string | null;
+}
+
 export interface SkillWithLinks {
   id: string;
   name: string;

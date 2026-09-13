@@ -10,6 +10,7 @@ pub mod recovery;
 pub mod repository_descriptions;
 pub mod scanner;
 pub mod settings;
+pub mod skill_origin;
 pub mod skill_translation;
 pub mod skills;
 pub mod storage;

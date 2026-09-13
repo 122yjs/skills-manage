@@ -741,7 +741,7 @@ async fn get_observation_detail(
     }))
 }
 
-async fn get_skill_detail_with_row_impl(
+pub(crate) async fn get_skill_detail_with_row_impl(
     pool: &DbPool,
     skill_id: &str,
     agent_id: Option<&str>,
@@ -761,17 +761,45 @@ async fn get_skill_detail_with_row_impl(
         .ok_or_else(|| format!("Skill '{}' not found", skill_id))?;
 
     let row_id = skill.id.clone();
-    let dir_path = skill_dir_path(&skill);
-    let installations = installation_details(db::get_skill_installations(pool, skill_id).await?);
+    let raw_installations = db::get_skill_installations(pool, skill_id).await?;
+    // 관리 플랫폼 목록에서 연 상세는 해당 플랫폼의 실제 copy/native 설치를
+    // 읽어야 한다. 이전에는 중앙 `skills.file_path`로 되돌아가 상세 본문과
+    // 이후 변경 대상이 서로 달라질 수 있었다.
+    let selected_installation = agent_id.and_then(|agent_id| {
+        raw_installations
+            .iter()
+            .find(|installation| installation.agent_id == agent_id)
+    });
+    let dir_path = selected_installation
+        .map(|installation| installation.installed_path.clone())
+        .unwrap_or_else(|| skill_dir_path(&skill));
+    let file_path = selected_installation
+        .filter(|installation| installation.link_type != "symlink")
+        .map(|installation| {
+            Path::new(&installation.installed_path)
+                .join("SKILL.md")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_else(|| skill.file_path.clone());
+    let selected_copy_info = selected_installation
+        .filter(|installation| installation.link_type != "symlink")
+        .and_then(|_| super::scanner::parse_skill_md(Path::new(&file_path)));
+    let installations = installation_details(raw_installations);
     let collections = db::get_skill_collections(pool, skill_id).await?;
     let read_only_agents = read_only_agent_ids_for_skill(pool, skill_id, skill.is_central).await?;
 
     Ok(SkillDetail {
         row_id,
         id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        file_path: skill.file_path,
+        name: selected_copy_info
+            .as_ref()
+            .map(|info| info.name.clone())
+            .unwrap_or(skill.name),
+        description: selected_copy_info
+            .and_then(|info| info.description)
+            .or(skill.description),
+        file_path,
         dir_path,
         canonical_path: skill.canonical_path,
         is_central: skill.is_central,
@@ -3106,6 +3134,64 @@ mod tests {
         assert_eq!(detail.conflict_count, 2);
         assert_eq!(detail.installations.len(), 1);
         assert_eq!(detail.collections.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn managed_copy_detail_reads_the_copy_not_the_central_source() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central/demo");
+        let cursor_dir = tmp.path().join("cursor/demo");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&cursor_dir).unwrap();
+        fs::write(
+            central_dir.join("SKILL.md"),
+            "---\nname: Central Demo\ndescription: central\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            cursor_dir.join("SKILL.md"),
+            "---\nname: Cursor Demo\ndescription: locally edited copy\n---\n",
+        )
+        .unwrap();
+        db::upsert_skill(
+            &pool,
+            &Skill {
+                id: "demo".into(),
+                name: "Central Demo".into(),
+                description: Some("central".into()),
+                file_path: central_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: Some(central_dir.to_string_lossy().into_owned()),
+                is_central: true,
+                source: Some("native".into()),
+                content: None,
+                scanned_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "demo".into(),
+                agent_id: "cursor".into(),
+                installed_path: cursor_dir.to_string_lossy().into_owned(),
+                link_type: "copy".into(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let detail = get_skill_detail_with_row_impl(&pool, "demo", Some("cursor"), Some("demo"))
+            .await
+            .unwrap();
+
+        assert_eq!(detail.file_path, cursor_dir.join("SKILL.md").to_string_lossy());
+        assert_eq!(detail.dir_path, cursor_dir.to_string_lossy());
+        assert_eq!(detail.name, "Cursor Demo");
+        assert_eq!(detail.description.as_deref(), Some("locally edited copy"));
     }
 
     #[tokio::test]

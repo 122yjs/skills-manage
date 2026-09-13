@@ -45,6 +45,7 @@ import {
   isSkillUsageBusyError,
   useSkillUsageStore,
 } from "@/stores/skillUsageStore";
+import { useSkillOriginStore } from "@/stores/skillOriginStore";
 
 // ─── Section Label ─────────────────────────────────────────────────────────────
 
@@ -467,6 +468,7 @@ export function SkillDetailView({
   // Store data (used in skillId mode)
   const detail = useSkillDetailStore((s) => s.detail);
   const storeContent = useSkillDetailStore((s) => s.content);
+  const contentRevision = useSkillDetailStore((s) => s.contentRevision);
   const storeIsLoading = useSkillDetailStore((s) => s.isLoading);
   const installingAgentId = useSkillDetailStore((s) => s.installingAgentId);
   const error = useSkillDetailStore((s) => s.error);
@@ -483,6 +485,20 @@ export function SkillDetailView({
   const generateExplanation = useSkillDetailStore((s) => s.generateExplanation);
   const refreshExplanation = useSkillDetailStore((s) => s.refreshExplanation);
   const reset = useSkillDetailStore((s) => s.reset);
+
+  const origin = useSkillOriginStore((s) => s.origin);
+  const originStatus = useSkillOriginStore((s) => s.status);
+  const originLoading = useSkillOriginStore((s) => s.isLoading);
+  const originChecking = useSkillOriginStore((s) => s.isChecking);
+  const originUpdating = useSkillOriginStore((s) => s.isUpdating);
+  const originError = useSkillOriginStore((s) => s.error);
+  const loadOrigin = useSkillOriginStore((s) => s.loadOrigin);
+  const linkOrigin = useSkillOriginStore((s) => s.linkOrigin);
+  const unlinkOrigin = useSkillOriginStore((s) => s.unlinkOrigin);
+  const checkOrigin = useSkillOriginStore((s) => s.checkOrigin);
+  const prepareUpdate = useSkillOriginStore((s) => s.prepareUpdate);
+  const applyUpdate = useSkillOriginStore((s) => s.applyUpdate);
+  const resetOrigin = useSkillOriginStore((s) => s.reset);
 
   // Platform agents (loaded at app init)
   const agents = usePlatformStore((s) => s.agents);
@@ -526,6 +542,9 @@ export function SkillDetailView({
   const mutationAgentIdsRef = useRef(new Set<string>());
   const [mutationAgentIds, setMutationAgentIds] = useState<Set<string>>(new Set());
   const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [originRepoUrl, setOriginRepoUrl] = useState("");
+  const [originSourcePath, setOriginSourcePath] = useState(".");
+  const [originRefName, setOriginRefName] = useState("");
   const addToCollectionButtonRef = useRef<HTMLButtonElement | null>(null);
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedRelativePath = selectedFile?.relativePath ?? null;
@@ -603,11 +622,13 @@ export function SkillDetailView({
   useEffect(() => {
     if (detailRequest) {
       loadDetail(detailRequest);
+      loadOrigin(detailRequest);
     }
     return () => {
       reset();
+      resetOrigin();
     };
-  }, [detailRequest, loadDetail, reset]);
+  }, [detailRequest, loadDetail, loadOrigin, reset, resetOrigin]);
 
   useLayoutEffect(() => {
     if (explanationRequestKey && skillContent) {
@@ -626,7 +647,14 @@ export function SkillDetailView({
     setSelectedFileContent(null);
     setExpandedDirectories(new Set());
     void fetchDirectoryTree(currentDirectoryPath);
-  }, [currentDirectoryPath, fetchDirectoryTree]);
+  }, [currentDirectoryPath, contentRevision, fetchDirectoryTree]);
+
+  useEffect(() => {
+    if (!origin) return;
+    setOriginRepoUrl(`https://github.com/${origin.owner}/${origin.repo}`);
+    setOriginSourcePath(origin.sourcePath || ".");
+    setOriginRefName(origin.refName || "");
+  }, [origin]);
 
   useEffect(() => {
     if (!skillFilePath || directoryTree.length === 0) {
@@ -861,6 +889,80 @@ export function SkillDetailView({
       }
       return next;
     });
+  }
+
+  async function handleLinkOrigin() {
+    if (!detailRequest || !originRepoUrl.trim()) return;
+    try {
+      const status = await linkOrigin(detailRequest, {
+        repoUrl: originRepoUrl.trim(),
+        sourcePath: originSourcePath.trim() || ".",
+        refName: originRefName.trim() || undefined,
+      });
+      toast.success(`GitHub origin linked (${status.remoteCommitOid.slice(0, 7)})`);
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
+
+  async function handleCheckOrigin() {
+    if (!detailRequest) return;
+    try {
+      await checkOrigin(detailRequest);
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
+
+  async function handleUpdateOrigin() {
+    if (!detailRequest) return;
+    try {
+      let plan;
+      let localChangesConfirmed = false;
+      try {
+        plan = await prepareUpdate(detailRequest, false);
+      } catch (err) {
+        if (!String(err).includes("LOCAL_CHANGES_REQUIRE_CONFIRMATION")) throw err;
+        const confirmed = window.confirm(
+          "Local changes were detected. Preparing a replacement will preserve the current skill in Recovery, but the active copy will be replaced. Continue to review the exact update?"
+        );
+        if (!confirmed) return;
+        localChangesConfirmed = true;
+        plan = await prepareUpdate(detailRequest, true);
+      }
+
+      const reviewMessage = [
+        `Apply GitHub commit ${plan.remoteCommitOid.slice(0, 12)}?`,
+        "",
+        `Files added: ${plan.changes.added}`,
+        `Files modified: ${plan.changes.modified}`,
+        `Files removed: ${plan.changes.removed}`,
+        "",
+        plan.requiresLocalChangeConfirmation || localChangesConfirmed
+          ? "Local changes exist. The current directory will be backed up before replacement."
+          : "The current directory will be backed up before replacement.",
+      ].join("\n");
+      if (!window.confirm(reviewMessage)) return;
+
+      await applyUpdate(plan.operationId);
+      await loadDetail(detailRequest);
+      await checkOrigin(detailRequest);
+      await refreshCounts();
+      await onInstallationsChange?.();
+      toast.success(`Updated to ${plan.remoteCommitOid.slice(0, 7)}. A recovery backup was created.`);
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
+
+  async function handleUnlinkOrigin() {
+    if (!detailRequest) return;
+    try {
+      await unlinkOrigin(detailRequest);
+      toast.success("GitHub origin link removed. Local files were not changed.");
+    } catch (err) {
+      toast.error(String(err));
+    }
   }
 
   const handleOpenDiscoverPath = useCallback(async () => {
@@ -1290,6 +1392,118 @@ export function SkillDetailView({
                             })}
                           </p>
                         ) : null}
+                      </div>
+                    </section>
+                  )}
+
+                  {!detail.is_read_only && detailRequest && (
+                    <section aria-label="GitHub origin">
+                      <SectionLabel>GitHub origin</SectionLabel>
+                      <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2.5">
+                        <div className="flex items-center gap-2 text-xs font-medium">
+                          <Code className="size-4" />
+                          <span>{origin ? `${origin.owner}/${origin.repo}` : "Not linked"}</span>
+                        </div>
+
+                        {origin ? (
+                          <>
+                            <div className="space-y-1 text-[11px] text-muted-foreground">
+                              <div className="font-mono break-all">{origin.sourcePath} @ {origin.refName}</div>
+                              <div>
+                                Baseline: {origin.baselineState === "verified" ? "verified" : "unknown"}
+                                {origin.baseCommitOid ? ` · ${origin.baseCommitOid.slice(0, 7)}` : ""}
+                              </div>
+                              {origin.lastCheckedAt && (
+                                <div>Checked {new Date(origin.lastCheckedAt).toLocaleString()}</div>
+                              )}
+                            </div>
+
+                            {originStatus && (
+                              <div className="rounded-md border border-border bg-background/60 p-2 space-y-1 text-[11px]">
+                                <div className="font-medium">{originStatus.state.split("_").join(" ")}</div>
+                                <div className="text-muted-foreground">
+                                  Local ↔ remote: +{originStatus.localVsRemote.added} / ~{originStatus.localVsRemote.modified} / -{originStatus.localVsRemote.removed}
+                                </div>
+                                <div className="font-mono text-muted-foreground">
+                                  {originStatus.remoteCommitOid.slice(0, 12)}
+                                </div>
+                              </div>
+                            )}
+
+                            {originError && (
+                              <p className="text-[11px] leading-relaxed text-destructive break-words">{originError}</p>
+                            )}
+
+                            <div className="flex flex-wrap gap-1.5">
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={originChecking || originUpdating}
+                                onClick={handleCheckOrigin}
+                              >
+                                {originChecking ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                                Check
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                disabled={originUpdating || !origin.canUpdate || originStatus?.state === "up_to_date"}
+                                onClick={handleUpdateOrigin}
+                              >
+                                {originUpdating ? <Loader2 className="size-3.5 animate-spin" /> : null}
+                                Update
+                              </Button>
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                disabled={originChecking || originUpdating}
+                                onClick={handleUnlinkOrigin}
+                              >
+                                Unlink
+                              </Button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-[11px] leading-relaxed text-muted-foreground">
+                              Link this physical skill copy to its GitHub repository and source directory. Linking does not change local files.
+                            </p>
+                            <div className="space-y-1.5">
+                              <input
+                                value={originRepoUrl}
+                                onChange={(event) => setOriginRepoUrl(event.target.value)}
+                                placeholder="https://github.com/owner/repo"
+                                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs outline-none focus:ring-1 focus:ring-ring"
+                              />
+                              <input
+                                value={originSourcePath}
+                                onChange={(event) => setOriginSourcePath(event.target.value)}
+                                placeholder="skills/example or ."
+                                className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+                              />
+                              <input
+                                value={originRefName}
+                                onChange={(event) => setOriginRefName(event.target.value)}
+                                placeholder="branch/ref (optional)"
+                                className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
+                              />
+                            </div>
+                            {originError && (
+                              <p className="text-[11px] leading-relaxed text-destructive break-words">{originError}</p>
+                            )}
+                            <Button
+                              type="button"
+                              size="sm"
+                              disabled={originLoading || originChecking || !originRepoUrl.trim()}
+                              onClick={handleLinkOrigin}
+                            >
+                              {originLoading || originChecking ? <Loader2 className="size-3.5 animate-spin" /> : <Code className="size-3.5" />}
+                              Link origin
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </section>
                   )}
