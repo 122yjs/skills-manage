@@ -1,4 +1,4 @@
-import type { AgentWithStatus } from "@/types";
+import type { AgentWithStatus, ScannedSkill } from "@/types";
 
 export const CENTRAL_AGENT_ID = "central";
 export const UNIVERSAL_AGENT_ID = "universal";
@@ -43,6 +43,29 @@ export function isToggleableAgent(
 
 function normalizeSkillsPath(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/** 경로 표기(구분자·끝 슬래시)만 다른 같은 위치인지 비교한다. */
+function isSameSkillsPath(left?: string | null, right?: string | null): boolean {
+  const normalizedLeft = normalizeSkillsPath(left ?? "");
+  return normalizedLeft.length > 0 && normalizedLeft === normalizeSkillsPath(right ?? "");
+}
+
+/** 공용 설치로 볼 수 있는 항목인지 판정한다.
+ *
+ * `compatibility`는 "다른 경로에서 읽었다"는 뜻일 뿐이라 공용 설치와 같지 않다.
+ * Cursor는 `.claude/skills`·`.codex/skills`도 함께 읽는데, 그런 전용 경로를
+ * 공용 설치로 표시하면 안 된다. 그래서 출처 경로가 실제 공용 설치 경로와 같을
+ * 때만 공용 설치로 인정하고, 출처가 없으면 공용으로 추정하지 않는다.
+ */
+export function isUniversalSource(
+  skill: ScannedSkill,
+  universalRoot?: string | null
+): boolean {
+  if (!skill.is_read_only || skill.source_kind !== "compatibility") {
+    return false;
+  }
+  return isSameSkillsPath(skill.source_root, universalRoot);
 }
 
 /** 같은 공용 경로를 가리키는 플랫폼을 합쳐 실제 적용 대상만 반환한다.

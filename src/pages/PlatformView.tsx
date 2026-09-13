@@ -36,6 +36,7 @@ import { useSkillListViewMode } from "@/hooks/useSkillListViewMode";
 import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { cn } from "@/lib/utils";
+import { isUniversalSource, UNIVERSAL_AGENT_ID } from "@/lib/agents";
 import { ScannedSkill, SkillWithLinks } from "@/types";
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
@@ -59,10 +60,6 @@ interface PluginBundleTarget {
   sourceLabel: string;
   name: string;
   skillCount: number;
-}
-
-function isUniversalSource(skill: ScannedSkill): boolean {
-  return Boolean(skill.is_read_only && skill.source_kind === "compatibility");
 }
 
 // ─── PlatformView ─────────────────────────────────────────────────────────────
@@ -123,6 +120,9 @@ export function PlatformView() {
 
   const agent = agents.find((a) => a.id === agentId);
   const isClaudePage = agent?.id === "claude-code";
+  const universalRoot = agents.find(
+    (candidate) => candidate.id === UNIVERSAL_AGENT_ID
+  )?.global_skills_dir;
 
   // Load skills for this agent when the route changes or a fresh scan completes.
   useEffect(() => {
@@ -296,17 +296,17 @@ export function PlatformView() {
       : managedSkills.filter((skill) => skill.source_kind === sourceFilter);
 
     if (installSourceFilter === "universal") {
-      return claudeFiltered.filter(isUniversalSource);
+      return claudeFiltered.filter((skill) => isUniversalSource(skill, universalRoot));
     }
     if (installSourceFilter === "platform") {
-      return claudeFiltered.filter((skill) => !isUniversalSource(skill));
+      return claudeFiltered.filter((skill) => !isUniversalSource(skill, universalRoot));
     }
     return claudeFiltered;
-  }, [installSourceFilter, isClaudePage, managedSkills, sourceFilter]);
+  }, [installSourceFilter, isClaudePage, managedSkills, sourceFilter, universalRoot]);
 
   const universalCount = useMemo(
-    () => skills.filter(isUniversalSource).length,
-    [skills]
+    () => skills.filter((skill) => isUniversalSource(skill, universalRoot)).length,
+    [skills, universalRoot]
   );
 
   const platformFolderSplit = useMemo(
@@ -452,13 +452,13 @@ export function PlatformView() {
             ? t("platform.originUser")
             : skill.source_kind === "plugin"
               ? t("platform.originPlugin")
-              : isUniversalSource(skill)
+              : isUniversalSource(skill, universalRoot)
                 ? t("platform.universalSource")
                 : skill.link_type,
         isReadOnly: skill.is_read_only ?? false,
         sourceKind: skill.source_kind,
       })),
-    [agentId, folderDrawerGroup, t]
+    [agentId, folderDrawerGroup, t, universalRoot]
   );
 
   function handleInstallPluginBundleClick() {
@@ -762,7 +762,7 @@ export function PlatformView() {
                             : undefined}
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
-                          isUniversalSource={isUniversalSource(skill)}
+                          isUniversalSource={isUniversalSource(skill, universalRoot)}
                           usageControl={usage && !skill.is_read_only
                             ? {
                                 enabled: usage.enabled,
@@ -789,7 +789,9 @@ export function PlatformView() {
                               : () => handleInstallClick(skill.id)
                           }
                           onManageUniversal={
-                            isUniversalSource(skill) ? () => navigate("/universal") : undefined
+                            isUniversalSource(skill, universalRoot)
+                              ? () => navigate("/universal")
+                              : undefined
                           }
                           onUninstallFromPlatform={
                             usage && !skill.is_read_only

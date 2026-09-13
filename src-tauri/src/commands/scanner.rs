@@ -1467,6 +1467,149 @@ mod tests {
             HashSet::from([primary_root, universal_root, claude_root, codex_root])
         );
     }
+    fn test_agent(id: &str, display_name: &str, global_skills_dir: &Path) -> db::Agent {
+        db::Agent {
+            id: id.to_string(),
+            display_name: display_name.to_string(),
+            category: "coding".to_string(),
+            global_skills_dir: global_skills_dir.to_string_lossy().into_owned(),
+            project_skills_dir: None,
+            icon_name: None,
+            is_detected: true,
+            is_builtin: true,
+            is_enabled: true,
+        }
+    }
+
+    /// Claude는 자신의 전용 경로만 읽는다. Gemini 같은 다른 플랫폼의 전용 경로를
+    /// 함께 읽으면 그 항목이 공용 설치처럼 보이는 오해가 생긴다.
+    #[test]
+    fn test_claude_scan_roots_exclude_other_platform_locations() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".claude/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let gemini_root = tmp.path().join(".gemini/config/skills");
+        let cursor_root = tmp.path().join(".cursor/skills");
+        let codex_root = tmp.path().join(".codex/skills");
+        for root in [
+            &primary_root,
+            &universal_root,
+            &gemini_root,
+            &cursor_root,
+            &codex_root,
+        ] {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        let agent = test_agent("claude-code", "Claude Code", &primary_root);
+        let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+
+        assert_eq!(paths, HashSet::from([primary_root.clone()]));
+        for other in [universal_root, gemini_root, cursor_root, codex_root] {
+            assert!(
+                !paths.contains(&other),
+                "다른 플랫폼 경로를 읽으면 안 된다: {other:?}"
+            );
+        }
+    }
+
+    /// Codex는 공용 경로와 자신의 .codex 경로만 읽는다.
+    /// Cursor와 Claude의 전용 경로는 읽지 않는다.
+    #[test]
+    fn test_codex_scan_roots_exclude_cursor_and_claude_locations() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".agents/skills");
+        let codex_root = tmp.path().join(".codex/skills");
+        let cursor_root = tmp.path().join(".cursor/skills");
+        let claude_root = tmp.path().join(".claude/skills");
+        for root in [&primary_root, &codex_root, &cursor_root, &claude_root] {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        let agent = test_agent("codex", "Codex CLI", &primary_root);
+        let roots = scan_roots_for_agent(&agent, Some(&primary_root), None);
+        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+
+        assert!(paths.contains(&primary_root));
+        assert!(paths.contains(&codex_root));
+        assert!(!paths.contains(&cursor_root));
+        assert!(!paths.contains(&claude_root));
+    }
+
+    /// Gemini와 Antigravity는 전용 경로(.gemini/config/skills)를 공유한다.
+    /// 그 경로는 공용 경로가 아니므로 호환(공용) 출처로 표시되면 안 되고,
+    /// 실제 공용 경로(.agents/skills)만 호환 출처가 된다.
+    #[test]
+    fn test_gemini_and_antigravity_share_dedicated_root_without_universal_treatment() {
+        let tmp = TempDir::new().unwrap();
+        let gemini_root = tmp.path().join(".gemini/config/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        for root in [&gemini_root, &universal_root] {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        for agent_id in ["gemini-cli", "antigravity"] {
+            let agent = test_agent(agent_id, agent_id, &gemini_root);
+            let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+
+            let paths: HashSet<PathBuf> = roots.iter().map(|root| root.path.clone()).collect();
+            assert_eq!(
+                paths,
+                HashSet::from([gemini_root.clone(), universal_root.clone()]),
+                "{agent_id}의 스캔 경로"
+            );
+
+            let dedicated = roots
+                .iter()
+                .find(|root| root.path == gemini_root)
+                .expect("전용 경로 루트가 있어야 한다");
+            assert_ne!(
+                dedicated.source_kind,
+                Some(AgentSkillSourceKind::Compatibility),
+                "{agent_id}의 전용 경로는 호환 출처가 아니다"
+            );
+
+            let compatibility_paths: Vec<&PathBuf> = roots
+                .iter()
+                .filter(|root| root.source_kind == Some(AgentSkillSourceKind::Compatibility))
+                .map(|root| &root.path)
+                .collect();
+            assert_eq!(compatibility_paths, vec![&universal_root]);
+        }
+    }
+
+    /// Cursor가 함께 읽는 .claude와 .codex 경로는 호환 출처지만 출처 경로가
+    /// 공용 경로가 아니므로 공용 설치로 분류되면 안 된다. 공용 설치로 인정되는
+    /// 항목은 출처 경로가 실제 공용 경로와 같은 것뿐이다.
+    #[test]
+    fn test_cursor_compatibility_roots_keep_their_own_source_root() {
+        let tmp = TempDir::new().unwrap();
+        let primary_root = tmp.path().join(".cursor/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let claude_root = tmp.path().join(".claude/skills");
+        let codex_root = tmp.path().join(".codex/skills");
+        for root in [&primary_root, &universal_root, &claude_root, &codex_root] {
+            fs::create_dir_all(root).unwrap();
+        }
+
+        let agent = test_agent("cursor", "Cursor", &primary_root);
+        let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+
+        for root in [&universal_root, &claude_root, &codex_root] {
+            let entry = roots
+                .iter()
+                .find(|candidate| candidate.path == *root)
+                .expect("호환 출처 루트가 있어야 한다");
+            assert_eq!(entry.source_kind, Some(AgentSkillSourceKind::Compatibility));
+            assert_eq!(
+                entry.source_root.as_ref(),
+                Some(root),
+                "출처 경로는 자기 경로를 그대로 유지해야 한다"
+            );
+        }
+    }
+
 
     #[test]
     fn test_omp_scan_roots_include_agents_user_location() {

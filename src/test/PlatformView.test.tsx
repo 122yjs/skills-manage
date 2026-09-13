@@ -1397,3 +1397,223 @@ describe("PlatformView", () => {
     });
   });
 });
+
+// ─── 공용 설치 판정 ────────────────────────────────────────────────────────────
+// compatibility(다른 경로에서 읽음)와 공용 설치는 다른 개념이다.
+// 출처 경로가 실제 공용 설치 경로와 같을 때만 공용으로 분류되어야 한다.
+
+describe("PlatformView 공용 설치 판정", () => {
+  const universalRoot = "/Users/test/.agents/skills";
+  const universalBadgeText = "共享安装";
+  const manageUniversalText = "管理共享安装";
+  const compatibilityBadgeText = /兼容来源/;
+  const installSourceTablist = "安装来源筛选";
+
+  const universalAgent: AgentWithStatus = {
+    id: "universal",
+    display_name: "Universal (.agents)",
+    category: "shared",
+    global_skills_dir: universalRoot,
+    is_detected: true,
+    is_builtin: true,
+    is_enabled: true,
+  };
+
+  const platforms = [
+    { id: "codex", dir: "/Users/test/.agents/skills" },
+    { id: "claude-code", dir: "/Users/test/.claude/skills" },
+    { id: "cursor", dir: "/Users/test/.cursor/skills" },
+    { id: "gemini-cli", dir: "/Users/test/.gemini/config/skills" },
+  ];
+
+  // 공용 설치 경로가 아닌 전용 경로들. 플랫폼 기본 경로와 임의 경로를 함께 넣는다.
+  const dedicatedRoots = [
+    "/Users/test/.codex/skills",
+    "/Users/test/.claude/skills",
+    "/Users/test/.cursor/skills",
+    "/Users/test/.gemini/config/skills",
+    "/Users/test/.custom-tool/skills",
+  ];
+
+  function platformAgent(id: string, dir: string): AgentWithStatus {
+    return {
+      id,
+      display_name: id,
+      category: "coding",
+      global_skills_dir: dir,
+      is_detected: true,
+      is_builtin: true,
+      is_enabled: true,
+    };
+  }
+
+  function compatibilitySkill(overrides: Partial<ScannedSkill> = {}): ScannedSkill {
+    return {
+      id: "tdd",
+      name: "tdd",
+      description: "Test-driven development workflow",
+      file_path: "/Users/test/.codex/skills/tdd/SKILL.md",
+      dir_path: "/Users/test/.codex/skills/tdd",
+      link_type: "copy",
+      is_central: false,
+      source_kind: "compatibility",
+      source_root: "/Users/test/.codex/skills",
+      is_read_only: true,
+      ...overrides,
+    };
+  }
+
+  function renderPlatformSkills(
+    agent: AgentWithStatus,
+    skills: ScannedSkill[],
+    universalDir: string = universalRoot
+  ) {
+    mockUsePlatformStore.mockImplementation((selector?: unknown) => {
+      const state = buildPlatformStoreState({
+        agents: [agent, { ...universalAgent, global_skills_dir: universalDir }],
+        skillsByAgent: { [agent.id]: skills.length },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { [agent.id]: skills },
+        loadingByAgent: { [agent.id]: false },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    return renderPlatformView(agent.id);
+  }
+
+  function expectNoUniversalMarkers() {
+    expect(
+      screen.queryByRole("button", { name: manageUniversalText })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: universalBadgeText })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tablist", { name: installSourceTablist })
+    ).not.toBeInTheDocument();
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    window.localStorage.clear();
+    testNavigate = null;
+    mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
+    mockSetSkillUsage.mockReset().mockResolvedValue(undefined);
+    mockSetPlatformUsage.mockReset().mockResolvedValue(undefined);
+    mockDeleteSkillFromAgent.mockReset().mockResolvedValue(undefined);
+    mockDeletePlatformInstallations.mockReset().mockResolvedValue({ deleted: [], failed: [] });
+    useSkillUsageStore.setState({
+      statuses: [],
+      isLoading: false,
+      updatingSkillKeys: {},
+      updatingAgentIds: {},
+      error: null,
+      loadUsageStatus: mockLoadUsageStatus,
+      setSkillUsage: mockSetSkillUsage,
+      setPlatformUsage: mockSetPlatformUsage,
+      deleteSkillFromAgent: mockDeleteSkillFromAgent,
+      deletePlatformInstallations: mockDeletePlatformInstallations,
+    });
+    installDefaultStoreMocks();
+  });
+
+  const dedicatedCases: Array<[string, string, string]> = platforms.flatMap((platform) =>
+    dedicatedRoots.map(
+      (root): [string, string, string] => [platform.id, platform.dir, root]
+    )
+  );
+
+  it.each(dedicatedCases)(
+    "%s 화면에서 전용 경로(%s) 출처는 공용으로 분류하지 않는다 [출처 %s]",
+    (platformId, platformDir, sourceRoot) => {
+      renderPlatformSkills(platformAgent(platformId, platformDir), [
+        compatibilitySkill({ source_root: sourceRoot }),
+      ]);
+
+      expect(getCardBadgeMatches(compatibilityBadgeText)).toHaveLength(1);
+      expect(getCardBadgeMatches(readOnlyText)).toHaveLength(1);
+      expectNoUniversalMarkers();
+    }
+  );
+
+  it.each(platforms.map((platform) => [platform.id, platform.dir]))(
+    "%s 화면에서 공용 경로 출처만 공용으로 분류한다",
+    (platformId, platformDir) => {
+      renderPlatformSkills(platformAgent(platformId, platformDir), [
+        compatibilitySkill({ source_root: universalRoot }),
+        compatibilitySkill({
+          id: "custom",
+          name: "custom",
+          source_root: "/Users/test/.custom-tool/skills",
+        }),
+        compatibilitySkill({ id: "unknown", name: "unknown", source_root: null }),
+      ]);
+
+      expect(getCardBadgeMatches(compatibilityBadgeText)).toHaveLength(3);
+      expect(getCardBadgeMatches(readOnlyText)).toHaveLength(2);
+      expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+      expect(screen.getAllByRole("button", { name: manageUniversalText })).toHaveLength(1);
+      expect(screen.getByRole("tab", { name: claudeTabName(universalBadgeText, 1) })).toBeInTheDocument();
+    }
+  );
+
+  it("경로 표기 차이(끝 슬래시·구분자)를 정규화해 같은 공용 경로로 본다", () => {
+    renderPlatformSkills(
+      platformAgent("codex", "C:\\Users\\test\\.codex\\skills"),
+      [compatibilitySkill({ source_root: "C:/Users/test/.agents/skills" })],
+      "C:\\Users\\test\\.agents\\skills\\"
+    );
+
+    expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: manageUniversalText })).toHaveLength(1);
+  });
+
+  it("사용자 지정 공용 경로를 기준으로 삼고 기본 경로는 공용으로 보지 않는다", () => {
+    renderPlatformSkills(
+      platformAgent("cursor", "/Users/test/.cursor/skills"),
+      [
+        compatibilitySkill({ source_root: "/Users/test/custom/shared-skills" }),
+        compatibilitySkill({
+          id: "legacy",
+          name: "legacy",
+          source_root: "/Users/test/.agents/skills",
+        }),
+      ],
+      "/Users/test/custom/shared-skills"
+    );
+
+    expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+    expect(getCardBadgeMatches(readOnlyText)).toHaveLength(1);
+    expect(screen.getByRole("tab", { name: claudeTabName(universalBadgeText, 1) })).toBeInTheDocument();
+  });
+
+  it("공용 설치 경로를 알 수 없으면 공용으로 추정하지 않는다", () => {
+    mockUsePlatformStore.mockImplementation((selector?: unknown) => {
+      const state = buildPlatformStoreState({
+        agents: [platformAgent("claude-code", "/Users/test/.claude/skills")],
+        skillsByAgent: { "claude-code": 1 },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": [compatibilitySkill({ source_root: universalRoot })] },
+        loadingByAgent: { "claude-code": false },
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    renderPlatformView("claude-code");
+
+    expect(getCardBadgeMatches(readOnlyText)).toHaveLength(1);
+    expectNoUniversalMarkers();
+  });
+});
