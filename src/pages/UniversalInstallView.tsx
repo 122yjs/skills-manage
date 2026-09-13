@@ -19,15 +19,32 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { SharedSkillImpactDialog } from "@/components/skill/SharedSkillImpactDialog";
 import { formatPathForDisplay } from "@/lib/path";
 import { UNIVERSAL_AGENT_ID } from "@/lib/agents";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useSkillStore } from "@/stores/skillStore";
 import { useStorageStore } from "@/stores/storageStore";
 import { isSkillUsageBusyError, useSkillUsageStore } from "@/stores/skillUsageStore";
-import type { ScannedSkill } from "@/types";
+import type {
+  PlatformSkillControlStatus,
+  ScannedSkill,
+  SharedSkillImpact,
+} from "@/types";
 
 const EMPTY_SKILLS: ScannedSkill[] = [];
+const EMPTY_CONTROLS: PlatformSkillControlStatus[] = [];
+
+/** 백엔드가 준 shared_install ID 또는 source_path만 사용한다. 경로를 추측하지 않는다. */
+function resolveUniversalSharedInstallId(
+  control: PlatformSkillControlStatus | undefined,
+): string | null {
+  const fromImpact = control?.shared_install?.shared_install_id?.trim();
+  if (fromImpact) return fromImpact;
+  const fromPath = control?.source_path?.trim();
+  if (fromPath) return fromPath;
+  return null;
+}
 
 export function UniversalInstallView() {
   const { t } = useTranslation();
@@ -45,29 +62,50 @@ export function UniversalInstallView() {
   const usageUpdatingSkillKeys = useSkillUsageStore((state) => state.updatingSkillKeys);
   const usageUpdatingAgentIds = useSkillUsageStore((state) => state.updatingAgentIds);
   const setSkillUsage = useSkillUsageStore((state) => state.setSkillUsage);
-  const setPlatformUsage = useSkillUsageStore((state) => state.setPlatformUsage);
   const deleteSkillFromAgent = useSkillUsageStore((state) => state.deleteSkillFromAgent);
   const deletePlatformInstallations = useSkillUsageStore(
     (state) => state.deletePlatformInstallations
   );
   const loadUsageStatus = useSkillUsageStore((state) => state.loadUsageStatus);
+  const platformControls = useSkillUsageStore(
+    (state) => state.platformControlsByAgent[UNIVERSAL_AGENT_ID] ?? EMPTY_CONTROLS
+  );
+  const updatingSharedKeys = useSkillUsageStore((state) => state.updatingSharedKeys);
+  const updatingSharedBulk = useSkillUsageStore((state) => state.updatingSharedBulk);
+  const loadPlatformSkillControls = useSkillUsageStore((state) => state.loadPlatformSkillControls);
+  const loadSharedSkillImpact = useSkillUsageStore((state) => state.loadSharedSkillImpact);
+  const setSharedSkillUsage = useSkillUsageStore((state) => state.setSharedSkillUsage);
+  const setSharedPlatformUsage = useSkillUsageStore((state) => state.setSharedPlatformUsage);
   const [query, setQuery] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
   const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
   const [drawerSkill, setDrawerSkill] = useState<ScannedSkill | null>(null);
+  const [sharedDialogOpen, setSharedDialogOpen] = useState(false);
+  const [sharedDialogImpacts, setSharedDialogImpacts] = useState<SharedSkillImpact[]>([]);
+  const [sharedDialogDesired, setSharedDialogDesired] = useState(false);
+  const [sharedDialogBulk, setSharedDialogBulk] = useState(false);
+  const [sharedDialogConfirming, setSharedDialogConfirming] = useState(false);
   const agent = agents.find((candidate) => candidate.id === UNIVERSAL_AGENT_ID);
 
   useEffect(() => {
     void getSkillsByAgent(UNIVERSAL_AGENT_ID);
     void loadUsageStatus().catch(() => undefined);
-  }, [getSkillsByAgent, loadUsageStatus, scanGeneration]);
+    void loadPlatformSkillControls(UNIVERSAL_AGENT_ID).catch(() => undefined);
+  }, [getSkillsByAgent, loadPlatformSkillControls, loadUsageStatus, scanGeneration]);
 
   const usageStatus = usageStatuses.find((status) => status.agent_id === UNIVERSAL_AGENT_ID);
   const usageBySkillId = useMemo(
     () => new Map((usageStatus?.skills ?? []).map((usage) => [usage.skill_id, usage])),
     [usageStatus?.skills]
   );
+  const sharedControlBySkillId = useMemo(() => {
+    const map = new Map<string, PlatformSkillControlStatus>();
+    for (const control of platformControls) {
+      if (!map.has(control.skill_id)) map.set(control.skill_id, control);
+    }
+    return map;
+  }, [platformControls]);
   const managedSkills = useMemo(() => {
     const activeSkillIds = new Set(
       skills.filter((skill) => !skill.is_read_only).map((skill) => skill.id)
@@ -141,6 +179,7 @@ export function UniversalInstallView() {
   const canRestorePlatform = !canPausePlatform && hasBulkPausedSkills;
   const isPlatformUsageUpdating =
     (usageUpdatingAgentIds[UNIVERSAL_AGENT_ID] ?? false) ||
+    updatingSharedBulk ||
     Object.keys(usageUpdatingSkillKeys).some((key) => key.startsWith(`${UNIVERSAL_AGENT_ID}::`));
   const isMutationInProgress = isRemoving || isPlatformUsageUpdating;
   const managedInstallCount = usageStatus?.skills.length ?? 0;
@@ -156,17 +195,118 @@ export function UniversalInstallView() {
       await setSkillUsage(skillId, UNIVERSAL_AGENT_ID, enabled);
       await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
     } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
     }
   }
 
-  async function handlePlatformUsageChange() {
-    if (!canPausePlatform && !canRestorePlatform) return;
+  async function openSingleSharedDialog(sharedInstallId: string) {
     try {
-      await setPlatformUsage(UNIVERSAL_AGENT_ID, !canPausePlatform);
+      const impact = await loadSharedSkillImpact(sharedInstallId);
+      setSharedDialogImpacts([impact]);
+      setSharedDialogDesired(!impact.enabled);
+      setSharedDialogBulk(false);
+      setSharedDialogOpen(true);
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  async function openBulkSharedDialog() {
+    if (!canPausePlatform && !canRestorePlatform) return;
+    if (sharedDialogOpen || sharedDialogConfirming || isPlatformUsageUpdating) return;
+    const desired = !canPausePlatform;
+    const targets = (usageStatus?.skills ?? []).filter((usage) =>
+      desired ? !usage.enabled && usage.paused_by_bulk : usage.enabled
+    );
+    if (targets.length === 0) {
+      toast.error(t("sharedImpact.bulkEmpty"));
+      return;
+    }
+    const sharedIds: string[] = [];
+    for (const target of targets) {
+      const sharedId = resolveUniversalSharedInstallId(
+        sharedControlBySkillId.get(target.skill_id)
+      );
+      if (!sharedId) {
+        toast.error(t("sharedImpact.bulkIncomplete"));
+        return;
+      }
+      sharedIds.push(sharedId);
+    }
+    try {
+      const fresh: SharedSkillImpact[] = [];
+      for (const sharedId of sharedIds) {
+        fresh.push(await loadSharedSkillImpact(sharedId));
+      }
+      setSharedDialogImpacts(fresh);
+      setSharedDialogDesired(desired);
+      setSharedDialogBulk(true);
+      setSharedDialogOpen(true);
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  async function confirmSharedDialog() {
+    if (sharedDialogConfirming || sharedDialogImpacts.length === 0) return;
+    setSharedDialogConfirming(true);
+    try {
+      if (sharedDialogBulk) {
+        const confirmations = sharedDialogImpacts.map((impact) => ({
+          shared_install_id: impact.shared_install_id,
+          confirmation_token: impact.confirmation_token,
+        }));
+        const result = await setSharedPlatformUsage(sharedDialogDesired, confirmations);
+        if (!result.applied) {
+          setSharedDialogImpacts(result.impacts);
+          toast.error(
+            result.failed.length > 0
+              ? t("sharedImpact.bulkPartial", { failed: result.failed.length })
+              : t("sharedImpact.stale")
+          );
+          return;
+        }
+        setSharedDialogOpen(false);
+        setSharedDialogImpacts([]);
+        await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
+        if (result.failed.length > 0) {
+          toast.error(
+            t("sharedImpact.bulkPartial", {
+              failed: result.failed.length,
+            })
+          );
+        } else {
+          toast.success(
+            t(
+              sharedDialogDesired ? "sharedImpact.bulkEnableSuccess" : "sharedImpact.bulkDisableSuccess",
+              { count: result.impacts.length }
+            )
+          );
+        }
+        return;
+      }
+      const current = sharedDialogImpacts[0];
+      const result = await setSharedSkillUsage(
+        current.shared_install_id,
+        sharedDialogDesired,
+        current.confirmation_token
+      );
+      if (!result.applied) {
+        setSharedDialogImpacts([result.impact]);
+        toast.error(t("sharedImpact.stale"));
+        return;
+      }
+      setSharedDialogOpen(false);
+      setSharedDialogImpacts([]);
       await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
     } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
+    } finally {
+      setSharedDialogConfirming(false);
     }
   }
 
@@ -251,7 +391,7 @@ export function UniversalInstallView() {
                   isPlatformUsageUpdating ||
                   (!canPausePlatform && !canRestorePlatform)
                 }
-                onCheckedChange={() => void handlePlatformUsageChange()}
+                onCheckedChange={() => void openBulkSharedDialog()}
                 aria-label={t("skillUsage.togglePlatform", { name: t("universal.title") })}
               />
               <span className="text-xs text-muted-foreground">
@@ -328,6 +468,8 @@ export function UniversalInstallView() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
             {filteredSkills.map((skill) => {
               const usage = usageBySkillId.get(skill.id);
+              const sharedEntry = sharedControlBySkillId.get(skill.id);
+              const sharedImpact = sharedEntry?.shared_install ?? null;
               const hasExternalCounterpart = skills.some(
                 (candidate) =>
                   candidate.id === skill.id &&
@@ -354,7 +496,19 @@ export function UniversalInstallView() {
                     : undefined}
                   isReadOnly={skill.is_read_only ?? false}
                   isExternallyManaged={skill.source_kind === "unmanaged"}
-                  usageControl={usage && !skill.is_read_only
+                  sharedControl={sharedImpact
+                    ? {
+                        impact: sharedImpact,
+                        excludedHere: false,
+                        onToggleShared: () =>
+                          void openSingleSharedDialog(sharedImpact.shared_install_id),
+                        isLoading:
+                          (updatingSharedKeys[
+                            `shared::${sharedImpact.shared_install_id}`
+                          ] ?? false) || updatingSharedBulk,
+                      }
+                    : undefined}
+                  usageControl={!sharedImpact && usage && !skill.is_read_only
                     ? {
                         enabled: usage.enabled,
                         pausedByBulk: usage.paused_by_bulk,
@@ -375,7 +529,12 @@ export function UniversalInstallView() {
                   uninstallFromLabel={t("universal.removeOne", { skill: skill.name })}
                   isLoading={
                     isMutationInProgress ||
-                    (pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false)
+                    (pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false) ||
+                    (sharedImpact
+                      ? (updatingSharedKeys[
+                          `shared::${sharedImpact.shared_install_id}`
+                        ] ?? false) || updatingSharedBulk
+                      : false)
                   }
                 />
               );
@@ -457,6 +616,36 @@ export function UniversalInstallView() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SharedSkillImpactDialog
+        open={sharedDialogOpen}
+        onOpenChange={(open) => {
+          if (sharedDialogConfirming) return;
+          setSharedDialogOpen(open);
+          if (!open) setSharedDialogImpacts([]);
+        }}
+        impacts={sharedDialogImpacts}
+        currentAgentId={UNIVERSAL_AGENT_ID}
+        isConfirming={sharedDialogConfirming}
+        onConfirm={() => void confirmSharedDialog()}
+        title={
+          sharedDialogBulk
+            ? t(
+                sharedDialogDesired ? "sharedImpact.titleBulkEnable" : "sharedImpact.titleBulkDisable",
+                { count: sharedDialogImpacts.length }
+              )
+            : sharedDialogImpacts.length > 0
+              ? t(
+                  sharedDialogDesired ? "sharedImpact.titleEnable" : "sharedImpact.titleDisable",
+                  { name: sharedDialogImpacts[0].skill_name }
+                )
+              : t("sharedImpact.titleDisable", { name: "" })
+        }
+        description={t("sharedImpact.description")}
+        confirmLabel={
+          sharedDialogDesired ? t("sharedImpact.confirmEnable") : t("sharedImpact.confirmDisable")
+        }
+      />
 
       <SkillDetailDrawer
         open={drawerSkill !== null}

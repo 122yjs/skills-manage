@@ -22,6 +22,7 @@ import {
 import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
 import { canTransferSkill, skillSelectionKey, useSkillSelection } from "@/hooks/useSkillSelection";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
+import { SharedSkillImpactDialog } from "@/components/skill/SharedSkillImpactDialog";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import {
   SkillFolderDrawer,
@@ -37,7 +38,7 @@ import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { cn } from "@/lib/utils";
 import { isUniversalSource, UNIVERSAL_AGENT_ID } from "@/lib/agents";
-import { ScannedSkill, SkillWithLinks, type PlatformSkillControlStatus } from "@/types";
+import { ScannedSkill, SkillWithLinks, type PlatformSkillControlStatus, type SharedSkillImpact } from "@/types";
 
 const EMPTY_PLATFORM_CONTROLS: PlatformSkillControlStatus[] = [];
 const EMPTY_PLATFORM_CONTROL_UPDATES: Record<string, boolean> = {};
@@ -104,6 +105,10 @@ export function PlatformView() {
   const updatingPlatformControlKeys = useSkillUsageStore(
     (state) => state.updatingPlatformControlKeys ?? EMPTY_PLATFORM_CONTROL_UPDATES
   );
+  const updatingSharedKeys = useSkillUsageStore((state) => state.updatingSharedKeys);
+  const updatingSharedBulk = useSkillUsageStore((state) => state.updatingSharedBulk);
+  const loadSharedSkillImpact = useSkillUsageStore((state) => state.loadSharedSkillImpact);
+  const setSharedSkillUsage = useSkillUsageStore((state) => state.setSharedSkillUsage);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
@@ -120,6 +125,10 @@ export function PlatformView() {
   const [isPluginBundleDialogOpen, setIsPluginBundleDialogOpen] = useState(false);
   const [returnFocusRowKey, setReturnFocusRowKey] = useState<string | null>(null);
   const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
+  const [sharedDialogOpen, setSharedDialogOpen] = useState(false);
+  const [sharedDialogImpacts, setSharedDialogImpacts] = useState<SharedSkillImpact[]>([]);
+  const [sharedDialogDesired, setSharedDialogDesired] = useState(false);
+  const [sharedDialogConfirming, setSharedDialogConfirming] = useState(false);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const detailButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -196,6 +205,7 @@ export function PlatformView() {
       await setSkillUsage(skillId, agentId, enabled);
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
     } catch (err) {
+      if (isSkillUsageBusyError(err)) return;
       toast.error(t("skillUsage.updateError", { error: String(err) }));
     }
   }
@@ -279,6 +289,48 @@ export function PlatformView() {
     }
   }
 
+  async function openSharedDialog(control: PlatformSkillControlStatus) {
+    const sharedInstallId = control.shared_install?.shared_install_id;
+    if (!sharedInstallId) return;
+    try {
+      const impact = await loadSharedSkillImpact(sharedInstallId);
+      setSharedDialogImpacts([impact]);
+      setSharedDialogDesired(!impact.enabled);
+      setSharedDialogOpen(true);
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    }
+  }
+
+  async function confirmSharedDialog() {
+    const current = sharedDialogImpacts[0];
+    if (!current || sharedDialogConfirming) return;
+    setSharedDialogConfirming(true);
+    try {
+      const result = await setSharedSkillUsage(
+        current.shared_install_id,
+        sharedDialogDesired,
+        current.confirmation_token
+      );
+      if (!result.applied) {
+        setSharedDialogImpacts([result.impact]);
+        toast.error(t("sharedImpact.stale"));
+        return;
+      }
+      setSharedDialogOpen(false);
+      setSharedDialogImpacts([]);
+      if (agentId) {
+        await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      }
+    } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
+      toast.error(t("skillUsage.updateError", { error: String(error) }));
+    } finally {
+      setSharedDialogConfirming(false);
+    }
+  }
+
   const isLoading = agentId ? (loadingByAgent[agentId] ?? false) : false;
 
   // Memoize skills to avoid changing dependency reference on every render
@@ -310,6 +362,7 @@ export function PlatformView() {
       await setPlatformUsage(agentId, !canPausePlatform);
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
     } catch (error) {
+      if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
     }
   }
@@ -842,7 +895,9 @@ export function PlatformView() {
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
                           isUniversalSource={isUniversalSource(skill, universalRoot)}
-                          usageControl={isManagedInstallation && usage
+                          usageControl={platformControl?.shared_install
+                            ? undefined
+                            : isManagedInstallation && usage
                             ? {
                                 enabled: usage.enabled,
                                 pausedByBulk: usage.paused_by_bulk,
@@ -870,6 +925,36 @@ export function PlatformView() {
                                   state: platformControl.state,
                                 }
                               : undefined}
+                          sharedControl={platformControl?.shared_install && !isDeletedPlatformControl
+                            ? {
+                                impact: platformControl.shared_install,
+                                excludedHere: platformControl.excluded_here ?? false,
+                                onToggleShared: () => void openSharedDialog(platformControl),
+                                isLoading:
+                                  ((agentId
+                                    ? updatingSharedKeys[
+                                        `shared::${platformControl.shared_install.shared_install_id}`
+                                      ] ?? false
+                                    : false) || updatingSharedBulk),
+                                individual: platformControl.supported
+                                  ? {
+                                      enabled: !(platformControl.excluded_here ?? false),
+                                      canToggle: platformControl.can_toggle,
+                                      disabledReason: platformControl.can_toggle
+                                        ? undefined
+                                        : (platformControl.reason ??
+                                          t("skillUsage.platformControlUnavailable")),
+                                      onToggle: (enabled) =>
+                                        void handlePlatformControlChange(skill, enabled),
+                                      isLoading:
+                                        updatingPlatformControlKeys[
+                                          `${agentId}::${skill.dir_path}`
+                                        ] ?? false,
+                                      platformDisplayName: agent.display_name,
+                                    }
+                                  : null,
+                              }
+                            : undefined}
                           platformControlNotice={
                             platformControl?.supported
                               ? [
@@ -886,7 +971,12 @@ export function PlatformView() {
                               ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false) ||
                                 (usageUpdatingSkillKeys[`${agentId}::${skill.id}`] ?? false) ||
                                 (usageUpdatingAgentIds[agentId] ?? false) ||
-                                (updatingPlatformControlKeys[`${agentId}::${skill.dir_path}`] ?? false)
+                                (updatingPlatformControlKeys[`${agentId}::${skill.dir_path}`] ?? false) ||
+                                (platformControl?.shared_install
+                                  ? (updatingSharedKeys[
+                                      `shared::${platformControl.shared_install.shared_install_id}`
+                                    ] ?? false) || updatingSharedBulk
+                                  : false)
                               : false
                           }
                           onDetail={() => handleOpenDrawer(skill)}
@@ -946,6 +1036,30 @@ export function PlatformView() {
           </div>
         )}
       </div>
+
+      <SharedSkillImpactDialog
+        open={sharedDialogOpen}
+        onOpenChange={(open) => {
+          if (sharedDialogConfirming) return;
+          setSharedDialogOpen(open);
+          if (!open) setSharedDialogImpacts([]);
+        }}
+        impacts={sharedDialogImpacts}
+        currentAgentId={agentId}
+        isConfirming={sharedDialogConfirming}
+        onConfirm={() => void confirmSharedDialog()}
+        title={
+          sharedDialogImpacts.length > 0
+            ? sharedDialogDesired
+              ? t("sharedImpact.titleEnable", { name: sharedDialogImpacts[0].skill_name })
+              : t("sharedImpact.titleDisable", { name: sharedDialogImpacts[0].skill_name })
+            : t("sharedImpact.titleDisable", { name: "" })
+        }
+        description={t("sharedImpact.description")}
+        confirmLabel={
+          sharedDialogDesired ? t("sharedImpact.confirmEnable") : t("sharedImpact.confirmDisable")
+        }
+      />
 
       {/* Install Dialog */}
       <InstallDialog

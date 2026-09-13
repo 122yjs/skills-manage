@@ -20,10 +20,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
-import type { AgentWithStatus, ClaudeSourceKind, SkillDescriptionTranslationMeta } from "@/types";
+import type {
+  AgentWithStatus,
+  ClaudeSourceKind,
+  SharedSkillImpact,
+  SkillDescriptionTranslationMeta,
+} from "@/types";
 import { cn } from "@/lib/utils";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
+import { formatPathForDisplay } from "@/lib/path";
 
 const FEATURED_CODING_AGENT_IDS = [
   "cursor",
@@ -131,6 +137,21 @@ export interface UnifiedSkillCardProps {
     disabledReason?: string;
     state?: "active" | "inactive" | "deleted" | "unsupported" | string;
   };
+  /** 공용 설치의 공통 on/off와 이 플랫폼 제외 상태를 구분해서 보여 준다. */
+  sharedControl?: {
+    impact: SharedSkillImpact;
+    excludedHere: boolean;
+    onToggleShared: () => void;
+    isLoading?: boolean;
+    individual?: {
+      enabled: boolean;
+      canToggle: boolean;
+      disabledReason?: string;
+      onToggle: (enabled: boolean) => void;
+      isLoading?: boolean;
+      platformDisplayName: string;
+    } | null;
+  };
   /** 적용 삭제 상태에서만 표시하는 명시적 재적용 동작. */
   onReapplyPlatform?: () => void;
   reapplyPlatformLabel?: string;
@@ -184,6 +205,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     isUniversalSource,
     isExternallyManaged,
     usageControl,
+    sharedControl,
     onReapplyPlatform,
     reapplyPlatformLabel,
     platformControlNotice,
@@ -503,6 +525,89 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
               <span className="text-[10px] text-amber-700 dark:text-amber-300" title={usageControl.disabledReason}>
                 {usageControl.disabledReason}
               </span>
+            )}
+
+            {sharedControl && (
+              <span
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <span className="min-w-0 truncate" title={sharedControl.impact.skill_name}>
+                  {sharedControl.impact.enabled
+                    ? t("skillUsage.sharedActive")
+                    : t("skillUsage.sharedPaused")}
+                  {" · "}
+                  {t("skillUsage.sharedConfirmed", {
+                    count: sharedControl.impact.confirmed_platforms.length,
+                  })}
+                </span>
+                <Switch
+                  checked={sharedControl.impact.enabled}
+                  disabled={sharedControl.isLoading || Boolean(sharedControl.impact.reason)}
+                  onCheckedChange={() => sharedControl.onToggleShared()}
+                  aria-label={t("skillUsage.toggleSharedSkill", { name })}
+                  className="h-4 w-7 shrink-0 [&_[data-slot=switch-thumb]]:size-3 [&_[data-slot=switch-thumb]]:group-data-[checked]/switch:translate-x-3"
+                />
+              </span>
+            )}
+
+            {sharedControl?.impact.reason && (
+              <span
+                className="min-w-0 break-words text-[10px] text-amber-700 dark:text-amber-300"
+                title={`${sharedControl.impact.management_path} · ${sharedControl.impact.reason}`}
+                onClick={(event) => event.stopPropagation()}
+              >
+                {t("sharedImpact.managementPath", {
+                  path: formatPathForDisplay(sharedControl.impact.management_path),
+                })}{" · "}
+                {t("sharedImpact.restricted", { reason: sharedControl.impact.reason })}
+              </span>
+            )}
+
+            {sharedControl && sharedControl.excludedHere && (
+              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/40 dark:text-amber-300">
+                {t("skillUsage.excludedHere")}
+              </span>
+            )}
+
+            {sharedControl?.individual && (
+              <details
+                className="min-w-0 text-[10px] text-muted-foreground"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <summary className="cursor-pointer rounded px-1 py-0.5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  {t("skillUsage.individualMenu")}
+                </summary>
+                <div className="mt-1 flex min-w-0 items-center gap-1.5">
+                  <Switch
+                    checked={sharedControl.individual.enabled}
+                    disabled={
+                      sharedControl.individual.isLoading ||
+                      !sharedControl.individual.canToggle ||
+                      Boolean(sharedControl.individual.disabledReason)
+                    }
+                    onCheckedChange={sharedControl.individual.onToggle}
+                    aria-label={t("skillUsage.toggleIndividualSkill", {
+                      name,
+                      platform: sharedControl.individual.platformDisplayName,
+                    })}
+                    className="h-4 w-7 shrink-0 [&_[data-slot=switch-thumb]]:size-3 [&_[data-slot=switch-thumb]]:group-data-[checked]/switch:translate-x-3"
+                  />
+                  <span className="min-w-0 truncate">
+                    {sharedControl.individual.enabled
+                      ? t("skillUsage.active")
+                      : t("skillUsage.paused")}
+                  </span>
+                </div>
+                {sharedControl.individual.disabledReason && (
+                  <span
+                    className="mt-0.5 block min-w-0 break-words text-amber-700 dark:text-amber-300"
+                    title={sharedControl.individual.disabledReason}
+                  >
+                    {sharedControl.individual.disabledReason}
+                  </span>
+                )}
+              </details>
             )}
 
             {platformControlNotice && !usageControl?.disabledReason && (

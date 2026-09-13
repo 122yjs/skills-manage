@@ -197,6 +197,107 @@ describe("UnifiedSkillCard platform toggles", () => {
   });
 });
 
+describe("UnifiedSkillCard shared control", () => {
+  const sharedImpact = {
+    shared_install_id: "/Users/test/.agents/skills/demo",
+    skill_id: "demo-skill",
+    skill_name: "demo-skill",
+    enabled: true,
+    confirmed_platforms: [
+      { agent_id: "claude-code", display_name: "Claude Code" },
+      { agent_id: "cursor", display_name: "Cursor" },
+    ],
+    separate_installs: [],
+    reason: null,
+    management_path: "/Users/test/.agents/skills/demo",
+    confirmation_token: "token-1",
+  };
+
+  function renderShared(excludedHere: boolean, individual = true) {
+    const onToggleShared = vi.fn();
+    const onIndividualToggle = vi.fn();
+    render(
+      <UnifiedSkillCard
+        name="demo-skill"
+        description="Demo skill"
+        sharedControl={{
+          impact: sharedImpact,
+          excludedHere,
+          onToggleShared,
+          individual: individual
+            ? {
+                enabled: !excludedHere,
+                canToggle: true,
+                onToggle: onIndividualToggle,
+                platformDisplayName: "Claude Code",
+              }
+            : null,
+        }}
+      />
+    );
+    return { onToggleShared, onIndividualToggle };
+  }
+
+  it("shows shared state and exclusion distinctly", () => {
+    renderShared(true);
+
+    const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
+    expect(sharedSwitch).toBeChecked();
+    expect(screen.getByText("已在此平台排除")).toBeInTheDocument();
+  });
+
+  it("keeps exclusion independent of the shared toggle", () => {
+    const { onToggleShared } = renderShared(true);
+
+    const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
+    fireEvent.click(sharedSwitch);
+    expect(onToggleShared).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("已在此平台排除")).toBeInTheDocument();
+    expect(sharedSwitch).toBeChecked();
+  });
+
+  it("keeps the supported individual toggle in a secondary menu", () => {
+    const { onToggleShared, onIndividualToggle } = renderShared(false);
+
+    const menu = screen.getByText("单个平台控制").closest("details");
+    expect(menu).not.toBeNull();
+    expect(menu).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("单个平台控制"));
+    expect(menu).toHaveAttribute("open");
+
+    const individual = screen.getByRole("switch", {
+      name: "仅在 Claude Code 切换 demo-skill",
+    });
+    expect(individual).toBeChecked();
+    fireEvent.click(individual);
+
+    expect(onIndividualToggle).toHaveBeenCalledWith(false);
+    expect(onToggleShared).not.toHaveBeenCalled();
+  });
+
+  it("disables the shared switch and shows the reason when restricted", () => {
+    const onToggleShared = vi.fn();
+    render(
+      <UnifiedSkillCard
+        name="demo-skill"
+        description="Demo skill"
+        sharedControl={{
+          impact: { ...sharedImpact, reason: "vault overlaps the install entry" },
+          excludedHere: false,
+          onToggleShared,
+        }}
+      />
+    );
+
+    const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
+    expect(
+      sharedSwitch.getAttribute("data-disabled") !== null ||
+        sharedSwitch.getAttribute("aria-disabled") === "true"
+    ).toBe(true);
+    expect(screen.getByText(/vault overlaps the install entry/)).toBeInTheDocument();
+  });
+});
+
 describe("UnifiedSkillCard localized description", () => {
   it("translation 메타가 있는 클릭형 카드에 중첩 버튼을 만들지 않는다", () => {
     const { container } = render(

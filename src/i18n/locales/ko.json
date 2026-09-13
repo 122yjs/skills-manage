@@ -258,7 +258,15 @@
     "platformControlDeleteConfirm": "{{platform}}에서 {{name}} 적용만 삭제",
     "platformControlDeleteSuccess": "{{platform}}에서 {{name}} 적용을 삭제했습니다.",
     "platformControlReapply": "{{platform}}에 {{name}} 적용",
-    "platformControlReapplySuccess": "{{platform}}에 {{name}} 적용을 다시 활성화했습니다."
+    "platformControlReapplySuccess": "{{platform}}에 {{name}} 적용을 다시 활성화했습니다.",
+    "sharedActive": "공용 켜짐",
+    "sharedPaused": "공용 꺼짐",
+    "sharedConfirmed": "확인됨 {{count}}개",
+    "excludedHere": "이 플랫폼에서 제외됨",
+    "individualMenu": "개별 플랫폼 제어",
+    "toggleSharedSkill": "{{name}} 공용 상태 전환",
+    "toggleIndividualSkill": "{{platform}}에서만 {{name}} 전환",
+    "sharedDesktopRequired": "공용 설치는 데스크톱 앱에서만 관리할 수 있습니다."
   },
   "storage": {
     "title": "스킬 보관함 위치",
@@ -950,5 +958,33 @@
     "quickToggleHint": "플랫폼 아이콘을 눌러 사용 상태를 바꾸세요.",
     "skillResults": "스킬 목록",
     "emptyFolder": "이 폴더에는 스킬이 없습니다."
+  },
+  "sharedImpact": {
+    "titleEnable": "공용 설치를 켤까요? ({{name}})",
+    "titleDisable": "공용 설치를 끌까요? ({{name}})",
+    "titleBulkEnable": "공용 설치 {{count}}개를 복원할까요?",
+    "titleBulkDisable": "공용 설치 {{count}}개를 끌까요?",
+    "description": "공용 설치는 아래 확인된 플랫폼이 함께 읽습니다. 보관함 원본과 이 플랫폼의 제외 설정은 유지됩니다.",
+    "confirmedPlatforms": "확인된 플랫폼 ({{count}}개)",
+    "separateInstalls": "별도 설치 ({{count}}개)",
+    "showDetails": "자세히 보기",
+    "hideDetails": "접기",
+    "confirmedCount": "확인됨 {{count}}개",
+    "confirmedEmpty": "확인된 플랫폼이 없습니다. 이 경로를 읽는 다른 도구도 영향을 받을 수 있습니다.",
+    "separateEmpty": "별도 설치가 없습니다.",
+    "separateNote": "별도 설치는 같은 내용을 독립적으로 가리키며 이 변경 후에도 계속 동작할 수 있습니다.",
+    "separateWarning": "별도 설치 {{count}}개는 이 변경 후에도 계속 동작할 수 있습니다.",
+    "unconfirmedWarning": "목록에 없어도 이 경로를 읽는 다른 도구가 영향을 받을 수 있습니다.",
+    "managementPath": "관리 경로: {{path}}",
+    "restricted": "변경할 수 없음: {{reason}}",
+    "currentPlatform": "현재",
+    "confirmEnable": "공용 켜기",
+    "confirmDisable": "공용 끄기",
+    "stale": "영향 범위가 바뀌었습니다. 바뀐 내용을 확인하고 다시 확정해 주세요.",
+    "bulkEmpty": "확인할 공용 설치가 없습니다.",
+    "bulkIncomplete": "이 변경에 해당하는 공용 설치를 모두 확인하지 못했습니다.",
+    "bulkPartial": "공용 설치 {{failed}}개를 바꾸지 못했습니다.",
+    "bulkEnableSuccess": "공용 설치 {{count}}개를 복원했습니다.",
+    "bulkDisableSuccess": "공용 설치 {{count}}개를 껐습니다."
   }
 }

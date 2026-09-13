@@ -70,6 +70,9 @@ pub fn run() {
             commands::usage::get_skill_usage_status,
             commands::usage::set_skill_usage,
             commands::usage::set_platform_usage,
+            commands::usage::get_shared_skill_impact,
+            commands::usage::set_shared_skill_usage,
+            commands::usage::set_shared_platform_usage,
             commands::usage::delete_skill_from_agent,
             commands::usage::delete_platform_installations,
             // Platform skill controls

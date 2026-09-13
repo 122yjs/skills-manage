@@ -1,8 +1,13 @@
 import { create } from "zustand";
 
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import i18n from "@/i18n";
 import type {
   PlatformSkillControlStatus,
+  SharedPlatformUsageResult,
+  SharedSkillConfirmation,
+  SharedSkillImpact,
+  SharedSkillUsageResult,
   UsageSkillStatus,
   UsageStatus,
 } from "@/types";
@@ -13,6 +18,26 @@ function skillActionKey(agentId: string, skillId: string) {
 
 function platformControlKey(agentId: string, sourcePath: string) {
   return `${agentId}::${sourcePath}`;
+}
+
+function sharedActionKey(sharedInstallId: string) {
+  return `shared::${sharedInstallId}`;
+}
+
+function hasAnySkillUsageMutation(state: {
+  updatingSkillKeys: Record<string, boolean>;
+  updatingAgentIds: Record<string, boolean>;
+  updatingPlatformControlKeys: Record<string, boolean>;
+  updatingSharedKeys: Record<string, boolean>;
+  updatingSharedBulk: boolean;
+}): boolean {
+  return (
+    Object.keys(state.updatingSkillKeys).length > 0 ||
+    Object.keys(state.updatingAgentIds).length > 0 ||
+    Object.keys(state.updatingPlatformControlKeys).length > 0 ||
+    Object.keys(state.updatingSharedKeys).length > 0 ||
+    state.updatingSharedBulk
+  );
 }
 
 export interface PlatformSkillControlTarget {
@@ -96,6 +121,9 @@ interface SkillUsageState {
   error: string | null;
   platformControlsByAgent: Record<string, PlatformSkillControlStatus[]>;
   updatingPlatformControlKeys: Record<string, boolean>;
+  sharedImpactsById: Record<string, SharedSkillImpact>;
+  updatingSharedKeys: Record<string, boolean>;
+  updatingSharedBulk: boolean;
 
   loadUsageStatus: () => Promise<void>;
   setSkillUsage: (skillId: string, agentId: string, enabled: boolean) => Promise<void>;
@@ -118,6 +146,18 @@ interface SkillUsageState {
     agentId: string,
     target: PlatformSkillControlTarget
   ) => Promise<void>;
+  getSharedImpact: (sharedInstallId: string) => SharedSkillImpact | undefined;
+  loadSharedSkillImpact: (sharedInstallId: string) => Promise<SharedSkillImpact>;
+  setSharedSkillUsage: (
+    sharedInstallId: string,
+    enabled: boolean,
+    confirmationToken: string
+  ) => Promise<SharedSkillUsageResult>;
+  setSharedPlatformUsage: (
+    enabled: boolean,
+    confirmations: SharedSkillConfirmation[]
+  ) => Promise<SharedPlatformUsageResult>;
+  reloadSharedRelatedState: (impacts: SharedSkillImpact[]) => Promise<void>;
 }
 
 /**
@@ -132,6 +172,9 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
   error: null,
   platformControlsByAgent: {},
   updatingPlatformControlKeys: {},
+  sharedImpactsById: {},
+  updatingSharedKeys: {},
+  updatingSharedBulk: false,
 
   loadUsageStatus: async () => {
     set({ isLoading: true, error: null });
@@ -151,7 +194,9 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
 
   setSkillUsage: async (skillId, agentId, enabled) => {
     const actionKey = skillActionKey(agentId, skillId);
-    if (get().updatingSkillKeys[actionKey] || get().updatingAgentIds[agentId]) return;
+    if (hasAnySkillUsageMutation(get())) {
+      throw new SkillUsageBusyError();
+    }
 
     set((state) => ({
       updatingSkillKeys: { ...state.updatingSkillKeys, [actionKey]: true },
@@ -187,10 +232,9 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
   },
 
   setPlatformUsage: async (agentId, enabled) => {
-    if (
-      get().updatingAgentIds[agentId] ||
-      Object.keys(get().updatingSkillKeys).some((key) => key.startsWith(`${agentId}::`))
-    ) return;
+    if (hasAnySkillUsageMutation(get())) {
+      throw new SkillUsageBusyError();
+    }
 
     set((state) => ({
       updatingAgentIds: { ...state.updatingAgentIds, [agentId]: true },
@@ -239,7 +283,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
 
   deleteSkillFromAgent: async (skillId, agentId) => {
     const actionKey = skillActionKey(agentId, skillId);
-    if (get().updatingSkillKeys[actionKey] || get().updatingAgentIds[agentId]) {
+    if (hasAnySkillUsageMutation(get())) {
       throw new SkillUsageBusyError();
     }
 
@@ -277,10 +321,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
   },
 
   deletePlatformInstallations: async (agentId) => {
-    if (
-      get().updatingAgentIds[agentId] ||
-      Object.keys(get().updatingSkillKeys).some((key) => key.startsWith(`${agentId}::`))
-    ) {
+    if (hasAnySkillUsageMutation(get())) {
       throw new SkillUsageBusyError();
     }
 
@@ -361,7 +402,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
 
   setPlatformSkillControl: async (agentId, target, enabled) => {
     const actionKey = platformControlKey(agentId, target.sourcePath);
-    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+    if (hasAnySkillUsageMutation(get())) {
       throw new SkillUsageBusyError();
     }
     set((state) => ({
@@ -402,7 +443,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
 
   deletePlatformSkillControl: async (agentId, target) => {
     const actionKey = platformControlKey(agentId, target.sourcePath);
-    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+    if (hasAnySkillUsageMutation(get())) {
       throw new SkillUsageBusyError();
     }
     set((state) => ({
@@ -442,7 +483,7 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
 
   reapplyPlatformSkillControl: async (agentId, target) => {
     const actionKey = platformControlKey(agentId, target.sourcePath);
-    if (get().updatingPlatformControlKeys[actionKey] || get().updatingAgentIds[agentId]) {
+    if (hasAnySkillUsageMutation(get())) {
       throw new SkillUsageBusyError();
     }
     set((state) => ({
@@ -477,6 +518,151 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
         delete updatingPlatformControlKeys[actionKey];
         return { updatingPlatformControlKeys };
       });
+    }
+  },
+
+  getSharedImpact: (sharedInstallId) => get().sharedImpactsById[sharedInstallId],
+
+  loadSharedSkillImpact: async (sharedInstallId) => {
+    if (!isTauriRuntime()) {
+      const cached = get().sharedImpactsById[sharedInstallId];
+      if (cached) return cached;
+      throw new Error(i18n.t("skillUsage.sharedDesktopRequired"));
+    }
+    const impact = await invoke<SharedSkillImpact>("get_shared_skill_impact", {
+      sharedInstallId,
+    });
+    set((state) => ({
+      sharedImpactsById: { ...state.sharedImpactsById, [sharedInstallId]: impact },
+    }));
+    return impact;
+  },
+
+  setSharedSkillUsage: async (sharedInstallId, enabled, confirmationToken) => {
+    const actionKey = sharedActionKey(sharedInstallId);
+    if (hasAnySkillUsageMutation(get())) {
+      throw new SkillUsageBusyError();
+    }
+    set((state) => ({
+      updatingSharedKeys: { ...state.updatingSharedKeys, [actionKey]: true },
+      error: null,
+    }));
+    try {
+      if (!isTauriRuntime()) {
+        throw new Error(i18n.t("skillUsage.sharedDesktopRequired"));
+      }
+      const result = await invoke<SharedSkillUsageResult>("set_shared_skill_usage", {
+        sharedInstallId,
+        enabled,
+        confirmationToken,
+      });
+      set((state) => ({
+        sharedImpactsById: {
+          ...state.sharedImpactsById,
+          [result.impact.shared_install_id]: result.impact,
+        },
+      }));
+      await get().reloadSharedRelatedState([result.impact]);
+      return result;
+    } catch (error) {
+      try {
+        await get().loadUsageStatus();
+      } catch {
+        // 원래 공용 제어 오류를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set((state) => {
+        const updatingSharedKeys = { ...state.updatingSharedKeys };
+        delete updatingSharedKeys[actionKey];
+        return { updatingSharedKeys };
+      });
+    }
+  },
+
+  setSharedPlatformUsage: async (enabled, confirmations) => {
+    if (hasAnySkillUsageMutation(get())) {
+      throw new SkillUsageBusyError();
+    }
+    set({ updatingSharedBulk: true, error: null });
+    try {
+      if (!isTauriRuntime()) {
+        throw new Error(i18n.t("skillUsage.sharedDesktopRequired"));
+      }
+      const result = await invoke<SharedPlatformUsageResult>("set_shared_platform_usage", {
+        enabled,
+        confirmations,
+      });
+      set((state) => {
+        const sharedImpactsById = { ...state.sharedImpactsById };
+        for (const impact of result.impacts) {
+          sharedImpactsById[impact.shared_install_id] = impact;
+        }
+        return { sharedImpactsById };
+      });
+      await get().reloadSharedRelatedState(result.impacts);
+      return result;
+    } catch (error) {
+      try {
+        await get().loadUsageStatus();
+      } catch {
+        // 원래 일괄 제어 오류를 호출자에게 유지한다.
+      }
+      set({ error: String(error) });
+      throw error;
+    } finally {
+      set({ updatingSharedBulk: false });
+    }
+  },
+
+  reloadSharedRelatedState: async (impacts) => {
+    const failures: unknown[] = [];
+    try {
+      await get().loadUsageStatus();
+    } catch (error) {
+      failures.push(error);
+    }
+    const agentIds = new Set<string>();
+    for (const impact of impacts) {
+      for (const platform of impact.confirmed_platforms ?? []) {
+        if (platform.agent_id) agentIds.add(platform.agent_id);
+      }
+      for (const separate of impact.separate_installs ?? []) {
+        if (separate.agent_id) agentIds.add(separate.agent_id);
+      }
+    }
+    agentIds.add("universal");
+    try {
+      const { usePlatformStore } = await import("@/stores/platformStore");
+      await usePlatformStore.getState().refreshCounts();
+    } catch (error) {
+      failures.push(error);
+    }
+    try {
+      const { useSkillStore } = await import("@/stores/skillStore");
+      for (const agentId of agentIds) {
+        try {
+          await useSkillStore.getState().getSkillsByAgent(agentId);
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+    } catch (error) {
+      failures.push(error);
+    }
+    for (const agentId of agentIds) {
+      if (!(agentId in get().platformControlsByAgent)) continue;
+      try {
+        await get().loadPlatformSkillControls(agentId);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) {
+      const first = failures[0];
+      set({ error: String(first) });
+      throw first;
     }
   },
 }));
