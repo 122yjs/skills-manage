@@ -139,7 +139,7 @@ describe("AppShell", () => {
   });
 
   it.each(["idle", "loading", "ready", "error"])(
-    "도구 설정이 %s 상태여도 실행당 한 번 스캔하고 완료 후 목록을 갱신한다",
+    "도구 설정이 %s 상태여도 실행당 한 번 스캔하고 완료 후 목록·디스크 스캔을 갱신한다",
     async (status) => {
       let finishScan!: () => void;
       const initialize = vi.fn(() => new Promise<void>((resolve) => {
@@ -147,10 +147,12 @@ describe("AppShell", () => {
       }));
       const loadCentralSkills = vi.fn().mockResolvedValue(undefined);
       const loadUsageStatus = vi.fn().mockResolvedValue(undefined);
+      const rescanFromDisk = vi.fn().mockResolvedValue(undefined);
       const setupState = { status, completed: false, load: vi.fn() };
       mockUseDevToolSetupStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector(setupState) : setupState);
       mockUsePlatformStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ initialize, rescan: vi.fn() }) : { initialize, rescan: vi.fn() });
       mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ loadCentralSkills }) : { loadCentralSkills });
+      mockUseDiscoverStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ rescanFromDisk }) : { rescanFromDisk });
       mockUseSkillUsageStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ loadUsageStatus }) : { loadUsageStatus });
 
       const shell = () => (
@@ -163,23 +165,29 @@ describe("AppShell", () => {
       );
       const { rerender, unmount } = render(shell());
       expect(initialize).toHaveBeenCalledTimes(1);
+      // 플랫폼 스캔이 끝나기 전에는 어떤 후속 갱신도 시작하지 않는다.
       expect(loadCentralSkills).not.toHaveBeenCalled();
+      expect(rescanFromDisk).not.toHaveBeenCalled();
       expect(loadUsageStatus).not.toHaveBeenCalled();
 
       await act(async () => finishScan());
       expect(loadCentralSkills).toHaveBeenCalledTimes(1);
+      expect(rescanFromDisk).toHaveBeenCalledTimes(1);
       expect(loadUsageStatus).toHaveBeenCalledTimes(1);
 
+      // StrictMode 재실행과 리렌더·라우트 변경에도 디스크 스캔은 중복되지 않는다.
       setupState.completed = true;
       rerender(shell());
       await act(async () => testNavigate?.("/central"));
       expect(initialize).toHaveBeenCalledTimes(1);
+      expect(rescanFromDisk).toHaveBeenCalledTimes(1);
 
       // 다음 실행에서는 다시 스캔한다.
       unmount();
       render(shell());
       expect(initialize).toHaveBeenCalledTimes(2);
       await act(async () => finishScan());
+      expect(rescanFromDisk).toHaveBeenCalledTimes(2);
     }
   );
 
@@ -272,7 +280,10 @@ describe("AppShell", () => {
       </MemoryRouter>
     );
     await waitFor(() => expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1));
+    // 시작 시 디스크 스캔이 이미 1회 돌았으므로 수동 재스캔만 검증하도록 초기화한다.
+    expect(mockRescanDiscoverFromDisk).toHaveBeenCalledTimes(1);
     mockLoadCentralSkills.mockClear();
+    mockRescanDiscoverFromDisk.mockClear();
     mockLoadUsageStatus.mockClear();
 
     await act(async () => {
@@ -351,7 +362,10 @@ describe("AppShell", () => {
       </MemoryRouter>
     );
     await waitFor(() => expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1));
+    // 시작 시 디스크 스캔이 이미 1회 돌았으므로 수동 재스캔만 검증하도록 초기화한다.
+    expect(mockRescanDiscoverFromDisk).toHaveBeenCalledTimes(1);
     mockLoadCentralSkills.mockClear();
+    mockRescanDiscoverFromDisk.mockClear();
     mockLoadUsageStatus.mockClear();
 
     await act(async () => {

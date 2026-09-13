@@ -17,6 +17,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useDiscoverStore } from "../stores/discoverStore";
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -89,6 +90,8 @@ describe("discoverStore", () => {
       error: null,
     });
     vi.clearAllMocks();
+    // 동시성 가드 테스트가 mockImplementation을 남겨도 다음 테스트로 새지 않게 한다.
+    vi.mocked(invoke).mockReset();
   });
 
   // ── Initial State ─────────────────────────────────────────────────────────
@@ -574,5 +577,434 @@ describe("discoverStore", () => {
     useDiscoverStore.setState({ error: "something went wrong" });
     useDiscoverStore.getState().clearError();
     expect(useDiscoverStore.getState().error).toBeNull();
+  });
+
+  // ── 동시성 가드 ────────────────────────────────────────────────────────────
+
+  it("늦게 도착한 get_discovered_skills 스냅샷이 더 새로운 디스크 스캔 결과를 덮지 않는다", async () => {
+    const staleProjects: DiscoveredProject[] = [
+      {
+        project_path: "/stale/project",
+        project_name: "stale",
+        skills: [
+          {
+            id: "cursor__stale__old",
+            name: "old",
+            description: "stale row",
+            file_path: "/stale/project/.cursor/skills/old/SKILL.md",
+            dir_path: "/stale/project/.cursor/skills/old",
+            platform_id: "cursor",
+            platform_name: "Cursor",
+            project_path: "/stale/project",
+            project_name: "stale",
+            is_already_central: false,
+          },
+        ],
+      },
+    ];
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    let resolveLoad!: (projects: DiscoveredProject[]) => void;
+    const pendingLoad = new Promise<DiscoveredProject[]>((resolve) => {
+      resolveLoad = resolve;
+    });
+
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_discovered_skills") return pendingLoad;
+      if (command === "get_scan_roots") return Promise.resolve(mockScanRoots);
+      if (command === "start_project_scan") return Promise.resolve(scanResult);
+      return Promise.resolve(undefined);
+    });
+
+    // Sidebar/DiscoverView가 마운트에서 시작한 DB 조회가 아직 진행 중이다.
+    const load = useDiscoverStore.getState().loadDiscoveredSkills();
+    // 그 사이 AppShell의 디스크 재스캔이 먼저 끝나 더 새로운 결과를 반영한다.
+    await useDiscoverStore.getState().rescanFromDisk();
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+
+    // 뒤늦게 도착한 낡은 DB 스냅샷은 최신 디스크 결과를 덮지 않는다.
+    resolveLoad(staleProjects);
+    await load;
+
+    const state = useDiscoverStore.getState();
+    expect(state.discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(state.totalSkillsFound).toBe(2);
+  });
+
+  it("자동 rescanFromDisk의 루트 로딩 중 수동 startScan은 중복 스캔을 시작하지 않는다", async () => {
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    let resolveRoots!: (roots: ScanRoot[]) => void;
+    const pendingRoots = new Promise<ScanRoot[]>((resolve) => {
+      resolveRoots = resolve;
+    });
+
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_scan_roots") return pendingRoots;
+      if (command === "start_project_scan") return Promise.resolve(scanResult);
+      return Promise.resolve(undefined);
+    });
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    const scanCalls = () =>
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan").length;
+
+    const autoRescan = useDiscoverStore.getState().rescanFromDisk();
+    await useDiscoverStore.getState().startScan();
+
+    // 루트를 불러오는 중 들어온 수동 스캔은 백엔드 스캔을 새로 시작하지 않는다.
+    expect(scanCalls()).toBe(0);
+
+    resolveRoots(mockScanRoots);
+    await autoRescan;
+
+    expect(scanCalls()).toBe(1);
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+  });
+
+  it("디스크 스캔이 진행 중일 때 수동 rescanFromDisk는 중복 시작되지 않는다", async () => {
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    let resolveScan!: (result: DiscoverResult) => void;
+    const pendingScan = new Promise<DiscoverResult>((resolve) => {
+      resolveScan = resolve;
+    });
+
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_scan_roots") return Promise.resolve(mockScanRoots);
+      if (command === "start_project_scan") return pendingScan;
+      return Promise.resolve(undefined);
+    });
+
+    const scanCalls = () =>
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan").length;
+
+    const autoRescan = useDiscoverStore.getState().rescanFromDisk();
+    await vi.waitFor(() => expect(scanCalls()).toBe(1));
+
+    // 스캔이 끝나기 전에 들어온 수동 재스캔은 아무것도 시작하지 않는다.
+    await useDiscoverStore.getState().rescanFromDisk();
+    expect(scanCalls()).toBe(1);
+
+    resolveScan(scanResult);
+    await autoRescan;
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(useDiscoverStore.getState().isScanning).toBe(false);
+  });
+
+  it("중지 후에는 이전 스캔이 끝날 때까지 새 스캔을 시작하지 않고, 끝난 뒤 재시도할 수 있다", async () => {
+    const stoppedResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 1,
+      projects: mockDiscoveredProjects,
+    };
+    const retryResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    const pendingScans: Array<(result: DiscoverResult) => void> = [];
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "start_project_scan") {
+        return new Promise<DiscoverResult>((resolve) => {
+          pendingScans.push(resolve);
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    const stoppedScan = useDiscoverStore.getState().startScan();
+    await vi.waitFor(() => expect(pendingScans).toHaveLength(1));
+
+    await useDiscoverStore.getState().stopScan();
+    expect(useDiscoverStore.getState().isScanning).toBe(false);
+
+    // 중지 요청만으로는 스캔이 끝나지 않았으므로 새 IPC를 시작하지 않는다.
+    // (백엔드 start_project_scan이 SCAN_CANCEL을 리셋해 이전 스캔과 겹치는 것을 막는다.)
+    void useDiscoverStore.getState().startScan();
+    await vi.waitFor(() => expect(pendingScans).toHaveLength(1));
+    await vi.waitFor(() => expect(useDiscoverStore.getState().isScanning).toBe(false));
+
+    // 실제 스캔이 끝나면 중지된 스캔의 부분 결과는 그대로 반영되고 가드가 풀린다.
+    pendingScans[0](stoppedResult);
+    await stoppedScan;
+    const stoppedState = useDiscoverStore.getState();
+    expect(stoppedState.isScanning).toBe(false);
+    expect(stoppedState.discoveredProjects).toEqual(mockDiscoveredProjects);
+
+    // 종료 후 재시도는 새 스캔을 시작한다.
+    const retryScan = useDiscoverStore.getState().startScan();
+    await vi.waitFor(() => expect(pendingScans).toHaveLength(2));
+    pendingScans[1](retryResult);
+    await retryScan;
+
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(2);
+  });
+
+  it("루트 로딩 중 중지되면 실제 스캔을 시작하지 않고 상태와 가드를 정리한다", async () => {
+    let resolveStop!: () => void;
+    const pendingStop = new Promise<void>((resolve) => {
+      resolveStop = resolve;
+    });
+    let resolveRoots!: (roots: ScanRoot[]) => void;
+    const pendingRoots = new Promise<ScanRoot[]>((resolve) => {
+      resolveRoots = resolve;
+    });
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_scan_roots") return pendingRoots;
+      if (command === "stop_project_scan") return pendingStop;
+      if (command === "start_project_scan") return Promise.resolve(scanResult);
+      return Promise.resolve(undefined);
+    });
+
+    const rescan = useDiscoverStore.getState().rescanFromDisk();
+    await vi.waitFor(() => expect(useDiscoverStore.getState().isLoadingRoots).toBe(true));
+
+    const stop = useDiscoverStore.getState().stopScan();
+    resolveRoots(mockScanRoots);
+    await rescan;
+
+    // 중지된 스캔은 백엔드 스캔을 시작하지 않고 로딩 표시만 정리한다.
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+    ).toHaveLength(0);
+    expect(useDiscoverStore.getState().isLoadingRoots).toBe(false);
+    expect(useDiscoverStore.getState().isScanning).toBe(false);
+
+    // 중지 응답이 루트 로딩보다 늦게 도착해도 스캔은 시작되지 않는다.
+    resolveStop();
+    await stop;
+
+    // 가드가 풀렸으므로 재시도는 실제 스캔을 시작한다.
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+    await useDiscoverStore.getState().startScan();
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+    ).toHaveLength(1);
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+  });
+
+  it("리스너 준비 중 중지되면 실제 스캔을 시작하지 않고 재시도할 수 있다", async () => {
+    let releaseListen!: () => void;
+    const listenGate = new Promise<void>((resolve) => {
+      releaseListen = resolve;
+    });
+    const gatedListen = () => listenGate.then(() => vi.fn());
+    vi.mocked(listen)
+      .mockImplementationOnce(gatedListen)
+      .mockImplementationOnce(gatedListen)
+      .mockImplementationOnce(gatedListen);
+
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "start_project_scan") return Promise.resolve(scanResult);
+      return Promise.resolve(undefined);
+    });
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    const scan = useDiscoverStore.getState().startScan();
+    await vi.waitFor(() => expect(useDiscoverStore.getState().isScanning).toBe(true));
+
+    // 리스너가 준비되기 전에 중지한다.
+    await useDiscoverStore.getState().stopScan();
+    releaseListen();
+    await scan;
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+    ).toHaveLength(0);
+    expect(useDiscoverStore.getState().isScanning).toBe(false);
+
+    // 가드가 풀렸으므로 재시도는 실제 스캔을 시작한다.
+    await useDiscoverStore.getState().startScan();
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+    ).toHaveLength(1);
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+  });
+
+  it("스캔이 시작되면 진행 중이던 get_discovered_skills 응답과 오류는 버려진다", async () => {
+    const staleProjects: DiscoveredProject[] = [
+      {
+        project_path: "/stale/project",
+        project_name: "stale",
+        skills: [
+          {
+            id: "cursor__stale__old",
+            name: "old",
+            description: "stale row",
+            file_path: "/stale/project/.cursor/skills/old/SKILL.md",
+            dir_path: "/stale/project/.cursor/skills/old",
+            platform_id: "cursor",
+            platform_name: "Cursor",
+            project_path: "/stale/project",
+            project_name: "stale",
+            is_already_central: false,
+          },
+        ],
+      },
+    ];
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    let resolveLoad!: (projects: DiscoveredProject[]) => void;
+    const pendingLoad = new Promise<DiscoveredProject[]>((resolve) => {
+      resolveLoad = resolve;
+    });
+    let rejectLoad!: (err: Error) => void;
+    const pendingError = new Promise<DiscoveredProject[]>((_, reject) => {
+      rejectLoad = reject;
+    });
+    let resolveScan!: (result: DiscoverResult) => void;
+    const pendingScan = new Promise<DiscoverResult>((resolve) => {
+      resolveScan = resolve;
+    });
+
+    let loadCalls = 0;
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_discovered_skills") {
+        loadCalls += 1;
+        return loadCalls === 1 ? pendingLoad : pendingError;
+      }
+      if (command === "start_project_scan") return pendingScan;
+      return Promise.resolve(undefined);
+    });
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    // 스캔 시작 전에 시작된 DB 조회 두 건이 아직 진행 중이다.
+    const load = useDiscoverStore.getState().loadDiscoveredSkills();
+    const refresh = useDiscoverStore.getState().refreshCounts();
+
+    const scan = useDiscoverStore.getState().startScan();
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+      ).toHaveLength(1)
+    );
+
+    // 스캔 도중 늦게 도착한 DB 스냅샷과 조회 오류는 스트리밍 결과를 덮지 않는다.
+    resolveLoad(staleProjects);
+    await load;
+    rejectLoad(new Error("stale load failed"));
+    await refresh;
+
+    const midScanState = useDiscoverStore.getState();
+    expect(midScanState.discoveredProjects).toEqual([]);
+    expect(midScanState.totalSkillsFound).toBe(0);
+    expect(midScanState.error).toBeNull();
+
+    resolveScan(scanResult);
+    await scan;
+
+    const state = useDiscoverStore.getState();
+    expect(state.discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(state.totalSkillsFound).toBe(2);
+    expect(state.error).toBeNull();
+  });
+
+  it("스캔 진행 중에는 DB 조회를 시작하지 않고, 스캔이 끝나면 다시 조회한다", async () => {
+    const scanResult: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+
+    let resolveScan!: (result: DiscoverResult) => void;
+    const pendingScan = new Promise<DiscoverResult>((resolve) => {
+      resolveScan = resolve;
+    });
+
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "start_project_scan") return pendingScan;
+      return Promise.resolve(undefined);
+    });
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    const scan = useDiscoverStore.getState().startScan();
+    await vi.waitFor(() =>
+      expect(
+        vi.mocked(invoke).mock.calls.filter(([command]) => command === "start_project_scan")
+      ).toHaveLength(1)
+    );
+
+    // 스캔 진행 중에는 스트리밍 목록을 DB 스냅샷으로 덮지 않기 위해 조회 자체를 생략한다.
+    await useDiscoverStore.getState().loadDiscoveredSkills();
+    await useDiscoverStore.getState().refreshCounts();
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "get_discovered_skills")
+    ).toHaveLength(0);
+
+    resolveScan(scanResult);
+    await scan;
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+
+    // 스캔이 끝난 뒤의 조회는 정상 반영된다.
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_discovered_skills") return Promise.resolve(mockDiscoveredProjects);
+      return Promise.resolve(undefined);
+    });
+    await useDiscoverStore.getState().loadDiscoveredSkills();
+
+    expect(
+      vi.mocked(invoke).mock.calls.filter(([command]) => command === "get_discovered_skills")
+    ).toHaveLength(1);
+    expect(useDiscoverStore.getState().discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(useDiscoverStore.getState().totalSkillsFound).toBe(2);
+  });
+
+  it("이벤트 리스너 초기화가 실패하면 스캔 중 상태가 고착되지 않고 재시도할 수 있다", async () => {
+    vi.mocked(listen).mockRejectedValueOnce(new Error("listen failed"));
+    useDiscoverStore.setState({ scanRoots: mockScanRoots });
+
+    await useDiscoverStore.getState().startScan();
+
+    let state = useDiscoverStore.getState();
+    expect(state.isScanning).toBe(false);
+    expect(state.error).toContain("listen failed");
+
+    const result: DiscoverResult = {
+      total_projects: 1,
+      total_skills: 2,
+      projects: mockDiscoveredProjects,
+    };
+    vi.mocked(invoke).mockResolvedValueOnce(result);
+
+    await useDiscoverStore.getState().startScan();
+
+    state = useDiscoverStore.getState();
+    expect(state.discoveredProjects).toEqual(mockDiscoveredProjects);
+    expect(state.isScanning).toBe(false);
+    expect(state.error).toBeNull();
   });
 });

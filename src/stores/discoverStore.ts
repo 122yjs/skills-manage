@@ -140,6 +140,8 @@ async function setupEventListeners(set: (fn: Partial<DiscoverState> | ((s: Disco
   });
 
   unlistenComplete = await listen<DiscoverCompletePayload>("discover:complete", () => {
+    // 백엔드 완료 이벤트는 진행 표시만 끝낸다. 실제 start_project_scan Promise가 끝날
+    // 때까지 동시성 가드(activeScanToken)는 유지되므로 여기서 해제하지 않는다.
     set({
       isScanning: false,
       scanProgress: 100,
@@ -147,6 +149,24 @@ async function setupEventListeners(set: (fn: Partial<DiscoverState> | ((s: Disco
     });
   });
 }
+
+// ─── 디스크 스캔 동시성 가드 ──────────────────────────────────────────────────
+
+// 디스크 스캔 세대. 새 디스크 스캔이 시작될 때마다 증가한다. get_discovered_skills 조회는
+// 시작 시점의 세대를 기억했다가 응답이 도착했을 때 값이 달라졌으면(그 사이 새 스캔이
+// 시작됐으면) 낡은 DB 스냅샷과 그 오류를 버린다.
+let diskResultsGeneration = 0;
+
+// 진행 중인 디스크 스캔 토큰. null이면 진행 중인 스캔이 없다.
+// 중지 요청은 스캔 종료가 아니므로 stopScan도 토큰을 해제하지 않는다. 실제
+// start_project_scan Promise가 끝나야 해제되며, 그 전까지 새 스캔은 시작되지 않는다
+// (백엔드 start_project_scan이 SCAN_CANCEL을 false로 리셋해 이전 스캔과 겹치는 것을 막는다).
+let activeScanToken: number | null = null;
+let scanTokenSeq = 0;
+
+// 중지가 요청된 스캔 토큰. 루트 로딩이나 리스너 준비 중 중지되면 실제
+// start_project_scan을 시작하지 않고 상태와 가드만 정리한다.
+let stoppedScanToken: number | null = null;
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -210,6 +230,14 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
   // ── Scan ───────────────────────────────────────────────────────────────────
 
   startScan: async () => {
+    // 자동 rescanFromDisk가 루트를 불러오는 중이거나 스캔 중이면 중복 시작하지 않는다.
+    if (activeScanToken !== null) return;
+    const scanToken = ++scanTokenSeq;
+    activeScanToken = scanToken;
+    stoppedScanToken = null;
+    // 이 시점부터 이미 시작된 get_discovered_skills 조회는 낡은 스냅샷이 된다.
+    diskResultsGeneration++;
+
     set({
       isScanning: true,
       scanProgress: 0,
@@ -222,14 +250,23 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
       selectedSkillIds: new Set<string>(),
     });
 
-    // Set up event listeners for streaming updates.
-    await setupEventListeners(set);
-
     try {
+      // Set up event listeners for streaming updates.
+      await setupEventListeners(set);
+      // 리스너를 준비하는 사이 중지됐으면 실제 스캔을 새로 시작하지 않는다.
+      if (activeScanToken !== scanToken) return;
+      if (stoppedScanToken === scanToken) {
+        set({ isScanning: false });
+        return;
+      }
+
       const { scanRoots } = get();
       const result = await invoke<DiscoverResult>("start_project_scan", {
         roots: scanRoots,
       });
+      // 더 새로운 스캔이 이어받았으면 낡은 결과를 반영하지 않는다.
+      // (중지된 스캔의 부분 결과는 토큰이 유지되므로 그대로 반영된다.)
+      if (activeScanToken !== scanToken) return;
       set({
         isScanning: false,
         scanProgress: 100,
@@ -238,18 +275,34 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
         lastScanAt: new Date().toISOString(),
       });
     } catch (err) {
+      // 리스너 초기화 실패 등으로 스캔이 중단돼도 진행 표시가 고착되지 않게 정리한다.
+      if (activeScanToken !== scanToken) return;
       set({
         isScanning: false,
         error: String(err),
       });
+    } finally {
+      // 실제 시작한 스캔(또는 시작되지 못한 스캔)이 끝나야 가드를 해제한다.
+      if (activeScanToken === scanToken) {
+        activeScanToken = null;
+        stoppedScanToken = null;
+      }
     }
   },
 
   stopScan: async () => {
+    // 중지 응답보다 루트·리스너 준비가 먼저 끝나도 새 스캔을 시작하지 않는다.
+    const scanToken = activeScanToken;
+    stoppedScanToken = scanToken;
     try {
       await invoke("stop_project_scan");
+      // 중지 요청만으로 스캔이 끝난 것은 아니다. 실제 start_project_scan Promise가 끝날
+      // 때까지 가드를 유지해야 다음 스캔이 SCAN_CANCEL을 리셋해 이전 스캔과 겹치지 않는다.
+      if (activeScanToken !== scanToken) return;
       set({ isScanning: false, lastScanAt: new Date().toISOString() });
     } catch (err) {
+      if (activeScanToken !== scanToken) return;
+      stoppedScanToken = null;
       set({ error: String(err) });
     }
   },
@@ -265,14 +318,20 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
       });
       return;
     }
+    // 스캔이 진행 중이면 DB 스냅샷이 스트리밍 목록을 덮을 수 있으므로 조회를 생략한다.
+    if (activeScanToken !== null) return;
+    const generation = diskResultsGeneration;
     try {
       const projects = await invoke<DiscoveredProject[]>("get_discovered_skills");
+      // 조회 중 새 디스크 스캔이 시작됐다면 낡은 DB 스냅샷이나 오류를 반영하지 않는다.
+      if (generation !== diskResultsGeneration || activeScanToken !== null) return;
       const totalSkills = projects.reduce((sum, p) => sum + p.skills.length, 0);
       set({
         discoveredProjects: projects,
         totalSkillsFound: totalSkills,
       });
     } catch (err) {
+      if (generation !== diskResultsGeneration || activeScanToken !== null) return;
       set({ error: String(err) });
     }
   },
@@ -285,14 +344,20 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
       });
       return;
     }
+    // 스캔이 진행 중이면 DB 스냅샷이 스트리밍 목록을 덮을 수 있으므로 조회를 생략한다.
+    if (activeScanToken !== null) return;
+    const generation = diskResultsGeneration;
     try {
       const projects = await invoke<DiscoveredProject[]>("get_discovered_skills");
+      // 조회 중 새 디스크 스캔이 시작됐다면 낡은 DB 스냅샷이나 오류를 반영하지 않는다.
+      if (generation !== diskResultsGeneration || activeScanToken !== null) return;
       const totalSkills = projects.reduce((sum, p) => sum + p.skills.length, 0);
       set({
         discoveredProjects: projects,
         totalSkillsFound: totalSkills,
       });
     } catch (err) {
+      if (generation !== diskResultsGeneration || activeScanToken !== null) return;
       set({ error: String(err) });
       throw err;
     }
@@ -317,9 +382,24 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
       return;
     }
 
+    // 루트 로딩 중에 수동 startScan/rescanFromDisk가 겹쳐 들어와도 중복 시작하지 않는다.
+    if (activeScanToken !== null) return;
+    const scanToken = ++scanTokenSeq;
+    activeScanToken = scanToken;
+    stoppedScanToken = null;
+    // 이 시점부터 이미 시작된 get_discovered_skills 조회는 낡은 스냅샷이 된다.
+    diskResultsGeneration++;
+
     set({ isLoadingRoots: true, error: null });
     try {
       const roots = await invoke<ScanRoot[]>("get_scan_roots");
+      // 루트를 불러오는 사이 더 새로운 스캔이 이어받았으면 진행하지 않는다.
+      if (activeScanToken !== scanToken) return;
+      // 루트를 불러오는 사이 중지됐으면 실제 스캔을 시작하지 않고 상태만 정리한다.
+      if (stoppedScanToken === scanToken) {
+        set({ isLoadingRoots: false, isScanning: false });
+        return;
+      }
       set({ scanRoots: roots, isLoadingRoots: false });
 
       set({
@@ -335,10 +415,19 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
       });
 
       await setupEventListeners(set);
+      // 리스너를 준비하는 사이 중지됐으면 실제 스캔을 새로 시작하지 않는다.
+      if (activeScanToken !== scanToken) return;
+      if (stoppedScanToken === scanToken) {
+        set({ isScanning: false });
+        return;
+      }
 
       const result = await invoke<DiscoverResult>("start_project_scan", {
         roots,
       });
+      // 더 새로운 스캔이 이어받았으면 낡은 결과를 반영하지 않는다.
+      // (중지된 스캔의 부분 결과는 토큰이 유지되므로 그대로 반영된다.)
+      if (activeScanToken !== scanToken) return;
       set({
         isScanning: false,
         scanProgress: 100,
@@ -347,11 +436,19 @@ export const useDiscoverStore = create<DiscoverState>((set, get) => ({
         lastScanAt: new Date().toISOString(),
       });
     } catch (err) {
+      // 리스너 초기화 실패 등으로 스캔이 중단돼도 진행 표시가 고착되지 않게 정리한다.
+      if (activeScanToken !== scanToken) return;
       set({
         error: String(err),
         isLoadingRoots: false,
         isScanning: false,
       });
+    } finally {
+      // 실제 시작한 스캔(또는 시작되지 못한 스캔)이 끝나야 가드를 해제한다.
+      if (activeScanToken === scanToken) {
+        activeScanToken = null;
+        stoppedScanToken = null;
+      }
     }
   },
 

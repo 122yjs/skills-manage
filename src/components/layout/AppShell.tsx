@@ -40,9 +40,15 @@ export function AppShell() {
     if (didInitializeRef.current) return;
     didInitializeRef.current = true;
     void initialize().finally(() => {
-      void Promise.allSettled([loadCentralSkills(), loadUsageStatus()]);
+      // 플랫폼 스캔이 끝난 뒤 중앙 목록·디스크 발견 스킬·사용 현황을 한 번에 갱신한다.
+      // rescanFromDisk는 저장된 검색 루트(get_scan_roots)로 start_project_scan을 실행한다.
+      void Promise.allSettled([
+        loadCentralSkills(),
+        rescanDiscoverFromDisk(),
+        loadUsageStatus(),
+      ]);
     });
-  }, [initialize, loadCentralSkills, loadUsageStatus]);
+  }, [initialize, loadCentralSkills, rescanDiscoverFromDisk, loadUsageStatus]);
 
   useEffect(() => {
     if (!mainRef.current) return;
