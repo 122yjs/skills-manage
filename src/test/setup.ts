@@ -84,6 +84,7 @@ Object.defineProperty(window, "__TAURI__", {
     },
   },
   writable: true,
+  configurable: true,
 });
 
 Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -93,4 +94,5 @@ Object.defineProperty(window, "__TAURI_INTERNALS__", {
     postMessage: vi.fn(),
   },
   writable: true,
+  configurable: true,
 });

@@ -81,7 +81,7 @@ vi.mock("../components/skill/SkillFolderDrawer", () => ({
 import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
-import { useSkillUsageStore } from "../stores/skillUsageStore";
+import { SkillUsageBusyError, useSkillUsageStore } from "../stores/skillUsageStore";
 import * as tauriBridge from "@/lib/tauri";
 
 const userSourceText = /用户来源|User source/i;
@@ -326,6 +326,8 @@ const mockLoadPlatformSkillControls = vi.fn();
 const mockSetPlatformSkillControl = vi.fn();
 const mockDeletePlatformSkillControl = vi.fn();
 const mockReapplyPlatformSkillControl = vi.fn();
+const mockLoadSharedSkillImpact = vi.fn();
+const mockSetSharedSkillUsage = vi.fn();
 const mockUsePlatformStore = vi.mocked(usePlatformStore);
 const mockUseSkillStore = vi.mocked(useSkillStore);
 const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
@@ -457,6 +459,11 @@ describe("PlatformView", () => {
       setPlatformSkillControl: mockSetPlatformSkillControl,
       deletePlatformSkillControl: mockDeletePlatformSkillControl,
       reapplyPlatformSkillControl: mockReapplyPlatformSkillControl,
+      sharedImpactsById: {},
+      updatingSharedKeys: {},
+      updatingSharedBulk: false,
+      loadSharedSkillImpact: mockLoadSharedSkillImpact,
+      setSharedSkillUsage: mockSetSharedSkillUsage,
     });
     installDefaultStoreMocks();
   });
@@ -903,6 +910,81 @@ describe("PlatformView", () => {
     });
   });
 
+  it("opens an impact dialog for shared installs and confirms with a fresh token", async () => {
+    const impact = {
+      shared_install_id: "~/.agents/skills/frontend-design",
+      skill_id: "frontend-design",
+      skill_name: "frontend-design",
+      enabled: true,
+      confirmed_platforms: [{ agent_id: "claude-code", display_name: "Claude Code" }],
+      separate_installs: [],
+      reason: null,
+      management_path: "~/.agents/skills/frontend-design",
+      confirmation_token: "token-1",
+    };
+    mockLoadSharedSkillImpact.mockResolvedValue(impact);
+    mockSetSharedSkillUsage.mockResolvedValue({
+      applied: true,
+      impact: { ...impact, enabled: false, confirmation_token: "token-2" },
+    });
+    useSkillUsageStore.setState({
+      loadSharedSkillImpact: mockLoadSharedSkillImpact,
+      setSharedSkillUsage: mockSetSharedSkillUsage,
+      platformControlsByAgent: {
+        "claude-code": [{
+          agent_id: "claude-code",
+          skill_id: "frontend-design",
+          row_id: "claude-code::frontend-design",
+          skill_name: "frontend-design",
+          source_path: "~/.claude/skills/frontend-design",
+          source_kind: "compatibility",
+          state: "active",
+          supported: true,
+          can_toggle: true,
+          can_delete: false,
+          can_reapply: false,
+          reason: null,
+          requires_reload: false,
+          scope: "path",
+          affected_source_count: 1,
+          adapter: "claude-skill-overrides",
+          config_path: "/Users/test/.claude/settings.json",
+          shared_install: impact,
+          excluded_here: true,
+        }],
+      },
+    });
+
+    renderPlatformView();
+
+    const toggle = screen.getByRole("switch", { name: "切换 frontend-design 的公用状态" });
+    expect(toggle).toBeChecked();
+    expect(screen.getByText("已在此平台排除")).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(mockLoadSharedSkillImpact).toHaveBeenCalledWith("~/.agents/skills/frontend-design");
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停用公用" })).toBeEnabled();
+    expect(screen.getByText("已确认 1 个")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+
+    await waitFor(() => {
+      expect(mockSetSharedSkillUsage).toHaveBeenCalledWith(
+        "~/.agents/skills/frontend-design",
+        false,
+        "token-1"
+      );
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mockSetPlatformSkillControl).not.toHaveBeenCalled();
+    expect(mockSetSkillUsage).not.toHaveBeenCalled();
+    expect(screen.getByText("已在此平台排除")).toBeInTheDocument();
+  });
+
   it("shows unsupported controls as unavailable and keeps the switch disabled", () => {
     const unsupportedSkill: ScannedSkill = {
       id: "cursor-public",
@@ -1117,6 +1199,77 @@ describe("PlatformView", () => {
     await waitFor(() => {
       expect(mockSetPlatformUsage).toHaveBeenCalledWith("claude-code", true);
     });
+  });
+
+  it("does not send shared installs through ordinary platform bulk", async () => {
+    const impact = {
+      shared_install_id: "~/.agents/skills/frontend-design",
+      skill_id: "frontend-design",
+      skill_name: "frontend-design",
+      enabled: true,
+      confirmed_platforms: [{ agent_id: "claude-code", display_name: "Claude Code" }],
+      separate_installs: [],
+      reason: null,
+      management_path: "~/.agents/skills/frontend-design",
+      confirmation_token: "token-1",
+    };
+    const setSharedPlatformUsage = vi.fn();
+    useSkillUsageStore.setState({
+      setSharedPlatformUsage,
+      loadSharedSkillImpact: mockLoadSharedSkillImpact,
+      platformControlsByAgent: {
+        "claude-code": [{
+          agent_id: "claude-code",
+          skill_id: "frontend-design",
+          row_id: "claude-code::frontend-design",
+          skill_name: "frontend-design",
+          source_path: "~/.claude/skills/frontend-design",
+          source_kind: "compatibility",
+          state: "active",
+          supported: true,
+          can_toggle: true,
+          can_delete: false,
+          can_reapply: false,
+          reason: null,
+          requires_reload: false,
+          scope: "path",
+          affected_source_count: 1,
+          adapter: "claude-skill-overrides",
+          config_path: "/Users/test/.claude/settings.json",
+          shared_install: impact,
+          excluded_here: false,
+        }],
+      },
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /切换 Claude Code 中全部受管理技能的激活状态/i,
+      })
+    );
+
+    await waitFor(() => {
+      expect(mockSetPlatformUsage).toHaveBeenCalledWith("claude-code", false);
+    });
+    expect(setSharedPlatformUsage).not.toHaveBeenCalled();
+    expect(mockLoadSharedSkillImpact).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "停用公用" })).not.toBeInTheDocument();
+  });
+
+  it("swallows a busy rejection from platform-wide usage without a false failure path", async () => {
+    mockSetPlatformUsage.mockRejectedValue(new SkillUsageBusyError());
+    renderPlatformView();
+    fireEvent.click(
+      screen.getByRole("switch", {
+        name: /切换 Claude Code 中全部受管理技能的激活状态/i,
+      })
+    );
+    await waitFor(() => {
+      expect(mockSetPlatformUsage).toHaveBeenCalledWith("claude-code", false);
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("disables platform-wide restore when every managed skill was paused individually", () => {
@@ -1735,6 +1888,11 @@ describe("PlatformView 공용 설치 판정", () => {
       setPlatformSkillControl: mockSetPlatformSkillControl,
       deletePlatformSkillControl: mockDeletePlatformSkillControl,
       reapplyPlatformSkillControl: mockReapplyPlatformSkillControl,
+      sharedImpactsById: {},
+      updatingSharedKeys: {},
+      updatingSharedBulk: false,
+      loadSharedSkillImpact: mockLoadSharedSkillImpact,
+      setSharedSkillUsage: mockSetSharedSkillUsage,
     });
     installDefaultStoreMocks();
   });

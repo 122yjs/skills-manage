@@ -6,6 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tauri::State;
 
 use crate::commands::agents::is_agent_detected;
+use crate::commands::usage::shared_entry_key;
 use crate::db::{self, AgentSkillObservation, DbPool, Skill, SkillInstallation};
 use crate::path_utils::app_data_dir;
 use crate::AppState;
@@ -804,7 +805,21 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 db::delete_stale_skill_installations(pool, &agent.id, &found_install_ids).await?;
             }
             if tracks_observations {
-                let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &[]).await;
+                // Retain verified observation context for paused installs so
+                // cards and restore survive rescan (never invent new readers).
+                let mut keep: Vec<String> = Vec::new();
+                if let Ok(paused) = db::get_paused_installations_by_agent(pool, &agent.id).await {
+                    if let Ok(existing) = db::get_agent_skill_observations(pool, &agent.id).await {
+                        for o in &existing {
+                            if paused.iter().any(|p| {
+                                shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path)
+                            }) {
+                                keep.push(o.row_id.clone());
+                            }
+                        }
+                    }
+                }
+                let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &keep).await;
             }
             continue;
         }
@@ -908,6 +923,20 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         // in this agent's directory.
         db::delete_stale_skill_installations(pool, &agent.id, &found_install_ids).await?;
         if tracks_observations {
+            // Paused entries are intentionally absent from disk; retain their
+            // verified observation rows so cards/restore survive rescan.
+            if let Ok(paused) = db::get_paused_installations_by_agent(pool, &agent.id).await {
+                if let Ok(existing) = db::get_agent_skill_observations(pool, &agent.id).await {
+                    for o in &existing {
+                        if paused.iter().any(|p| {
+                            shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path)
+                        }) && !found_observation_row_ids.contains(&o.row_id)
+                        {
+                            found_observation_row_ids.push(o.row_id.clone());
+                        }
+                    }
+                }
+            }
             db::delete_stale_agent_skill_observations(pool, &agent.id, &found_observation_row_ids)
                 .await?;
         }
@@ -3422,5 +3451,119 @@ enabled = false
             "skill should remain is_central=true even when a coding agent \
              scans the same directory after the central agent"
         );
+    }
+    #[tokio::test]
+    async fn paused_observation_survives_rescan() {
+        // Isolated file-DB + TempDir, no env mutation. Universal is always
+        // scanned when its dir exists, so retention runs without detection.
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("db.sqlite");
+        let pool = db::create_pool(&db_path.to_string_lossy()).await.unwrap();
+        db::init_database(&pool).await.unwrap();
+        let vault = tmp.path().join("vault");
+        let universal = tmp.path().join("u");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::create_dir_all(&universal).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(vault.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(universal.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A second counted sharer makes the entry manageable through the
+        // shared path (same physical entry, two managed rows).
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
+            .bind(universal.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let dir = universal.join("retained");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("SKILL.md"), "---\nname: retained\n---\n").unwrap();
+        db::upsert_skill(
+            &pool,
+            &Skill {
+                id: "retained".to_string(),
+                name: "retained".to_string(),
+                description: None,
+                file_path: dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: None,
+                is_central: false,
+                source: None,
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        for agent in ["universal", "codex"] {
+            db::upsert_skill_installation(
+                &pool,
+                &SkillInstallation {
+                    skill_id: "retained".to_string(),
+                    agent_id: agent.to_string(),
+                    installed_path: dir.to_string_lossy().into_owned(),
+                    link_type: "copy".to_string(),
+                    symlink_target: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        // Verified reader context seen before the pause.
+        db::upsert_agent_skill_observation(
+            &pool,
+            &AgentSkillObservation {
+                row_id: format!("universal::{}", dir.to_string_lossy()),
+                agent_id: "universal".to_string(),
+                skill_id: "retained".to_string(),
+                name: "retained".to_string(),
+                description: None,
+                file_path: dir.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: dir.to_string_lossy().into_owned(),
+                source_kind: "unmanaged".to_string(),
+                source_root: universal.to_string_lossy().into_owned(),
+                source_label: None,
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                is_read_only: true,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        let key = shared_entry_key(&dir.to_string_lossy());
+        let impact = crate::commands::usage::compute_shared_impact(&pool, &key)
+            .await
+            .unwrap();
+        assert!(impact.reason.is_none());
+        crate::commands::usage::set_shared_skill_usage_impl(
+            &pool,
+            &key,
+            false,
+            &impact.confirmation_token,
+        )
+        .await
+        .unwrap();
+        assert!(std::fs::symlink_metadata(&dir).is_err());
+        scan_all_skills_impl(&pool).await.unwrap();
+        let kept = db::get_agent_skill_observations(&pool, "universal")
+            .await
+            .unwrap();
+        assert!(
+            kept.iter().any(|o| o.dir_path == dir.to_string_lossy()),
+            "paused observation context must survive rescan"
+        );
+        // Compatibility-only rows never count as confirmed readers.
+        let compat: Vec<_> = kept
+            .iter()
+            .filter(|o| o.skill_id == "retained" && o.source_kind == "compatibility")
+            .collect();
+        assert!(compat.is_empty());
     }
 }

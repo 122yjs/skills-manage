@@ -2166,6 +2166,40 @@ pub async fn get_skill_installations(
         .map_err(|e| e.to_string())
 }
 
+/// All active managed installations across every platform.
+pub async fn get_all_skill_installations(pool: &DbPool) -> Result<Vec<SkillInstallation>, String> {
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations ORDER BY agent_id, skill_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// All paused installations across every platform.
+pub async fn get_all_paused_installations(
+    pool: &DbPool,
+) -> Result<Vec<PausedInstallation>, String> {
+    sqlx::query_as::<_, PausedInstallation>(
+        "SELECT * FROM paused_installations ORDER BY agent_id, skill_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Every agent skill observation row.
+pub async fn get_all_agent_skill_observations(
+    pool: &DbPool,
+) -> Result<Vec<AgentSkillObservation>, String> {
+    sqlx::query_as::<_, AgentSkillObservation>(
+        "SELECT * FROM agent_skill_observations ORDER BY agent_id, dir_path",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
 pub async fn get_read_only_observed_agent_ids_for_skill(
     pool: &DbPool,
     skill_id: &str,

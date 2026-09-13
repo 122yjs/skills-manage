@@ -13,7 +13,7 @@ vi.mock("../stores/platformStore", () => ({
       isRefreshing: false,
       updatingAgentIds: {},
       error: null,
-      initialize: vi.fn(),
+      initialize: vi.fn().mockResolvedValue(undefined),
       rescan: vi.fn(),
       setAgentVisibility: vi.fn(),
       setAllAgentsVisibility: vi.fn(),

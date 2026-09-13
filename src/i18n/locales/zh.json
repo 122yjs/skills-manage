@@ -258,7 +258,15 @@
     "platformControlDeleteConfirm": "仅从 {{platform}} 删除 {{name}} 应用",
     "platformControlDeleteSuccess": "已从 {{platform}} 删除 {{name}} 应用。",
     "platformControlReapply": "将 {{name}} 重新应用到 {{platform}}",
-    "platformControlReapplySuccess": "已将 {{name}} 重新应用到 {{platform}}。"
+    "platformControlReapplySuccess": "已将 {{name}} 重新应用到 {{platform}}。",
+    "sharedActive": "公用已开启",
+    "sharedPaused": "公用已关闭",
+    "sharedConfirmed": "已确认 {{count}} 个",
+    "excludedHere": "已在此平台排除",
+    "individualMenu": "单个平台控制",
+    "toggleSharedSkill": "切换 {{name}} 的公用状态",
+    "toggleIndividualSkill": "仅在 {{platform}} 切换 {{name}}",
+    "sharedDesktopRequired": "公用安装需要在桌面应用中管理。"
   },
   "storage": {
     "title": "技能仓库位置",
@@ -950,5 +958,33 @@
     "quickToggleHint": "点击平台图标切换技能使用状态。",
     "skillResults": "技能列表",
     "emptyFolder": "此文件夹中没有技能。"
+  },
+  "sharedImpact": {
+    "titleEnable": "要启用公用安装吗？({{name}})",
+    "titleDisable": "要停用公用安装吗？({{name}})",
+    "titleBulkEnable": "要恢复 {{count}} 个公用安装吗？",
+    "titleBulkDisable": "要停用 {{count}} 个公用安装吗？",
+    "description": "公用安装会被下方已确认的平台共同读取。技能仓库原件和本平台的排除设置会保留。",
+    "confirmedPlatforms": "已确认的平台 ({{count}} 个)",
+    "separateInstalls": "独立安装 ({{count}} 个)",
+    "showDetails": "查看详情",
+    "hideDetails": "收起",
+    "confirmedCount": "已确认 {{count}} 个",
+    "confirmedEmpty": "没有已确认的平台。读取此路径的其他工具仍可能受到影响。",
+    "separateEmpty": "未发现独立安装。",
+    "separateNote": "独立安装指向相同内容但相互独立，此更改后仍可继续使用。",
+    "separateWarning": "{{count}} 个独立安装在此更改后仍可继续使用。",
+    "unconfirmedWarning": "即使不在列表中，读取此路径的其他工具也可能受到影响。",
+    "managementPath": "管理路径：{{path}}",
+    "restricted": "无法更改：{{reason}}",
+    "currentPlatform": "当前",
+    "confirmEnable": "启用公用",
+    "confirmDisable": "停用公用",
+    "stale": "影响范围已变化。请查看更新后的详情并重新确认。",
+    "bulkEmpty": "没有可确认的公用安装。",
+    "bulkIncomplete": "无法确认这次更改涉及的全部公用安装。",
+    "bulkPartial": "有 {{failed}} 个公用安装未能更改。",
+    "bulkEnableSuccess": "已恢复 {{count}} 个公用安装。",
+    "bulkDisableSuccess": "已停用 {{count}} 个公用安装。"
   }
 }

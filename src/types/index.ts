@@ -217,6 +217,48 @@ export interface UsageStatus {
   skills: UsageSkillStatus[];
 }
 
+/** 공용 설치를 실제로 읽는다고 확인된 플랫폼이다. */
+export interface SharedSkillConfirmedPlatform {
+  agent_id: string;
+  display_name: string;
+}
+
+/** 같은 원본을 가리키지만 독립적으로 유지되는 별도 설치다. */
+export interface SharedSkillSeparateInstall {
+  agent_id: string;
+  display_name: string;
+  source_path: string;
+}
+
+/** 공용 설치 한 건의 확인된 영향 범위다. reason이 있으면 토글할 수 없다. */
+export interface SharedSkillImpact {
+  shared_install_id: string;
+  skill_id: string;
+  skill_name: string;
+  enabled: boolean;
+  confirmed_platforms: SharedSkillConfirmedPlatform[];
+  separate_installs: SharedSkillSeparateInstall[];
+  reason: string | null;
+  management_path: string;
+  confirmation_token: string;
+}
+
+export interface SharedSkillUsageResult {
+  applied: boolean;
+  impact: SharedSkillImpact;
+}
+
+export interface SharedSkillConfirmation {
+  shared_install_id: string;
+  confirmation_token: string;
+}
+
+export interface SharedPlatformUsageResult {
+  applied: boolean;
+  impacts: SharedSkillImpact[];
+  failed: Array<{ skill_id: string; error: string }>;
+}
+
 /** 플랫폼 설정 Adapter가 확인한 한 출처의 실제 제어 상태다. */
 export interface PlatformSkillControlStatus {
   agent_id: string;
@@ -236,6 +278,10 @@ export interface PlatformSkillControlStatus {
   affected_source_count: number;
   adapter: string;
   config_path?: string | null;
+  /** 공용 설치 영향 범위. 공용 설치가 아니면 null이다. */
+  shared_install?: SharedSkillImpact | null;
+  /** 이 플랫폼에서만 제외된 실제 상태. 관리 설치면 false다. */
+  excluded_here?: boolean;
 }
 
 // ─── Skill Description Translation Types ────────────────────────────────────

@@ -258,7 +258,15 @@
     "platformControlDeleteConfirm": "Delete only {{name}} from {{platform}}",
     "platformControlDeleteSuccess": "Deleted {{name}} from {{platform}}.",
     "platformControlReapply": "Reapply {{name}} to {{platform}}",
-    "platformControlReapplySuccess": "Reapplied {{name}} to {{platform}}."
+    "platformControlReapplySuccess": "Reapplied {{name}} to {{platform}}.",
+    "sharedActive": "Shared on",
+    "sharedPaused": "Shared off",
+    "sharedConfirmed": "{{count}} confirmed",
+    "excludedHere": "Excluded on this platform",
+    "individualMenu": "Individual platform control",
+    "toggleSharedSkill": "Toggle shared status of {{name}}",
+    "toggleIndividualSkill": "Toggle {{name}} on {{platform}} only",
+    "sharedDesktopRequired": "Shared installs require the desktop app."
   },
   "storage": {
     "title": "Skill Library location",
@@ -950,5 +958,33 @@
     "quickToggleHint": "Click a platform icon to change skill usage.",
     "skillResults": "Skill results",
     "emptyFolder": "There are no skills in this folder."
+  },
+  "sharedImpact": {
+    "titleEnable": "Enable shared install for {{name}}?",
+    "titleDisable": "Disable shared install for {{name}}?",
+    "titleBulkEnable": "Restore {{count}} shared installs?",
+    "titleBulkDisable": "Disable {{count}} shared installs?",
+    "description": "Shared installs are read by every confirmed platform below. The Skill Library originals and this platform's exclusion settings are kept.",
+    "confirmedPlatforms": "Confirmed platforms ({{count}})",
+    "separateInstalls": "Separate installs ({{count}})",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "confirmedCount": "{{count}} confirmed",
+    "confirmedEmpty": "No confirmed platforms. Other tools reading this path may still be affected.",
+    "separateEmpty": "No separate installs detected.",
+    "separateNote": "Separate installs point at the same content independently and can continue working after this change.",
+    "separateWarning": "{{count}} separate install(s) can keep working after this change.",
+    "unconfirmedWarning": "Other tools reading this path may also be affected, even if they are not listed.",
+    "managementPath": "Managed path: {{path}}",
+    "restricted": "Cannot change: {{reason}}",
+    "currentPlatform": "current",
+    "confirmEnable": "Enable shared",
+    "confirmDisable": "Disable shared",
+    "stale": "The impact changed. Review the updated details and confirm again.",
+    "bulkEmpty": "No shared installs to confirm.",
+    "bulkIncomplete": "Could not confirm every shared install in this change.",
+    "bulkPartial": "{{failed}} shared install(s) could not be changed.",
+    "bulkEnableSuccess": "Restored {{count}} shared install(s).",
+    "bulkDisableSuccess": "Disabled {{count}} shared install(s)."
   }
 }

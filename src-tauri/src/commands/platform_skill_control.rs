@@ -7,6 +7,7 @@
 
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
@@ -59,6 +60,9 @@ pub struct PlatformSkillControlStatus {
     pub affected_source_count: usize,
     pub adapter: String,
     pub config_path: Option<String>,
+    pub shared_install: Option<usage::SharedSkillImpact>,
+    /// 실제 플랫폼 개별 제외 상태. 관리 설치는 항상 false다.
+    pub excluded_here: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -625,6 +629,8 @@ fn make_status(
         affected_source_count,
         adapter: adapter.name().to_string(),
         config_path: config_path.map(|path| path.to_string_lossy().into_owned()),
+        shared_install: None,
+        excluded_here: matches!(state, STATE_INACTIVE | STATE_DELETED),
     }
 }
 
@@ -724,9 +730,56 @@ async fn get_platform_skill_controls_impl_at_path(
     let agent = db::get_agent_by_id(pool, agent_id)
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
-    let skills = skills::get_skills_by_agent_impl(pool, agent_id).await?;
+    let mut skills = skills::get_skills_by_agent_impl(pool, agent_id).await?;
     let installations = db::get_skill_installations_by_agent(pool, agent_id).await?;
     let paused = db::get_paused_installations_by_agent(pool, agent_id).await?;
+    // Rescan retention: paused entries lose their on-disk path by design, so
+    // the scanner would prune their observations. Keep cards/restore by
+    // merging paused rows missing from the skill list (observation identity
+    // uses entry keys, never the last-link target).
+    {
+        let mut known_keys: HashSet<String> = skills
+            .iter()
+            .map(|s| usage::shared_entry_key(&s.dir_path))
+            .collect();
+        for p in &paused {
+            let key = usage::shared_entry_key(&p.installed_path);
+            if known_keys.contains(&key) {
+                continue;
+            }
+            known_keys.insert(key);
+            let db_skill = db::get_skill_by_id(pool, &p.skill_id).await?;
+            let name = if p.skill_name.trim().is_empty() {
+                db_skill
+                    .as_ref()
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| p.skill_id.clone())
+            } else {
+                p.skill_name.clone()
+            };
+            let description = db_skill.and_then(|s| s.description);
+            skills.push(db::SkillForAgent {
+                id: p.skill_id.clone(),
+                row_id: p.skill_id.clone(),
+                name,
+                description,
+                file_path: Path::new(&p.installed_path)
+                    .join("SKILL.md")
+                    .to_string_lossy()
+                    .into_owned(),
+                dir_path: p.installed_path.clone(),
+                link_type: p.link_type.clone(),
+                symlink_target: p.symlink_target.clone(),
+                is_central: false,
+                source_kind: None,
+                source_root: None,
+                source_label: None,
+                is_read_only: false,
+                conflict_group: None,
+                conflict_count: 0,
+            });
+        }
+    }
     let stored = db::get_platform_skill_controls(pool, agent_id).await?;
     let mut result = Vec::with_capacity(skills.len());
 
@@ -756,6 +809,8 @@ async fn get_platform_skill_controls_impl_at_path(
                 affected_source_count: 1,
                 adapter: Adapter::ManagedInstallation.name().to_string(),
                 config_path: None,
+                shared_install: None,
+                excluded_here: false,
             });
             continue;
         }
@@ -799,6 +854,62 @@ async fn get_platform_skill_controls_impl_at_path(
             )
             .await,
         );
+    }
+
+    // Shared enrichment (including Universal): one impact per distinct entry
+    // key. Existing source_path_matches follows the last link and is never
+    // reused for this identity. Compute errors stay visible as a restricted
+    // impact instead of looking like "not shared".
+    {
+        let mut cache: HashMap<String, Result<usage::SharedSkillImpact, String>> = HashMap::new();
+        for status in result.iter_mut() {
+            let key = usage::shared_entry_key(&status.source_path);
+            let computed = match cache.get(&key) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let computed = usage::compute_shared_impact(pool, &key).await;
+                    cache.insert(key.clone(), computed.clone());
+                    computed
+                }
+            };
+            status.shared_install = match computed {
+                Ok(impact) => {
+                    let shares_other =
+                        usage::entry_is_shared_with_others(pool, &key, &status.agent_id)
+                            .await
+                            .unwrap_or(true)
+                            || impact
+                                .confirmed_platforms
+                                .iter()
+                                .any(|c| c.agent_id != status.agent_id);
+                    if impact.reason.is_some()
+                        || !impact.separate_installs.is_empty()
+                        || shares_other
+                        || status.agent_id == "universal"
+                    {
+                        Some(impact)
+                    } else {
+                        None
+                    }
+                }
+                Err(error) => {
+                    if status.reason.is_none() {
+                        status.reason = Some(error.clone());
+                    }
+                    Some(usage::SharedSkillImpact {
+                        shared_install_id: key,
+                        skill_id: status.skill_id.clone(),
+                        skill_name: status.skill_name.clone(),
+                        enabled: status.state == STATE_ACTIVE,
+                        confirmed_platforms: Vec::new(),
+                        separate_installs: Vec::new(),
+                        reason: Some(error),
+                        management_path: status.source_path.clone(),
+                        confirmation_token: String::new(),
+                    })
+                }
+            };
+        }
     }
 
     Ok(result)
@@ -1777,6 +1888,221 @@ mod tests {
                 .unwrap()[0]
                 .state,
             STATE_ACTIVE
+        );
+    }
+    #[tokio::test]
+    async fn shared_install_shown_for_shared_entry_and_hidden_for_singleton() {
+        let dir = TempDir::new().unwrap();
+        let pool = test_pool(&dir).await;
+        let shared_root = dir.path().join("agents-skills");
+        fs::create_dir_all(&shared_root).unwrap();
+        for id in ["universal", "codex"] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(shared_root.to_string_lossy().to_string())
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let shared_dir = shared_root.join("shared-card");
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::write(shared_dir.join("SKILL.md"), "---\nname: shared-card\n---\n").unwrap();
+        let solo_dir = shared_root.join("solo-card");
+        fs::create_dir_all(&solo_dir).unwrap();
+        fs::write(solo_dir.join("SKILL.md"), "---\nname: solo-card\n---\n").unwrap();
+        for (skill_id, d) in [("shared-card", &shared_dir), ("solo-card", &solo_dir)] {
+            db::upsert_skill(
+                &pool,
+                &db::Skill {
+                    id: skill_id.to_string(),
+                    name: skill_id.to_string(),
+                    description: None,
+                    file_path: d.join("SKILL.md").to_string_lossy().into_owned(),
+                    canonical_path: None,
+                    is_central: false,
+                    source: None,
+                    content: None,
+                    scanned_at: chrono::Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        for (skill_id, agent) in [
+            ("shared-card", "universal"),
+            ("shared-card", "codex"),
+            ("solo-card", "codex"),
+        ] {
+            let d = shared_root.join(skill_id);
+            db::upsert_skill_installation(
+                &pool,
+                &db::SkillInstallation {
+                    skill_id: skill_id.to_string(),
+                    agent_id: agent.to_string(),
+                    installed_path: d.to_string_lossy().into_owned(),
+                    link_type: "copy".to_string(),
+                    symlink_target: None,
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let statuses = get_platform_skill_controls_impl(&pool, "codex")
+            .await
+            .unwrap();
+        let shared = statuses
+            .iter()
+            .find(|s| s.skill_id == "shared-card")
+            .unwrap();
+        assert!(shared.shared_install.is_some());
+        assert!(!shared.excluded_here);
+        let solo = statuses.iter().find(|s| s.skill_id == "solo-card").unwrap();
+        assert!(solo.shared_install.is_none());
+        assert!(!solo.excluded_here);
+    }
+
+    #[tokio::test]
+    async fn paused_shared_card_survives_observation_prune() {
+        let dir = TempDir::new().unwrap();
+        let pool = test_pool(&dir).await;
+        let root = dir.path().join("u");
+        fs::create_dir_all(&root).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let skill_dir = root.join("kept-card");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "---\nname: kept-card\n---\n").unwrap();
+        db::upsert_skill(
+            &pool,
+            &db::Skill {
+                id: "kept-card".to_string(),
+                name: "kept-card".to_string(),
+                description: None,
+                file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: None,
+                is_central: false,
+                source: None,
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "kept-card".to_string(),
+                agent_id: "universal".to_string(),
+                installed_path: skill_dir.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        // Pause through the shared path, then simulate a rescan that pruned
+        // the observation row entirely.
+        let key = usage::shared_entry_key(&skill_dir.to_string_lossy());
+        // Universal-only entries are observed-only-manageable in some setups;
+        // force a managed pause here by adding a counted sharer.
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
+            .bind(root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "kept-card".to_string(),
+                agent_id: "codex".to_string(),
+                installed_path: skill_dir.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        let impact = usage::compute_shared_impact(&pool, &key).await.unwrap();
+        assert!(impact.reason.is_none());
+        usage::set_shared_skill_usage_impl(&pool, &key, false, &impact.confirmation_token)
+            .await
+            .unwrap();
+        db::delete_stale_agent_skill_observations(&pool, "codex", &[])
+            .await
+            .unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "codex")
+            .await
+            .unwrap();
+        let card = statuses.iter().find(|s| s.skill_id == "kept-card").unwrap();
+        assert_eq!(card.state, "inactive");
+        assert!(!card.excluded_here);
+        assert!(card.shared_install.is_some());
+    }
+
+    #[tokio::test]
+    async fn universal_only_entry_exposes_shared_impact_for_bulk_scope() {
+        let dir = TempDir::new().unwrap();
+        let pool = test_pool(&dir).await;
+        let root = dir.path().join("u-only");
+        fs::create_dir_all(&root).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
+            .bind(root.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let skill_dir = root.join("solo-universal");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: solo-universal\n---\n",
+        )
+        .unwrap();
+        db::upsert_skill(
+            &pool,
+            &db::Skill {
+                id: "solo-universal".to_string(),
+                name: "solo-universal".to_string(),
+                description: None,
+                file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: None,
+                is_central: false,
+                source: None,
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "solo-universal".to_string(),
+                agent_id: "universal".to_string(),
+                installed_path: skill_dir.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "universal")
+            .await
+            .unwrap();
+        let card = statuses
+            .iter()
+            .find(|s| s.skill_id == "solo-universal")
+            .unwrap();
+        assert!(card.shared_install.is_some());
+        assert_eq!(
+            card.shared_install.as_ref().unwrap().shared_install_id,
+            usage::shared_entry_key(&skill_dir.to_string_lossy())
         );
     }
 }
