@@ -276,14 +276,22 @@ describe("PlatformIcon", () => {
 
   // ── Uniqueness — each platform renders a distinct SVG ─────────────────────
 
-  it("renders unique SVG content for each platform (no two are identical)", () => {
+  it("AGY CLI는 Antigravity 제품 아이콘을 사용한다", () => {
+    const agy = render(<PlatformIcon agentId="gemini-cli" />);
+    const antigravity = render(<PlatformIcon agentId="antigravity" />);
+    expect(agy.container.querySelector("svg")?.innerHTML).toBe(
+      antigravity.container.querySelector("svg")?.innerHTML
+    );
+  });
+
+  it("같은 제품인 AGY CLI를 제외한 플랫폼은 서로 다른 SVG를 사용한다", () => {
     const svgContents = new Map<string, string>();
     // Platforms that use <img> (real app PNGs) instead of SVG
     const imgPlatforms = new Set(["autoclaw", "workbuddy", "cursor", "windsurf", "trae", "trae-cn", "qclaw", "codebuddy", "kiro", "qoder", "factory-droid", "codex", "easyclaw", "openclaw", "hermes"]);
 
     for (const id of ALL_PLATFORM_IDS) {
       const { container } = render(<PlatformIcon agentId={id} />);
-      if (imgPlatforms.has(id)) continue;
+      if (imgPlatforms.has(id) || id === "gemini-cli") continue;
       const svg = container.querySelector("svg");
       expect(svg).toBeInTheDocument();
       const inner = svg?.innerHTML ?? "";

@@ -60,9 +60,9 @@ const agents: AgentWithStatus[] = [
   },
   {
     id: "gemini-cli",
-    display_name: "Gemini CLI",
+    display_name: "AGY CLI",
     category: "coding",
-    global_skills_dir: "/Users/test/.gemini/skills",
+    global_skills_dir: "/Users/test/.gemini/config/skills",
     is_detected: true,
     is_builtin: true,
     is_enabled: true,
@@ -145,7 +145,7 @@ describe("UnifiedSkillCard platform toggles", () => {
     expect(screen.getByRole("button", { name: "切换 demo-skill (Cursor) 的激活状态" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "切换 demo-skill (Trae) 的激活状态" })).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "切换 demo-skill (Gemini CLI) 的激活状态" })
+      screen.queryByRole("button", { name: "切换 demo-skill (AGY CLI) 的激活状态" })
     ).not.toBeInTheDocument();
   });
 

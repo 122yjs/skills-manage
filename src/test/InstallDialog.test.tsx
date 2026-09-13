@@ -35,9 +35,9 @@ const mockAgents: AgentWithStatus[] = [
   },
   {
     id: "gemini-cli",
-    display_name: "Gemini CLI",
+    display_name: "AGY CLI",
     category: "coding",
-    global_skills_dir: "~/.gemini/skills/",
+    global_skills_dir: "~/.gemini/config/skills/",
     is_detected: false,
     is_builtin: true,
     is_enabled: true,
@@ -119,7 +119,7 @@ describe("InstallDialog", () => {
     renderDialog();
     expect(screen.getByRole("checkbox", { name: "Claude Code" })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Cursor" })).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Gemini CLI" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "AGY CLI" })).not.toBeInTheDocument();
   });
 
   it("does not show 'central' agent checkbox", () => {
@@ -184,7 +184,7 @@ describe("InstallDialog", () => {
 
   it("does not expose undetected agents as install targets", () => {
     renderDialog();
-    expect(screen.queryByRole("checkbox", { name: "Gemini CLI" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "AGY CLI" })).not.toBeInTheDocument();
     expect(screen.queryByText("(未检测到)")).not.toBeInTheDocument();
   });
 

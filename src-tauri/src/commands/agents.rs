@@ -94,6 +94,10 @@ fn shared_agent_marker_dir(agent: &Agent, shared_skills_dir: &Path) -> Option<st
 }
 
 fn executable_names(agent: &Agent) -> Vec<String> {
+    // gemini-cli는 저장된 설정을 위한 ID이며 실제 실행 명령은 agy이다.
+    if agent.id == "gemini-cli" {
+        return vec!["agy".to_string()];
+    }
     let mut names = vec![agent.id.clone()];
     if let Some(icon_name) = &agent.icon_name {
         if !names.contains(icon_name) {
@@ -121,6 +125,7 @@ fn executable_search_paths() -> Vec<std::path::PathBuf> {
         directories.extend([
             std::path::PathBuf::from("/opt/homebrew/bin"),
             std::path::PathBuf::from("/usr/local/bin"),
+            resolve_home_dir().join(".local/bin"),
         ]);
         directories
     }
@@ -463,6 +468,15 @@ mod tests {
         let pool = db::create_pool(&path.to_string_lossy()).await.unwrap();
         db::init_database(&pool).await.unwrap();
         pool
+    }
+
+    #[test]
+    fn test_agy_cli_detection_uses_current_executable_only() {
+        let agent = db::builtin_agents()
+            .into_iter()
+            .find(|agent| agent.id == "gemini-cli")
+            .unwrap();
+        assert_eq!(executable_names(&agent), vec!["agy".to_string()]);
     }
 
     // ── is_agent_detected ─────────────────────────────────────────────────────

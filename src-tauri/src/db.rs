@@ -791,13 +791,15 @@ pub fn builtin_agents() -> Vec<Agent> {
             None,
             "firebender",
         ),
+        // 기존 표시 설정과 설치 기록을 유지하도록 내부 ID는 보존한다.
+        // AGY CLI 1.2.2의 내장 문서에 명시된 공용 설정 경로를 사용한다.
         agent(
             "gemini-cli",
-            "Gemini CLI",
+            "AGY CLI",
             "coding",
-            ".gemini/skills",
-            None,
-            "gemini",
+            ".gemini/config/skills",
+            Some(".agents/skills"),
+            "antigravity",
         ),
         agent(
             "kimi-code-cli",
@@ -2930,6 +2932,45 @@ mod tests {
         assert!(!agents_by_id.contains_key("qwen-code"));
         assert!(!agents_by_id.contains_key("kilo"));
         assert!(!agents_by_id.contains_key("kiro-cli"));
+    }
+
+    #[tokio::test]
+    async fn test_agy_cli_replaces_legacy_metadata_without_losing_settings() {
+        let pool = setup_test_db().await;
+        sqlx::query(
+            "UPDATE agents SET display_name = 'Gemini CLI',
+             global_skills_dir = '/legacy/.gemini/skills', project_skills_dir = NULL,
+             icon_name = 'gemini', is_enabled = 0 WHERE id = 'gemini-cli'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO skill_installations (skill_id, agent_id, installed_path, link_type)
+             VALUES ('legacy-skill', 'gemini-cli', '/legacy/.gemini/skills/demo', 'symlink')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        init_database(&pool).await.unwrap();
+
+        let agy = get_agent_by_id(&pool, "gemini-cli").await.unwrap().unwrap();
+        assert_eq!(agy.display_name, "AGY CLI");
+        assert_eq!(agy.icon_name.as_deref(), Some("antigravity"));
+        assert_eq!(
+            agy.global_skills_dir,
+            path_to_string(&resolve_home_dir().join(".gemini/config/skills"))
+        );
+        assert_eq!(agy.project_skills_dir.as_deref(), Some(".agents/skills"));
+        assert!(!agy.is_enabled);
+        let path: (String,) = sqlx::query_as(
+            "SELECT installed_path FROM skill_installations WHERE agent_id = 'gemini-cli'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(path.0, "/legacy/.gemini/skills/demo");
     }
 
     #[tokio::test]
