@@ -271,6 +271,44 @@ describe("MarketplaceView", () => {
     expect(screen.queryByRole("button", { name: "web-artifacts-builder" })).not.toBeInTheDocument();
   });
 
+  it("installs the recommended frontend-design skill using its repository directory", async () => {
+    const invokeSpy = vi.spyOn(tauriBridge, "invoke").mockImplementation(async (command) => {
+      if (command === "preview_github_repo_import") {
+        return makePreview([
+          {
+            sourcePath: "skills/frontend-design",
+            skillId: "frontend-design",
+            skillName: "frontend-design",
+            description: "Create distinctive frontend interfaces",
+            rootDirectory: "skills",
+            skillDirectoryName: "frontend-design",
+            downloadUrl:
+              "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md",
+            conflict: null,
+          },
+        ]) as never;
+      }
+      return undefined as never;
+    });
+
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: "frontend-design" }));
+    const sidebar = await screen.findByTestId("skill-detail-right-sidebar");
+    fireEvent.click(within(sidebar).getByRole("button", { name: /Install|安装/i }));
+
+    await waitFor(() => {
+      expect(invokeSpy).toHaveBeenCalledWith("preview_github_repo_import", {
+        repoUrl: "https://github.com/anthropics/skills",
+      });
+      expect(mockImportGitHubRepoSkills).toHaveBeenCalledWith(
+        "https://github.com/anthropics/skills",
+        [{ sourcePath: "skills/frontend-design", resolution: "overwrite" }],
+      );
+    });
+
+    invokeSpy.mockRestore();
+  });
+
   it("loads official directory preview skills from backend cache", async () => {
     renderView();
 

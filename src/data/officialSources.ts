@@ -641,7 +641,7 @@ export const RECOMMENDED_SKILLS: RecommendedSkill[] = [
     publisher: "Anthropic",
     repoFullName: "anthropics/skills",
     tags: ["frontend"],
-    downloadUrl: "https://raw.githubusercontent.com/anthropics/skills/main/frontend-design/SKILL.md",
+    downloadUrl: "https://raw.githubusercontent.com/anthropics/skills/main/skills/frontend-design/SKILL.md",
   },
   {
     name: "flutter-dev",

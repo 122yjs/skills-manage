@@ -919,7 +919,7 @@
     "githubImportResultNextDesc": "Choose what you want to do next now that the repo import is complete.",
     "githubImportResultActionInstall": "Continue platform setup",
     "githubImportResultActionCentral": "Open Skill Library",
-    "previewInstallUnavailable": "This preview cannot safely import into the Skill Library.",
+    "previewInstallUnavailable": "Could not find the skill path to import from this preview.",
     "previewConflictOpenWizard": "A matching skill already exists. Opened conflict resolution.",
     "githubImportResultActionRestart": "Start another import",
     "githubImportResultSkippedTitle": "Skipped items",

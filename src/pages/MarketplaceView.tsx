@@ -59,7 +59,9 @@ type DetailSkill = MarketplaceSkillDetail & {
 function sourcePathFromRawUrl(downloadUrl: string): string | undefined {
   try {
     const parts = new URL(downloadUrl).pathname.split("/").filter(Boolean);
-    return parts.length > 3 ? parts.slice(3).join("/") : undefined;
+    const skillFilePath = parts.slice(3);
+    if (skillFilePath.pop()?.toLowerCase() !== "skill.md") return undefined;
+    return skillFilePath.join("/") || ".";
   } catch {
     return undefined;
   }

@@ -919,7 +919,7 @@
     "githubImportResultNextDesc": "仓库导入已经完成，现在可以继续执行下一步操作。",
     "githubImportResultActionInstall": "继续配置平台安装",
     "githubImportResultActionCentral": "打开技能仓库",
-    "previewInstallUnavailable": "此预览无法安全导入技能仓库。",
+    "previewInstallUnavailable": "此预览中找不到技能路径，无法导入到技能库。",
     "previewConflictOpenWizard": "已存在同名技能，已打开冲突处理界面。",
     "githubImportResultActionRestart": "开始新的导入",
     "githubImportResultSkippedTitle": "已跳过项目",
