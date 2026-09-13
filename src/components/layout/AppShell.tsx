@@ -27,8 +27,6 @@ export function AppShell() {
   const loadCentralSkills = useCentralSkillsStore((s) => s.loadCentralSkills);
   const rescanDiscoverFromDisk = useDiscoverStore((s) => s.rescanFromDisk);
   const loadStorageStatus = useStorageStore((s) => s.loadStatus);
-  const setupStatus = useDevToolSetupStore((s) => s.status);
-  const setupCompleted = useDevToolSetupStore((s) => s.completed);
   const loadDevToolSetup = useDevToolSetupStore((s) => s.load);
   const loadUsageStatus = useSkillUsageStore((s) => s.loadUsageStatus);
 
@@ -38,12 +36,13 @@ export function AppShell() {
   }, [loadDevToolSetup, loadStorageStatus]);
 
   useEffect(() => {
-    if (setupStatus !== "ready" || !setupCompleted || didInitializeRef.current) return;
+    // 도구 선택은 표시 설정이므로 기다리지 않고 실행마다 한 번 스캔한다.
+    if (didInitializeRef.current) return;
     didInitializeRef.current = true;
     void initialize().finally(() => {
-      void loadUsageStatus().catch(() => undefined);
+      void Promise.allSettled([loadCentralSkills(), loadUsageStatus()]);
     });
-  }, [initialize, loadUsageStatus, setupCompleted, setupStatus]);
+  }, [initialize, loadCentralSkills, loadUsageStatus]);
 
   useEffect(() => {
     if (!mainRef.current) return;

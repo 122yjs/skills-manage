@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
@@ -137,6 +138,51 @@ describe("AppShell", () => {
     });
   });
 
+  it.each(["idle", "loading", "ready", "error"])(
+    "도구 설정이 %s 상태여도 실행당 한 번 스캔하고 완료 후 목록을 갱신한다",
+    async (status) => {
+      let finishScan!: () => void;
+      const initialize = vi.fn(() => new Promise<void>((resolve) => {
+        finishScan = resolve;
+      }));
+      const loadCentralSkills = vi.fn().mockResolvedValue(undefined);
+      const loadUsageStatus = vi.fn().mockResolvedValue(undefined);
+      const setupState = { status, completed: false, load: vi.fn() };
+      mockUseDevToolSetupStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector(setupState) : setupState);
+      mockUsePlatformStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ initialize, rescan: vi.fn() }) : { initialize, rescan: vi.fn() });
+      mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ loadCentralSkills }) : { loadCentralSkills });
+      mockUseSkillUsageStore.mockImplementation((selector?: unknown) => typeof selector === "function" ? selector({ loadUsageStatus }) : { loadUsageStatus });
+
+      const shell = () => (
+        <StrictMode>
+          <MemoryRouter>
+            <NavigationHarness />
+            <AppShell />
+          </MemoryRouter>
+        </StrictMode>
+      );
+      const { rerender, unmount } = render(shell());
+      expect(initialize).toHaveBeenCalledTimes(1);
+      expect(loadCentralSkills).not.toHaveBeenCalled();
+      expect(loadUsageStatus).not.toHaveBeenCalled();
+
+      await act(async () => finishScan());
+      expect(loadCentralSkills).toHaveBeenCalledTimes(1);
+      expect(loadUsageStatus).toHaveBeenCalledTimes(1);
+
+      setupState.completed = true;
+      rerender(shell());
+      await act(async () => testNavigate?.("/central"));
+      expect(initialize).toHaveBeenCalledTimes(1);
+
+      // 다음 실행에서는 다시 스캔한다.
+      unmount();
+      render(shell());
+      expect(initialize).toHaveBeenCalledTimes(2);
+      await act(async () => finishScan());
+    }
+  );
+
   it("resets shell scroll and keeps main non-scrollable when the route changes", async () => {
     render(
       <MemoryRouter initialEntries={["/a"]}>
@@ -225,6 +271,8 @@ describe("AppShell", () => {
         </Routes>
       </MemoryRouter>
     );
+    await waitFor(() => expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1));
+    mockLoadCentralSkills.mockClear();
     mockLoadUsageStatus.mockClear();
 
     await act(async () => {
@@ -302,6 +350,8 @@ describe("AppShell", () => {
         </Routes>
       </MemoryRouter>
     );
+    await waitFor(() => expect(mockLoadCentralSkills).toHaveBeenCalledTimes(1));
+    mockLoadCentralSkills.mockClear();
     mockLoadUsageStatus.mockClear();
 
     await act(async () => {
