@@ -809,21 +809,17 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 // cards and restore survive rescan (never invent new readers).
                 let mut keep: Vec<String> = Vec::new();
                 if let Ok(paused) = db::get_paused_installations_by_agent(pool, &agent.id).await {
-                    if let Ok(existing) =
-                        db::get_agent_skill_observations(pool, &agent.id).await
-                    {
+                    if let Ok(existing) = db::get_agent_skill_observations(pool, &agent.id).await {
                         for o in &existing {
-                            if paused
-                                .iter()
-                                .any(|p| shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path))
-                            {
+                            if paused.iter().any(|p| {
+                                shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path)
+                            }) {
                                 keep.push(o.row_id.clone());
                             }
                         }
                     }
                 }
-                let _ =
-                    db::delete_stale_agent_skill_observations(pool, &agent.id, &keep).await;
+                let _ = db::delete_stale_agent_skill_observations(pool, &agent.id, &keep).await;
             }
             continue;
         }
@@ -930,14 +926,11 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             // Paused entries are intentionally absent from disk; retain their
             // verified observation rows so cards/restore survive rescan.
             if let Ok(paused) = db::get_paused_installations_by_agent(pool, &agent.id).await {
-                if let Ok(existing) =
-                    db::get_agent_skill_observations(pool, &agent.id).await
-                {
+                if let Ok(existing) = db::get_agent_skill_observations(pool, &agent.id).await {
                     for o in &existing {
-                        if paused
-                            .iter()
-                            .any(|p| shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path))
-                            && !found_observation_row_ids.contains(&o.row_id)
+                        if paused.iter().any(|p| {
+                            shared_entry_key(&o.dir_path) == shared_entry_key(&p.installed_path)
+                        }) && !found_observation_row_ids.contains(&o.row_id)
                         {
                             found_observation_row_ids.push(o.row_id.clone());
                         }
@@ -3545,14 +3538,23 @@ enabled = false
         .await
         .unwrap();
         let key = shared_entry_key(&dir.to_string_lossy());
-        let impact = crate::commands::usage::compute_shared_impact(&pool, &key).await.unwrap();
-        assert!(impact.reason.is_none());
-        crate::commands::usage::set_shared_skill_usage_impl(&pool, &key, false, &impact.confirmation_token)
+        let impact = crate::commands::usage::compute_shared_impact(&pool, &key)
             .await
             .unwrap();
+        assert!(impact.reason.is_none());
+        crate::commands::usage::set_shared_skill_usage_impl(
+            &pool,
+            &key,
+            false,
+            &impact.confirmation_token,
+        )
+        .await
+        .unwrap();
         assert!(std::fs::symlink_metadata(&dir).is_err());
         scan_all_skills_impl(&pool).await.unwrap();
-        let kept = db::get_agent_skill_observations(&pool, "universal").await.unwrap();
+        let kept = db::get_agent_skill_observations(&pool, "universal")
+            .await
+            .unwrap();
         assert!(
             kept.iter().any(|o| o.dir_path == dir.to_string_lossy()),
             "paused observation context must survive rescan"

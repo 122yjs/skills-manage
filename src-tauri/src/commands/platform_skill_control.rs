@@ -874,17 +874,14 @@ async fn get_platform_skill_controls_impl_at_path(
             };
             status.shared_install = match computed {
                 Ok(impact) => {
-                    let shares_other = usage::entry_is_shared_with_others(
-                        pool,
-                        &key,
-                        &status.agent_id,
-                    )
-                    .await
-                    .unwrap_or(true)
-                        || impact
-                            .confirmed_platforms
-                            .iter()
-                            .any(|c| c.agent_id != status.agent_id);
+                    let shares_other =
+                        usage::entry_is_shared_with_others(pool, &key, &status.agent_id)
+                            .await
+                            .unwrap_or(true)
+                            || impact
+                                .confirmed_platforms
+                                .iter()
+                                .any(|c| c.agent_id != status.agent_id);
                     if impact.reason.is_some()
                         || !impact.separate_installs.is_empty()
                         || shares_other
@@ -1931,7 +1928,11 @@ mod tests {
             .await
             .unwrap();
         }
-        for (skill_id, agent) in [("shared-card", "universal"), ("shared-card", "codex"), ("solo-card", "codex")] {
+        for (skill_id, agent) in [
+            ("shared-card", "universal"),
+            ("shared-card", "codex"),
+            ("solo-card", "codex"),
+        ] {
             let d = shared_root.join(skill_id);
             db::upsert_skill_installation(
                 &pool,
@@ -1947,8 +1948,13 @@ mod tests {
             .await
             .unwrap();
         }
-        let statuses = get_platform_skill_controls_impl(&pool, "codex").await.unwrap();
-        let shared = statuses.iter().find(|s| s.skill_id == "shared-card").unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "codex")
+            .await
+            .unwrap();
+        let shared = statuses
+            .iter()
+            .find(|s| s.skill_id == "shared-card")
+            .unwrap();
         assert!(shared.shared_install.is_some());
         assert!(!shared.excluded_here);
         let solo = statuses.iter().find(|s| s.skill_id == "solo-card").unwrap();
@@ -2027,8 +2033,12 @@ mod tests {
         usage::set_shared_skill_usage_impl(&pool, &key, false, &impact.confirmation_token)
             .await
             .unwrap();
-        db::delete_stale_agent_skill_observations(&pool, "codex", &[]).await.unwrap();
-        let statuses = get_platform_skill_controls_impl(&pool, "codex").await.unwrap();
+        db::delete_stale_agent_skill_observations(&pool, "codex", &[])
+            .await
+            .unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "codex")
+            .await
+            .unwrap();
         let card = statuses.iter().find(|s| s.skill_id == "kept-card").unwrap();
         assert_eq!(card.state, "inactive");
         assert!(!card.excluded_here);
@@ -2048,7 +2058,11 @@ mod tests {
             .unwrap();
         let skill_dir = root.join("solo-universal");
         fs::create_dir_all(&skill_dir).unwrap();
-        fs::write(skill_dir.join("SKILL.md"), "---\nname: solo-universal\n---\n").unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: solo-universal\n---\n",
+        )
+        .unwrap();
         db::upsert_skill(
             &pool,
             &db::Skill {
@@ -2078,8 +2092,13 @@ mod tests {
         )
         .await
         .unwrap();
-        let statuses = get_platform_skill_controls_impl(&pool, "universal").await.unwrap();
-        let card = statuses.iter().find(|s| s.skill_id == "solo-universal").unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "universal")
+            .await
+            .unwrap();
+        let card = statuses
+            .iter()
+            .find(|s| s.skill_id == "solo-universal")
+            .unwrap();
         assert!(card.shared_install.is_some());
         assert_eq!(
             card.shared_install.as_ref().unwrap().shared_install_id,

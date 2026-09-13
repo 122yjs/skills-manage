@@ -1050,10 +1050,8 @@ pub async fn compute_shared_impact(
     let all_paused = db::get_all_paused_installations(pool).await?;
     let all_observations = db::get_all_agent_skill_observations(pool).await?;
     let agents = db::get_all_agents(pool).await?;
-    let names: BTreeMap<String, String> = agents
-        .into_iter()
-        .map(|a| (a.id, a.display_name))
-        .collect();
+    let names: BTreeMap<String, String> =
+        agents.into_iter().map(|a| (a.id, a.display_name)).collect();
 
     let active: Vec<SkillInstallation> = all_active
         .into_iter()
@@ -1196,14 +1194,10 @@ pub async fn compute_shared_impact(
     // Symlink entries pointing AT the vault stay movable (only the link moves).
     let mut reason: Option<String> = None;
     let mut management_path = shared_install_id.to_string();
-    let vault_canonical: Option<PathBuf> = db::get_central_skills_dir(pool)
-        .await?
-        .canonicalize()
-        .ok();
+    let vault_canonical: Option<PathBuf> =
+        db::get_central_skills_dir(pool).await?.canonicalize().ok();
     if let Some(vault) = vault_canonical.as_ref() {
-        let entry_parent = Path::new(shared_install_id)
-            .parent()
-            .map(Path::to_path_buf);
+        let entry_parent = Path::new(shared_install_id).parent().map(Path::to_path_buf);
         let inside = entry_parent.is_some_and(|parent| parent.starts_with(vault))
             || Path::new(shared_install_id) == vault.as_path();
         if inside {
@@ -1532,8 +1526,7 @@ async fn restore_shared_installation_locked(
         if representative.symlink_target.as_deref() != Some(target_text.as_str()) {
             return Err("비활성 심볼릭 링크 대상이 기록과 달라 복원을 중단했습니다".to_string());
         }
-    } else if !metadata.is_dir()
-        || !matches!(representative.link_type.as_str(), "copy" | "native")
+    } else if !metadata.is_dir() || !matches!(representative.link_type.as_str(), "copy" | "native")
     {
         return Err(format!(
             "비활성 관리 설치 파일 형식을 확인할 수 없습니다: {}",
@@ -1542,7 +1535,12 @@ async fn restore_shared_installation_locked(
     }
     let agent = db::get_agent_by_id(pool, &representative.agent_id)
         .await?
-        .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", representative.agent_id))?;
+        .ok_or_else(|| {
+            format!(
+                "플랫폼 '{}'을(를) 찾을 수 없습니다",
+                representative.agent_id
+            )
+        })?;
     let installed_path = PathBuf::from(&representative.installed_path);
     let agent_root = PathBuf::from(&agent.global_skills_dir);
     if !agent_root.exists() {
@@ -1671,7 +1669,10 @@ fn bulk_shared_ids_for_universal(
 ) -> Vec<String> {
     let mut keys = BTreeSet::new();
     if enabled {
-        for p in paused.iter().filter(|p| p.agent_id == "universal" && p.paused_by_bulk) {
+        for p in paused
+            .iter()
+            .filter(|p| p.agent_id == "universal" && p.paused_by_bulk)
+        {
             keys.insert(shared_entry_key(&p.installed_path));
         }
     } else {
@@ -1707,13 +1708,12 @@ pub async fn set_shared_platform_usage_impl(
             c.confirmation_token.clone(),
         );
     }
-    let current_set: BTreeSet<String> =
-        current_ids.iter().cloned().collect();
+    let current_set: BTreeSet<String> = current_ids.iter().cloned().collect();
     let provided_set: BTreeSet<String> = provided.keys().cloned().collect();
     if current_set != provided_set
-        || current_impacts
-            .iter()
-            .any(|impact| provided.get(&impact.shared_install_id) != Some(&impact.confirmation_token))
+        || current_impacts.iter().any(|impact| {
+            provided.get(&impact.shared_install_id) != Some(&impact.confirmation_token)
+        })
     {
         return Ok(SetSharedPlatformUsageResult {
             applied: false,
@@ -2774,16 +2774,31 @@ mod tests {
         let impact = compute_shared_impact(&pool, &id).await.unwrap();
         assert!(impact.reason.is_none());
         assert!(impact.enabled);
-        let ids: Vec<_> = impact.confirmed_platforms.iter().map(|c| c.agent_id.as_str()).collect();
-        assert!(!ids.contains(&"universal"), "universal is a shared root, not a confirmed reader");
+        let ids: Vec<_> = impact
+            .confirmed_platforms
+            .iter()
+            .map(|c| c.agent_id.as_str())
+            .collect();
+        assert!(
+            !ids.contains(&"universal"),
+            "universal is a shared root, not a confirmed reader"
+        );
         assert!(ids.contains(&"codex"));
         assert!(impact.separate_installs.is_empty());
         let paused = set_shared_skill_usage_impl(&pool, &id, false, &impact.confirmation_token)
             .await
             .unwrap();
         assert!(paused.applied);
-        assert!(db::get_paused_installation(&pool, "shared-skill", "universal").await.unwrap().is_some());
-        assert!(db::get_paused_installation(&pool, "shared-skill", "codex").await.unwrap().is_some());
+        assert!(
+            db::get_paused_installation(&pool, "shared-skill", "universal")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(db::get_paused_installation(&pool, "shared-skill", "codex")
+            .await
+            .unwrap()
+            .is_some());
         assert!(fs::symlink_metadata(&dir).is_err());
     }
 
@@ -2817,8 +2832,24 @@ mod tests {
             std::os::windows::fs::symlink_dir(&vault_skill, &a_link).unwrap();
             std::os::windows::fs::symlink_dir(&vault_skill, &b_link).unwrap();
         }
-        put_install(&pool, "vskill", "codex", &a_link, "symlink", Some(vault_skill.to_string_lossy().into_owned())).await;
-        put_install(&pool, "vskill", "cline", &b_link, "symlink", Some(vault_skill.to_string_lossy().into_owned())).await;
+        put_install(
+            &pool,
+            "vskill",
+            "codex",
+            &a_link,
+            "symlink",
+            Some(vault_skill.to_string_lossy().into_owned()),
+        )
+        .await;
+        put_install(
+            &pool,
+            "vskill",
+            "cline",
+            &b_link,
+            "symlink",
+            Some(vault_skill.to_string_lossy().into_owned()),
+        )
+        .await;
         let id_a = shared_entry_key(&a_link.to_string_lossy());
         let id_b = shared_entry_key(&b_link.to_string_lossy());
         assert_ne!(id_a, id_b);
@@ -2853,7 +2884,10 @@ mod tests {
         let impact = compute_shared_impact(&pool, &id_a).await.unwrap();
         assert_eq!(impact.separate_installs.len(), 1);
         assert_eq!(impact.separate_installs[0].agent_id, "codex");
-        assert_eq!(impact.separate_installs[0].source_path, dir_b.to_string_lossy());
+        assert_eq!(
+            impact.separate_installs[0].source_path,
+            dir_b.to_string_lossy()
+        );
     }
 
     #[tokio::test]
@@ -2866,7 +2900,11 @@ mod tests {
         let id = shared_entry_key(&inside.to_string_lossy());
         let impact = compute_shared_impact(&pool, &id).await.unwrap();
         assert!(impact.reason.is_some());
-        assert!(impact.management_path.contains("vault") || Path::new(&impact.management_path).exists() || !impact.management_path.is_empty());
+        assert!(
+            impact.management_path.contains("vault")
+                || Path::new(&impact.management_path).exists()
+                || !impact.management_path.is_empty()
+        );
         let err = set_shared_skill_usage_impl(&pool, &id, false, &impact.confirmation_token)
             .await
             .unwrap_err();
@@ -2935,11 +2973,15 @@ mod tests {
         for _ in 0..2 {
             let off = compute_shared_impact(&pool, &id).await.unwrap();
             assert!(off.reason.is_none());
-            let r = set_shared_skill_usage_impl(&pool, &id, false, &off.confirmation_token).await.unwrap();
+            let r = set_shared_skill_usage_impl(&pool, &id, false, &off.confirmation_token)
+                .await
+                .unwrap();
             assert!(r.applied);
             assert!(!r.impact.enabled);
             let on = compute_shared_impact(&pool, &id).await.unwrap();
-            let r = set_shared_skill_usage_impl(&pool, &id, true, &on.confirmation_token).await.unwrap();
+            let r = set_shared_skill_usage_impl(&pool, &id, true, &on.confirmation_token)
+                .await
+                .unwrap();
             assert!(r.applied);
             assert!(r.impact.enabled);
         }
@@ -2968,7 +3010,10 @@ mod tests {
             .unwrap();
         assert!(!result.applied);
         assert!(dir.exists());
-        assert!(db::get_skill_installation(&pool, "stale", "universal").await.unwrap().is_some());
+        assert!(db::get_skill_installation(&pool, "stale", "universal")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -2998,7 +3043,9 @@ mod tests {
         put_install(&pool, "conflict", "universal", &dir, "copy", None).await;
         let id = shared_entry_key(&dir.to_string_lossy());
         let impact = compute_shared_impact(&pool, &id).await.unwrap();
-        set_shared_skill_usage_impl(&pool, &id, false, &impact.confirmation_token).await.unwrap();
+        set_shared_skill_usage_impl(&pool, &id, false, &impact.confirmation_token)
+            .await
+            .unwrap();
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("SKILL.md"), "---\nname: intruder\n---\n").unwrap();
         let retry = compute_shared_impact(&pool, &id).await.unwrap();
@@ -3006,15 +3053,28 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("덮어쓰지"));
-        assert_eq!(fs::read_to_string(dir.join("SKILL.md")).unwrap(), "---\nname: intruder\n---\n");
-        assert!(db::get_paused_installation(&pool, "conflict", "universal").await.unwrap().is_some());
+        assert_eq!(
+            fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            "---\nname: intruder\n---\n"
+        );
+        assert!(db::get_paused_installation(&pool, "conflict", "universal")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[test]
     fn shared_rollback_error_detail_preserved_including_failed_recovery() {
-        let moved = rollback_move(Path::new("/tmp/skillsmanage-test-missing-src"), Path::new("/tmp/skillsmanage-test-missing-dst"));
+        let moved = rollback_move(
+            Path::new("/tmp/skillsmanage-test-missing-src"),
+            Path::new("/tmp/skillsmanage-test-missing-dst"),
+        );
         assert!(moved.is_err());
-        let both = rollback_errors("원본 실패".to_string(), Some("DB 정리 실패".to_string()), Some("복구 실패".to_string()));
+        let both = rollback_errors(
+            "원본 실패".to_string(),
+            Some("DB 정리 실패".to_string()),
+            Some("복구 실패".to_string()),
+        );
         assert!(both.contains("원본 실패"));
         assert!(both.contains("DB 정리 실패"));
         assert!(both.contains("복구 실패"));
@@ -3038,27 +3098,33 @@ mod tests {
         // Destination parent exists so paused-root preflight and the paused-row
         // insert succeed; a non-writable dest then makes move_path fail and
         // the inserted paused row must be cleaned up.
-        let paused_dir = tmp.path().canonicalize().unwrap().join("paused-installations");
+        let paused_dir = tmp
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("paused-installations");
         fs::create_dir(&paused_dir).unwrap();
         let writable = paused_dir.metadata().unwrap().permissions();
         let mut locked = writable.clone();
         locked.set_mode(0o555);
         fs::set_permissions(&paused_dir, locked).unwrap();
-        let result = set_shared_skill_usage_impl(
-            &pool,
-            &gone_id,
-            false,
-            &gone_impact.confirmation_token,
-        )
-        .await;
+        let result =
+            set_shared_skill_usage_impl(&pool, &gone_id, false, &gone_impact.confirmation_token)
+                .await;
         fs::set_permissions(&paused_dir, writable).unwrap();
         let err = result.expect_err("pause must fail after the file move, not succeed");
         assert!(
             err.contains("옮길 수 없습니다"),
             "expected move failure, got: {err}"
         );
-        assert!(dir.join("SKILL.md").exists(), "live file stays when move rolls back");
-        assert!(db::get_skill_installation(&pool, "gone", "universal").await.unwrap().is_some());
+        assert!(
+            dir.join("SKILL.md").exists(),
+            "live file stays when move rolls back"
+        );
+        assert!(db::get_skill_installation(&pool, "gone", "universal")
+            .await
+            .unwrap()
+            .is_some());
         assert!(
             db::get_paused_installation(&pool, "gone", "universal")
                 .await
@@ -3075,7 +3141,10 @@ mod tests {
         let dir = universal.join("dbfail");
         put_skill(&pool, "dbfail", "dbfail", &dir).await;
         put_install(&pool, "dbfail", "universal", &dir, "copy", None).await;
-        sqlx::query("DROP TABLE paused_installations").execute(&pool).await.unwrap();
+        sqlx::query("DROP TABLE paused_installations")
+            .execute(&pool)
+            .await
+            .unwrap();
         let id = shared_entry_key(&dir.to_string_lossy());
         let err = compute_shared_impact(&pool, &id).await.unwrap_err();
         assert!(!err.is_empty());
@@ -3095,12 +3164,20 @@ mod tests {
         put_install(&pool, "bulk-shared", "universal", &shared_dir, "copy", None).await;
         put_skill(&pool, "bulk-solo", "bulk-solo", &solo_dir).await;
         put_install(&pool, "bulk-solo", "codex", &solo_dir, "copy", None).await;
-        set_platform_usage_impl(&pool, "codex", false).await.unwrap();
+        set_platform_usage_impl(&pool, "codex", false)
+            .await
+            .unwrap();
         // Solo moved; shared codex entry untouched by non-universal bulk.
         assert!(fs::symlink_metadata(&solo_dir).is_err());
         assert!(shared_dir.exists());
-        assert!(db::get_skill_installation(&pool, "bulk-shared", "codex").await.unwrap().is_some());
-        assert!(db::get_paused_installation(&pool, "bulk-solo", "codex").await.unwrap().is_some());
+        assert!(db::get_skill_installation(&pool, "bulk-shared", "codex")
+            .await
+            .unwrap()
+            .is_some());
+        assert!(db::get_paused_installation(&pool, "bulk-solo", "codex")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -3120,7 +3197,9 @@ mod tests {
             shared_install_id: id1.clone(),
             confirmation_token: impact1.confirmation_token.clone(),
         }];
-        let result = set_shared_platform_usage_impl(&pool, false, &stale).await.unwrap();
+        let result = set_shared_platform_usage_impl(&pool, false, &stale)
+            .await
+            .unwrap();
         assert!(!result.applied);
         assert_eq!(result.impacts.len(), 2);
         assert!(first.exists() && second.exists());
@@ -3143,10 +3222,15 @@ mod tests {
         for id in &ids {
             confirmations.push(SharedConfirmation {
                 shared_install_id: id.clone(),
-                confirmation_token: compute_shared_impact(&pool, id).await.unwrap().confirmation_token,
+                confirmation_token: compute_shared_impact(&pool, id)
+                    .await
+                    .unwrap()
+                    .confirmation_token,
             });
         }
-        let off = set_shared_platform_usage_impl(&pool, false, &confirmations).await.unwrap();
+        let off = set_shared_platform_usage_impl(&pool, false, &confirmations)
+            .await
+            .unwrap();
         assert!(off.applied);
         assert!(off.failed.is_empty());
         // Bulk restore targets only paused_by_bulk rows.
@@ -3185,7 +3269,10 @@ mod tests {
             .unwrap();
         assert!(fs::symlink_metadata(&dir_a).is_err());
         assert!(dir_b.join("SKILL.md").exists());
-        assert!(db::get_skill_installation(&pool, "copied", "cline").await.unwrap().is_some());
+        assert!(db::get_skill_installation(&pool, "copied", "cline")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
@@ -3218,7 +3305,11 @@ mod tests {
         .unwrap();
         let id = shared_entry_key(&dir.to_string_lossy());
         let impact = compute_shared_impact(&pool, &id).await.unwrap();
-        let ids: Vec<_> = impact.confirmed_platforms.iter().map(|c| c.agent_id.as_str()).collect();
+        let ids: Vec<_> = impact
+            .confirmed_platforms
+            .iter()
+            .map(|c| c.agent_id.as_str())
+            .collect();
         assert!(!ids.contains(&"claude-code"));
     }
 
@@ -3236,14 +3327,9 @@ mod tests {
             .unwrap();
         assert_eq!(from_raw.shared_install_id, from_key.shared_install_id);
         assert_eq!(from_raw.confirmation_token, from_key.confirmation_token);
-        let result = set_shared_skill_usage_impl(
-            &pool,
-            &raw,
-            false,
-            &from_key.confirmation_token,
-        )
-        .await
-        .unwrap();
+        let result = set_shared_skill_usage_impl(&pool, &raw, false, &from_key.confirmation_token)
+            .await
+            .unwrap();
         assert!(result.applied);
         assert!(!result.impact.enabled);
     }
@@ -3303,9 +3389,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!err.is_empty());
-        assert!(fs::symlink_metadata(&paused_path).is_ok(), "file must roll back to paused path");
-        assert!(fs::symlink_metadata(&dir).is_err(), "restore must not leave a partial live file");
-        assert!(db::get_paused_installation(&pool, "rb", "universal").await.unwrap().is_some());
+        assert!(
+            fs::symlink_metadata(&paused_path).is_ok(),
+            "file must roll back to paused path"
+        );
+        assert!(
+            fs::symlink_metadata(&dir).is_err(),
+            "restore must not leave a partial live file"
+        );
+        assert!(db::get_paused_installation(&pool, "rb", "universal")
+            .await
+            .unwrap()
+            .is_some());
     }
 
     #[tokio::test]
