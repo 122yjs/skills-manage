@@ -113,6 +113,7 @@ export function PlatformView() {
   const setSharedSkillUsage = useSkillUsageStore((state) => state.setSharedSkillUsage);
 
   const [searchQuery, setSearchQuery] = useState("");
+  const [duplicatesOnly, setDuplicatesOnly] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<ClaudeSourceFilter>("all");
   const [installSourceFilter, setInstallSourceFilter] = useState<InstallSourceFilter>("all");
   const [viewMode, setViewMode] = useSkillListViewMode("platform");
@@ -164,6 +165,7 @@ export function PlatformView() {
   useEffect(() => {
     setSourceFilter("all");
     setInstallSourceFilter("all");
+    setDuplicatesOnly(false);
   }, [agentId]);
 
   // Ensure central skills are loaded so we can resolve SkillWithLinks for InstallDialog.
@@ -193,11 +195,11 @@ export function PlatformView() {
         await getSkillsByAgent(agentId);
       }
       if (result.failed.length > 0) {
-        const failedNames = result.failed.map((f) => f.agent_id).join(", ");
-        toast.error(t("central.installPartialFail", { platforms: failedNames }));
+        throw new Error(result.failed.map((f) => `${f.agent_id}: ${f.error}`).join("\n"));
       }
     } catch (err) {
       toast.error(t("central.installError", { error: String(err) }));
+      throw err;
     }
   }
 
@@ -467,7 +469,7 @@ export function PlatformView() {
     [platformFolderSplit.groups]
   );
   const visibleSkills =
-    viewMode === "folders" && !searchQuery.trim()
+    viewMode === "folders" && !searchQuery.trim() && !duplicatesOnly
       ? platformFolderSplit.rootSkills
       : sourceFilteredSkills;
 
@@ -501,13 +503,15 @@ export function PlatformView() {
     );
   }, [visibleSkills, searchQuery]);
 
-  const locationGroups = useMemo(() => groupSkillLocations(filteredSkills), [filteredSkills]);
-  const transferSelection = useSkillSelection(filteredSkills, agentId);
+  const allLocationGroups = useMemo(() => groupSkillLocations(filteredSkills), [filteredSkills]);
+  const duplicateGroupCount = allLocationGroups.filter((group) => group.length > 1).length;
+  const locationGroups = duplicatesOnly ? allLocationGroups.filter((group) => group.length > 1) : allLocationGroups;
+  const transferSelection = useSkillSelection(locationGroups.flat(), agentId);
 
   const filteredFolderGroups = useMemo(() => {
-    if (viewMode !== "folders") return [];
+    if (viewMode !== "folders" || duplicatesOnly) return [];
     return searchQuery.trim() ? [] : platformFolderSplit.groups;
-  }, [platformFolderSplit.groups, searchQuery, viewMode]);
+  }, [platformFolderSplit.groups, searchQuery, viewMode, duplicatesOnly]);
 
   useEffect(() => {
     if (!drawerSkill) return;
@@ -798,6 +802,10 @@ export function PlatformView() {
             />
           </div>
           <SkillListModeToggle value={viewMode} onChange={setViewMode} />
+          <Button variant={duplicatesOnly ? "secondary" : "outline"} size="sm"
+            aria-pressed={duplicatesOnly} onClick={() => setDuplicatesOnly(!duplicatesOnly)}>
+            {t("skillLocations.onlyDuplicates", { count: duplicateGroupCount })}
+          </Button>
         </div>
       </div>
 
@@ -805,7 +813,7 @@ export function PlatformView() {
 
       {locationGroups.length < filteredSkills.length && (
         <p className="px-6 pt-3 text-xs text-muted-foreground">
-          {t("skillLocations.summary", { skills: locationGroups.length, locations: filteredSkills.length })}
+          {t("skillLocations.summary", { skills: locationGroups.length, locations: locationGroups.flat().length })}
         </p>
       )}
 
@@ -827,6 +835,8 @@ export function PlatformView() {
                 : `No ${activeSourceLabel} skills installed for ${agent.display_name}`,
             })}
           />
+        ) : duplicatesOnly && locationGroups.length === 0 ? (
+          <EmptyState message={t("skillLocations.noDuplicates")} />
         ) : filteredSkills.length === 0 && filteredFolderGroups.length === 0 ? (
           <EmptyState
             message={t("platform.noMatch", { query: searchQuery })}
@@ -864,7 +874,7 @@ export function PlatformView() {
                 )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {locationGroups.map((group) => (
-                    <SkillLocationGroup key={`${agentId}:${group.map(getSkillRowKey).join("|")}`} skills={group} selectedCount={group.filter((skill) => transferSelection.selected.has(skillSelectionKey(skill))).length}>
+                    <SkillLocationGroup key={`${agentId}:${scanGeneration}:${group.map(getSkillRowKey).join("|")}`} agentId={agentId} skills={group} selectedCount={group.filter((skill) => transferSelection.selected.has(skillSelectionKey(skill))).length}>
                     {group.map((skill) => (
                     (() => {
                       const usage = usageBySkillId.get(skill.id);

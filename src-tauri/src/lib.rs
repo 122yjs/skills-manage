@@ -50,6 +50,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Scanner
             commands::scanner::scan_all_skills,
+            commands::skill_duplicates::compare_skill_locations,
             // Agents
             commands::agents::get_agents,
             commands::agents::detect_agents,

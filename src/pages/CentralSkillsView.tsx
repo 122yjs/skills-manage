@@ -574,11 +574,11 @@ export function CentralSkillsView() {
       await refreshCounts();
       await loadCentralSkills();
       if (result.failed.length > 0) {
-        const failedNames = result.failed.map((f) => f.agent_id).join(", ");
-        toast.error(t("central.installPartialFail", { platforms: failedNames }));
+        throw new Error(result.failed.map((f) => `${f.agent_id}: ${f.error}`).join("\n"));
       }
     } catch (err) {
       toast.error(t("central.installError", { error: String(err) }));
+      throw err;
     }
   }
 

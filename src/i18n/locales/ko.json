@@ -333,7 +333,18 @@
     "selected": "{{count}}곳 선택됨",
     "toggle": "{{name}} 출처 위치 {{count}}곳 보기",
     "count": "출처 위치 {{count}}곳",
-    "help": "같은 이름의 스킬입니다. 내용이 다를 수 있으며, 각 위치의 상세 정보와 관리 버튼으로 따로 확인·변경합니다."
+    "help": "이 목록을 접어도 에이전트가 읽는 스킬 수는 줄지 않습니다. 원본과 내용을 비교한 뒤 각 출처의 관리 버튼으로 정리하세요.",
+    "checkDuplicates": "중복 출처 확인 필요",
+    "result": { "same_origin": "같은 원본", "identical": "동일한 복사본", "different": "내용 다름", "unknown": "확인 필요" },
+    "compare": "원본·내용 비교",
+    "comparing": "파일 비교 중…",
+    "same_origin": "같은 원본을 가리키는 경로입니다. 파일은 한 벌이며, 목록 중복 제거 여부는 플랫폼마다 다릅니다.",
+    "identical": "보조 파일까지 내용이 같은 별도 복사본입니다. 필요한 플랫폼을 확인한 뒤 중복 설치를 정리하세요.",
+    "different": "내용이나 보조 파일이 다릅니다. 상세 내용을 확인하고 남길 위치를 선택하세요.",
+    "unknown": "비교할 수 없거나 출처가 바뀌었습니다. 새로고침 후 경로와 내용을 직접 확인하세요.",
+    "onlyDuplicates": "중복 출처만 보기 ({{count}})",
+    "noDuplicates": "현재 조건에 같은 이름의 중복 출처가 없습니다.",
+    "paseoHelp": "Paseo는 선택된 스킬을 시작할 때 다시 설치할 수 있습니다. Paseo의 호스트 설정 → Agents → Orchestration skills에서 자동 설치 선택을 확인하세요."
   },
   "skillList": {
     "viewModeLabel": "보기",
@@ -438,6 +449,8 @@
     "sharedAria": "{{platform}}은 공유 디렉터리를 통해 사용할 수 있습니다"
   },
   "installDialog": {
+    "alreadyAvailable": "이미 읽을 수 있음",
+    "existingSource": "기존 출처: {{paths}} · 추가 설치 불필요",
     "title": "{{name}} 설치",
     "choosePlatforms": "이 스킬을 설치할 플랫폼을 선택하세요.",
     "applicationScopeHelp": "선택한 플랫폼에 스킬을 설치합니다. 도구 목록에서 숨긴 도구에도 설치할 수 있습니다.",

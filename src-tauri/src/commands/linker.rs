@@ -376,6 +376,14 @@ pub(crate) async fn validate_batch_install_targets(
         }
     }
 
+    let universal_root = agents
+        .iter()
+        .find(|a| a.id == "universal")
+        .map(|a| Path::new(&a.global_skills_dir));
+    let central_root = agents
+        .iter()
+        .find(|a| a.id == "central")
+        .map(|a| Path::new(&a.global_skills_dir));
     for (index, left) in selected.iter().enumerate() {
         for right in selected.iter().skip(index + 1) {
             if paths_refer_to_same_location(
@@ -386,6 +394,20 @@ pub(crate) async fn validate_batch_install_targets(
                     "Agents '{}' and '{}' use the same install directory and cannot be selected together.",
                     left.id, right.id
                 ));
+            }
+            // Cursor처럼 다른 플랫폼 폴더도 읽는 대상은 설치 순서와 무관하게 중복을 막는다.
+            // 공용 설치는 아래의 기존 전환 규칙에서 별도로 처리한다.
+            if left.id != "universal" && right.id != "universal" {
+                for (reader, source) in [(left, right), (right, left)] {
+                    if super::scanner::loading_paths_for_agent(reader, universal_root, central_root)
+                        .iter()
+                        .any(|root| {
+                            paths_refer_to_same_location(root, Path::new(&source.global_skills_dir))
+                        })
+                    {
+                        return Err(format!("{}는 {}의 스킬 폴더도 읽습니다. 같은 스킬이 중복되지 않도록 {}만 선택하세요.", reader.display_name, source.display_name, source.display_name));
+                    }
+                }
             }
         }
     }
@@ -798,8 +820,16 @@ async fn prepare_install(
     }
 
     let Some(universal) = universal else {
-        ensure_centralized(pool, skill_id, &canonical_dir).await?;
         let target_path = PathBuf::from(&requested_agent.global_skills_dir).join(skill_id);
+        super::skill_duplicates::check_install(
+            pool,
+            skill_id,
+            &requested_agent,
+            &target_path,
+            &canonical_dir,
+        )
+        .await?;
+        ensure_centralized(pool, skill_id, &canonical_dir).await?;
         return Ok(InstallPlan {
             canonical_dir,
             target_agent: requested_agent,
@@ -847,6 +877,15 @@ async fn prepare_install(
             ));
         }
     }
+
+    super::skill_duplicates::check_install(
+        pool,
+        skill_id,
+        &target_agent,
+        &target_path,
+        &canonical_dir,
+    )
+    .await?;
 
     ensure_centralized(pool, skill_id, &canonical_dir).await?;
     let universal_duplicates = if requested_is_universal {
@@ -1096,7 +1135,9 @@ pub async fn uninstall_skill_from_agent_impl(
         .unwrap_or_else(|| PathBuf::from(&agent.global_skills_dir).join(skill_id));
     let link_type = record.map(|r| r.link_type.as_str()).unwrap_or("symlink");
     if agent.id == "universal"
-        && !super::shared_delete::find_links(pool, &install_path).await?.is_empty()
+        && !super::shared_delete::find_links(pool, &install_path)
+            .await?
+            .is_empty()
     {
         return Err("다른 플랫폼의 바로가기가 연결되어 있습니다. 공용 설치 관리에서 연결 목록을 확인한 뒤 함께 삭제하세요".into());
     }

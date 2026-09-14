@@ -333,7 +333,18 @@
     "selected": "{{count}} selected",
     "toggle": "Show {{count}} locations for {{name}}",
     "count": "{{count}} source locations",
-    "help": "These skills share a name but may differ in content. Inspect and manage each location separately below."
+    "help": "Collapsing this list does not reduce the skills loaded by an agent. Compare originals and contents, then manage each source separately.",
+    "checkDuplicates": "Review duplicate sources",
+    "result": { "same_origin": "Same original", "identical": "Identical copies", "different": "Different contents", "unknown": "Needs review" },
+    "compare": "Compare originals and contents",
+    "comparing": "Comparing files…",
+    "same_origin": "These paths point to one original. There is one set of files; whether the skill list is deduplicated depends on the platform.",
+    "identical": "These separate copies have identical contents, including supporting files. Check which platforms need them before removing duplicates.",
+    "different": "Contents or supporting files differ. Review details before choosing which location to keep.",
+    "unknown": "Comparison is unavailable or the sources changed. Refresh and inspect paths and contents.",
+    "onlyDuplicates": "Duplicate sources only ({{count}})",
+    "noDuplicates": "No duplicate skill names match the current filters.",
+    "paseoHelp": "Paseo may reinstall selected skills on startup. Check the selection in host settings → Agents → Orchestration skills."
   },
   "skillList": {
     "viewModeLabel": "View",
@@ -438,6 +449,8 @@
     "sharedAria": "{{platform}} is available through the shared directory"
   },
   "installDialog": {
+    "alreadyAvailable": "Already available",
+    "existingSource": "Existing source: {{paths}} · No extra installation needed",
     "title": "Install {{name}}",
     "choosePlatforms": "Choose which platforms to install this skill to.",
     "applicationScopeHelp": "Installs this skill to the selected locations. You can also install it to tools hidden from the tools list.",

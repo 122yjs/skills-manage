@@ -47,3 +47,16 @@ describe("설치 위치 묶음", () => {
     expect(screen.getByRole("button", { name: "관리" })).toBeVisible();
   });
 });
+
+it("비교 전에는 같은 내용이라고 단정하지 않고 실제 비교 결과를 표시한다", async () => {
+  const { useSkillStore } = await import("@/stores/skillStore");
+  const compare = vi.fn().mockResolvedValue({ relation: "same_origin", paths: skills.map(s => s.dir_path) });
+  useSkillStore.setState({ compareLocations: compare });
+  render(<SkillLocationGroup skills={skills} agentId="cursor"><p>경로별 관리</p></SkillLocationGroup>);
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: /paseo/ }));
+  fireEvent.click(screen.getByRole("button", { name: "比较原文件与内容" }));
+  expect(await screen.findByRole("status")).toHaveTextContent("这些路径指向同一份原文件");
+  expect(screen.getByText("同一份原文件")).toBeVisible();
+  expect(compare).toHaveBeenCalledWith("cursor", "paseo");
+});

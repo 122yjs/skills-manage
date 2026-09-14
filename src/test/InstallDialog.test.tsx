@@ -178,7 +178,7 @@ describe("InstallDialog", () => {
     const cursorCheckbox = screen.getByRole("checkbox", { name: "Cursor" });
     expect(cursorCheckbox).toBeChecked();
     expect(cursorCheckbox).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("正通过共享安装使用")).toBeInTheDocument();
+    expect(screen.getByText("已可读取")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /安装到 0 个平台/i })).toBeDisabled();
   });
 
@@ -397,4 +397,10 @@ describe("InstallDialog", () => {
     );
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
+});
+
+it("이미 읽을 수 있는 다른 이름의 폴더를 보여주고 추가 설치를 막는다", () => {
+  renderDialog({ skill: { ...mockSkill, read_only_agents: [], available_sources: { cursor: ["/home/.claude/skills/other-folder"] } } });
+  expect(screen.getByRole("checkbox", { name: "Cursor" })).toHaveAttribute("aria-disabled", "true");
+  expect(screen.getByText(/other-folder/)).toBeInTheDocument();
 });

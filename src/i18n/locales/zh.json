@@ -333,7 +333,18 @@
     "selected": "已选 {{count}} 个位置",
     "toggle": "查看 {{name}} 的 {{count}} 个来源位置",
     "count": "{{count}} 个来源位置",
-    "help": "这些技能名称相同，但内容可能不同。请通过各位置的详情和操作分别查看与管理。"
+    "help": "折叠列表不会减少智能体加载的技能。请比较原文件与内容，再分别管理各来源。",
+    "checkDuplicates": "需要检查重复来源",
+    "result": { "same_origin": "同一份原文件", "identical": "内容相同的副本", "different": "内容不同", "unknown": "需要检查" },
+    "compare": "比较原文件与内容",
+    "comparing": "正在比较文件…",
+    "same_origin": "这些路径指向同一份原文件。实际文件只有一份，技能列表是否去重由平台决定。",
+    "identical": "这些独立副本的内容和附属文件相同。请确认哪些平台需要它们，再清理重复安装。",
+    "different": "内容或附属文件不同。请先查看详情，再选择保留的位置。",
+    "unknown": "无法比较或来源已变化。请刷新后检查路径和内容。",
+    "onlyDuplicates": "仅查看重复来源 ({{count}})",
+    "noDuplicates": "当前筛选条件下没有同名重复来源。",
+    "paseoHelp": "Paseo 可能在启动时重新安装选中的技能。请检查主机设置 → Agents → Orchestration skills 中的选择。"
   },
   "skillList": {
     "viewModeLabel": "视图",
@@ -438,6 +449,8 @@
     "sharedAria": "{{platform}} 通过共享目录可用"
   },
   "installDialog": {
+    "alreadyAvailable": "已可读取",
+    "existingSource": "现有来源：{{paths}} · 无需重复安装",
     "title": "安装 {{name}}",
     "choosePlatforms": "选择要安装此技能的平台。",
     "applicationScopeHelp": "将此技能安装到选定位置。也可以安装到工具列表中已隐藏的工具。",

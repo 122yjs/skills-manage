@@ -3,6 +3,11 @@ import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { ScannedSkill } from "@/types";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
 
+export interface DuplicateComparison {
+  relation: "same_origin" | "identical" | "different" | "unknown";
+  paths: string[];
+}
+
 const BROWSER_FIXTURE_SKILLS_BY_AGENT: Record<string, ScannedSkill[]> = {
   "claude-code": [
     {
@@ -51,6 +56,7 @@ interface SkillState {
   error: string | null;
 
   // Actions
+  compareLocations: (agentId: string, name: string) => Promise<DuplicateComparison>;
   getSkillsByAgent: (agentId: string) => Promise<void>;
   uninstallSkillFromAgent: (skillId: string, agentId: string) => Promise<void>;
 }
@@ -66,6 +72,8 @@ export const useSkillStore = create<SkillState>((set) => ({
   loadingByAgent: {},
   pendingSkillActionKeys: {},
   error: null,
+
+  compareLocations: (agentId, name) => invoke<DuplicateComparison>("compare_skill_locations", { agentId, name }),
 
   /**
    * Fetch skills for a specific agent by invoking the Tauri backend command.

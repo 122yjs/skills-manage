@@ -2003,3 +2003,21 @@ describe("PlatformView 공용 설치 판정", () => {
     expectNoUniversalMarkers();
   });
 });
+
+it("중복 출처만 보기에서 단일 출처를 숨기고 다시 모두 표시한다", () => {
+  mockUseSkillStore.mockImplementation((selector?: unknown) => {
+    const state = buildSkillStoreState({
+      skillsByAgent: { "claude-code": [...mockDuplicateClaudeSkills, mockSkills[0]] },
+    });
+    return typeof selector === "function" ? selector(state) : state;
+  });
+  renderPlatformView();
+  const filter = screen.getByRole("button", { name: "仅查看重复来源 (1)" });
+  expect(screen.getByRole("button", { name: /查看 frontend-design 的详情/ })).toBeInTheDocument();
+  fireEvent.click(filter);
+  expect(filter).toHaveAttribute("aria-pressed", "true");
+  expect(screen.queryByRole("button", { name: /查看 frontend-design 的详情/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /查看 shared-skill 的 2 个来源位置/ })).toBeInTheDocument();
+  fireEvent.click(filter);
+  expect(screen.getByRole("button", { name: /查看 frontend-design 的详情/ })).toBeInTheDocument();
+});

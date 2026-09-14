@@ -194,6 +194,7 @@ export interface SkillWithLinks {
   linked_agents: string[];
   /** Agent IDs that can see this skill through a read-only compatibility root. */
   read_only_agents?: string[];
+  available_sources?: Record<string, string[]>;
 }
 
 // ─── Skill Usage Types ──────────────────────────────────────────────────────

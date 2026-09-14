@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use tauri::State;
@@ -35,6 +35,8 @@ pub struct SkillWithLinks {
     pub linked_agents: Vec<String>,
     /// Agent IDs that observe this skill from a shared/read-only compatibility root.
     pub read_only_agents: Vec<String>,
+    /// 설치 대화상자에서 추가 설치가 필요 없는 출처를 보여준다.
+    pub available_sources: BTreeMap<String, Vec<String>>,
 }
 
 /// An installation record enriched with the `installed_at` timestamp for
@@ -897,6 +899,19 @@ async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLi
     let read_only_agents = read_only_agent_ids_for_skill(pool, &skill.id, skill.is_central).await?;
     let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
 
+    let mut available_sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let sources: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT agent_id, dir_path, file_path FROM agent_skill_observations WHERE trim(name) = ? ORDER BY agent_id, dir_path"
+    ).bind(skill.name.trim()).fetch_all(pool).await.map_err(|e| e.to_string())?;
+    for (agent_id, dir_path, file_path) in sources {
+        if Path::new(&file_path).is_file() {
+            available_sources
+                .entry(agent_id)
+                .or_default()
+                .push(dir_path);
+        }
+    }
+
     Ok(SkillWithLinks {
         id: skill.id,
         name: skill.name,
@@ -910,6 +925,7 @@ async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLi
         updated_at,
         linked_agents,
         read_only_agents,
+        available_sources,
     })
 }
 
@@ -1695,6 +1711,47 @@ mod tests {
             skills_with_links[0].read_only_agents.is_empty(),
             "Central ownership alone must not synthesize Universal availability"
         );
+    }
+
+    #[tokio::test]
+    async fn same_name_sources_remain_available_without_becoming_managed_links() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        db::upsert_skill(&pool, &make_skill("vault-id", "Shared Skill", true))
+            .await
+            .unwrap();
+        let source = tmp.path().join("other-folder");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join("SKILL.md"),
+            "---\nname: Shared Skill\n---\n본문",
+        )
+        .unwrap();
+        db::upsert_agent_skill_observation(
+            &pool,
+            &make_observation_for_agent(
+                "cursor",
+                "cursor::other-folder",
+                "different-id",
+                "Shared Skill",
+                source.to_str().unwrap(),
+                "compatibility",
+                tmp.path().to_str().unwrap(),
+                true,
+            ),
+        )
+        .await
+        .unwrap();
+        let skills = get_central_skills_impl(&pool).await.unwrap();
+        assert_eq!(
+            skills[0].available_sources["cursor"],
+            vec![source.to_string_lossy().to_string()]
+        );
+        assert!(skills[0].linked_agents.is_empty());
+        // 삭제된 출처는 오래된 스캔 기록만으로 설치를 막지 않는다.
+        fs::remove_file(source.join("SKILL.md")).unwrap();
+        let skills = get_central_skills_impl(&pool).await.unwrap();
+        assert!(skills[0].available_sources.is_empty());
     }
 
     #[tokio::test]

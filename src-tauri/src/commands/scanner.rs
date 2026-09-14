@@ -729,6 +729,17 @@ fn scan_roots_for_agent(
     roots
 }
 
+pub(crate) fn loading_paths_for_agent(
+    agent: &crate::db::Agent,
+    universal_root: Option<&Path>,
+    central_root: Option<&Path>,
+) -> Vec<PathBuf> {
+    scan_roots_for_agent(agent, universal_root, central_root)
+        .into_iter()
+        .map(|root| root.path)
+        .collect()
+}
+
 fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
     format!("{agent_id}::{dir_path}")
 }

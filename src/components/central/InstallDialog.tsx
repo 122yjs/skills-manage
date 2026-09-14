@@ -69,7 +69,8 @@ export function InstallDialog({
         targetAgents
           .filter((a) =>
             skill.linked_agents.includes(a.id) ||
-            (skill.read_only_agents?.includes(a.id) ?? false)
+            (skill.read_only_agents?.includes(a.id) ?? false) ||
+            Boolean(skill.available_sources?.[a.id]?.length)
           )
           .map((a) => a.id)
       );
@@ -97,7 +98,8 @@ export function InstallDialog({
   function getSelectedInstallableAgentIds() {
     if (!skill) return [];
     const readOnlyAgentIds = new Set(skill.read_only_agents ?? []);
-    return Array.from(selectedAgentIds).filter((id) => !readOnlyAgentIds.has(id));
+    return Array.from(selectedAgentIds).filter((id) => !readOnlyAgentIds.has(id) &&
+      !(skill.available_sources?.[id]?.length && !skill.linked_agents.includes(id)));
   }
 
   async function handleConfirm() {
@@ -159,14 +161,16 @@ export function InstallDialog({
               targetAgents.map((agent) => {
                 const displayName = getAgentDisplayName(agent, t("sidebar.universal"));
                 const isLinked = skill.linked_agents.includes(agent.id);
-                const isReadOnly = skill.read_only_agents?.includes(agent.id) ?? false;
+                const sourcePaths = skill.available_sources?.[agent.id] ?? [];
+                const isReadOnly = (skill.read_only_agents?.includes(agent.id) ?? false) ||
+                  (!isLinked && sourcePaths.length > 0);
                 const isChecked = selectedAgentIds.has(agent.id);
                 const checkboxId = `install-target-${agent.id}`;
 
                 return (
                   <div
                     key={agent.id}
-                    className="flex items-center gap-2"
+                    className="flex flex-wrap items-center gap-2"
                   >
                     <Checkbox
                       id={checkboxId}
@@ -187,7 +191,7 @@ export function InstallDialog({
                     </label>
                     {isReadOnly ? (
                       <span className="text-xs text-primary shrink-0">
-                        {t("installDialog.alwaysIncluded")}
+                        {t("installDialog.alreadyAvailable")}
                       </span>
                     ) : isLinked ? (
                       <span className="text-xs text-primary shrink-0">
@@ -199,6 +203,9 @@ export function InstallDialog({
                         {t("installDialog.notDetected")}
                       </span>
                     )}
+                    {isReadOnly && sourcePaths.length > 0 && <p className="w-full break-all pl-6 text-xs text-muted-foreground">
+                      {t("installDialog.existingSource", { paths: sourcePaths.join(", ") })}
+                    </p>}
                   </div>
                 );
               })

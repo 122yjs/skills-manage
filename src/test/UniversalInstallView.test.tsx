@@ -123,6 +123,7 @@ describe("UniversalInstallView", () => {
         skillsByAgent: { universal: universalSkills },
         loadingByAgent: { universal: false },
         pendingSkillActionKeys: {},
+        compareLocations: vi.fn(),
         error: null,
         getSkillsByAgent,
         uninstallSkillFromAgent,
@@ -158,6 +159,7 @@ describe("UniversalInstallView", () => {
       skillsByAgent: { universal: [skill] },
       loadingByAgent: { universal: false },
       pendingSkillActionKeys: {},
+      compareLocations: vi.fn(),
       getSkillsByAgent,
     } as never));
     const impact = {
