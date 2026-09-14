@@ -237,6 +237,7 @@ export function SettingsView() {
   const [aiApiKey, setAiApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [aiModel, setAiModel] = useState("");
+  const [aiMaxTokens, setAiMaxTokens] = useState("");
   const [aiCustomUrl, setAiCustomUrl] = useState("");
   const [aiProtocol, setAiProtocol] = useState<ApiProtocol | "">("");
   const [aiLoaded, setAiLoaded] = useState(false);
@@ -310,6 +311,7 @@ export function SettingsView() {
         if (provider) {
           const key = await invoke<string | null>("get_setting", { key: `ai_api_key__${provider}` });
           const model = await invoke<string | null>("get_setting", { key: `ai_model__${provider}` });
+          setAiMaxTokens(await invoke<string | null>("get_setting", { key: `ai_max_tokens__${provider}` }) ?? "");
           const baseUrl = await invoke<string | null>("get_setting", { key: `ai_custom_base_url__${provider}` });
           const protocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${provider}` });
           if (key) setAiApiKey(key);
@@ -342,6 +344,7 @@ export function SettingsView() {
         await invoke("set_setting", { key: "ai_region", value: aiRegion });
         await invoke("set_setting", { key: `ai_api_key__${aiProvider}`, value: aiApiKey });
         await invoke("set_setting", { key: `ai_model__${aiProvider}`, value: aiModel });
+        await invoke("set_setting", { key: `ai_max_tokens__${aiProvider}`, value: aiMaxTokens });
         const url = resolveCustomUrl(aiCustomUrl, aiProtocol);
         await invoke("set_setting", { key: `ai_api_url__${aiProvider}`, value: url });
         await invoke("set_setting", { key: `ai_custom_base_url__${aiProvider}`, value: aiCustomUrl });
@@ -349,7 +352,7 @@ export function SettingsView() {
       } catch { /* ignore */ }
     };
     save();
-  }, [aiProvider, aiRegion, aiApiKey, aiModel, aiCustomUrl, aiProtocol, aiLoaded, hasUserInteracted]);
+  }, [aiProvider, aiRegion, aiApiKey, aiModel, aiMaxTokens, aiCustomUrl, aiProtocol, aiLoaded, hasUserInteracted]);
 
   // When provider or region changes, update model to default
   async function handleProviderChange(id: string) {
@@ -369,6 +372,7 @@ export function SettingsView() {
     try {
       const key = await invoke<string | null>("get_setting", { key: `ai_api_key__${id}` });
       const model = await invoke<string | null>("get_setting", { key: `ai_model__${id}` });
+      setAiMaxTokens(await invoke<string | null>("get_setting", { key: `ai_max_tokens__${id}` }) ?? "");
       const protocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${id}` });
       const baseUrl = await invoke<string | null>("get_setting", { key: `ai_custom_base_url__${id}` });
       setAiApiKey(key ?? "");
@@ -387,6 +391,7 @@ export function SettingsView() {
     } catch {
       setAiApiKey("");
       setAiModel(p?.defaultModel ?? "");
+      setAiMaxTokens("");
       setAiCustomUrl(p?.endpoints[nextRegion] ?? "");
       setAiProtocol(p?.protocol ?? "");
     } finally {
@@ -1024,6 +1029,13 @@ export function SettingsView() {
               </div>
               {/* Global/Regional도 기본 프로토콜을 보여주고, 이후 수정 가능 */}
               <div>
+                <label htmlFor="ai-max-tokens" className="text-xs text-muted-foreground">{t("settings.aiMaxTokensLabel")}</label>
+                <Input id="ai-max-tokens" type="number" min={16} step={1} value={aiMaxTokens}
+                  placeholder="4096"
+                  onChange={(event) => { setHasUserInteracted(true); setAiMaxTokens(event.target.value); setAiTestResult(null); }} />
+                <p className="text-xs text-muted-foreground mt-1">{t("settings.aiMaxTokensHint")}</p>
+              </div>
+              <div>
                 <label className="text-xs text-muted-foreground mb-2 block">{t("settings.aiApiFormatLabel")}</label>
                 <div className="flex flex-wrap gap-1.5">
                   {API_PROTOCOLS.map((proto) => (
@@ -1086,6 +1098,7 @@ export function SettingsView() {
                           apiUrl: resolvedUrl,
                           protocol: resolvedProtocol || null,
                           model: aiModel || null,
+                          maxTokens: aiMaxTokens,
                         },
                       });
                       setAiTestResult({ ok: true, msg: t("settings.aiTestSuccess") });

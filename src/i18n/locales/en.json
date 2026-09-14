@@ -580,6 +580,8 @@
     "selectSkills": "Select skills"
   },
   "settings": {
+    "aiMaxTokensLabel": "Maximum output tokens",
+    "aiMaxTokensHint": "Leave empty for automatic 4096. Enter an integer of at least 16. Applies to connection tests, explanations and translations; reasoning may share this budget.",
     "title": "Settings",
     "scanDirs": "Scan Directories",
     "scanDirsDesc": "Manage the list of directories scanned for skills. Built-in directories cannot be deleted.",

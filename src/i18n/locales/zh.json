@@ -580,6 +580,8 @@
     "selectSkills": "选择技能"
   },
   "settings": {
+    "aiMaxTokensLabel": "最大输出 Token",
+    "aiMaxTokensHint": "留空时自动使用 4096。请输入至少 16 的整数。适用于连接测试、解释和翻译，推理也可能使用此额度。",
     "title": "设置",
     "scanDirs": "扫描目录",
     "scanDirsDesc": "管理技能扫描的目录列表。内置目录不可删除。",

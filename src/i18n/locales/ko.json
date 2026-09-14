@@ -580,6 +580,8 @@
     "selectSkills": "스킬 선택"
   },
   "settings": {
+    "aiMaxTokensLabel": "최대 출력 토큰",
+    "aiMaxTokensHint": "비우면 자동 4096. 16 이상의 정수를 입력하세요. 연결 테스트·설명·번역에 적용되며 추론도 이 한도를 사용할 수 있습니다.",
     "title": "설정",
     "scanDirs": "스캔 디렉터리",
     "scanDirsDesc": "스킬을 검색할 디렉터리 목록을 관리합니다. 기본 디렉터리는 삭제할 수 없습니다.",

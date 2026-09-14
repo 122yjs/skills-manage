@@ -1444,6 +1444,7 @@ fn format_reqwest_error(e: &reqwest::Error) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiEndpointOverride {
+    pub max_tokens: Option<String>,
     pub api_key: Option<String>,
     pub api_url: Option<String>,
     pub protocol: Option<String>,
@@ -1452,12 +1453,15 @@ pub struct AiEndpointOverride {
 
 // ─── Test AI Connection ─────────────────────────────────────────────────────
 
+const DEFAULT_OUTPUT_TOKENS: u32 = 4096;
+
 #[tauri::command]
 pub async fn test_ai_connection(
     state: State<'_, AppState>,
     request: Option<AiEndpointOverride>,
 ) -> Result<String, String> {
     let req = request.unwrap_or(AiEndpointOverride {
+        max_tokens: None,
         api_key: None,
         api_url: None,
         protocol: None,
@@ -1492,9 +1496,9 @@ pub async fn test_ai_connection(
         .build()
         .map_err(|e| e.to_string())?;
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": model,
-        "max_tokens": 1,
+        "max_tokens": DEFAULT_OUTPUT_TOKENS,
         "messages": [{
             "role": "user",
             "content": "OK"
@@ -1507,26 +1511,11 @@ pub async fn test_ai_connection(
     };
     let protocol = resolve_api_protocol(&api_url, explicit_protocol.as_deref());
     let resolved_url = resolve_custom_url(&api_url, &protocol);
-    let mut req_builder = client
-        .post(&resolved_url)
-        .header("content-type", "application/json");
-
-    match protocol {
-        ExplanationApiProtocol::AnthropicCompatible | ExplanationApiProtocol::Unknown => {
-            req_builder = req_builder
-                .header("x-api-key", &api_key)
-                .header("anthropic-version", "2023-06-01");
-        }
-        ExplanationApiProtocol::OpenAiCompatible => {
-            req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
-        }
-    }
-
-    let resp = req_builder
-        .json(&body)
-        .send()
+    configure_token_budget(&state.db, &mut body, req.max_tokens.as_deref()).await?;
+    let is_anthropic = !matches!(protocol, ExplanationApiProtocol::OpenAiCompatible);
+    let resp = send_stream_request(&client, &resolved_url, &api_key, &body, is_anthropic, false)
         .await
-        .map_err(|e| format!("API 请求失败: {}", format_reqwest_error(&e)))?;
+        .map_err(|e| e.details)?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -1544,8 +1533,10 @@ pub async fn test_ai_connection(
     let val: serde_json::Value = serde_json::from_str(&body)
         .map_err(|_| format!("无法解析响应: {}", &body[..body.len().min(200)]))?;
 
-    if val.get("content").is_some() || val.get("choices").is_some() {
+    if parse_translation_response(&body).is_ok() {
         Ok("Connection OK".to_string())
+    } else if val.get("content").is_some() || val.get("choices").is_some() {
+        Err("API에 연결했지만 답변 텍스트가 비어 있습니다. 출력 토큰 한도와 모델의 추론 설정을 확인하세요.".to_string())
     } else {
         Err(format!(
             "无法识别的响应格式: {}",
@@ -1987,7 +1978,7 @@ fn build_translation_request_body(
 ) -> serde_json::Value {
     serde_json::json!({
         "model": model,
-        "max_tokens": 4096,
+        "max_tokens": DEFAULT_OUTPUT_TOKENS,
         "stream": false,
         "messages": [{
             "role": "user",
@@ -2036,7 +2027,7 @@ fn parse_translation_response(body: &str) -> Result<String, String> {
 fn build_stream_request_body(model: &str, prompt: &str) -> serde_json::Value {
     serde_json::json!({
         "model": model,
-        "max_tokens": 1024,
+        "max_tokens": DEFAULT_OUTPUT_TOKENS,
         "stream": true,
         "messages": [{
             "role": "user",
@@ -2078,6 +2069,52 @@ fn get_fallback_endpoint(provider: &str, current_url: &str) -> Option<String> {
 
 /// Send a streaming explanation request to the given URL. Returns the response
 /// on success, or a classified `ExplanationErrorInfo` on connect / transport failure.
+// 빈 설정만 자동으로 취급한다. 잘못된 입력을 조용히 무시하지 않는다.
+async fn configure_token_budget(
+    pool: &crate::db::DbPool,
+    body: &mut serde_json::Value,
+    override_value: Option<&str>,
+) -> Result<(), String> {
+    let saved = get_provider_setting(pool, "ai_max_tokens").await;
+    let raw = override_value.or(saved.as_deref()).unwrap_or("").trim();
+    let budget = if raw.is_empty() { DEFAULT_OUTPUT_TOKENS } else {
+        raw.parse::<u32>().ok().filter(|v| *v >= 16)
+            .ok_or_else(|| "최대 출력 토큰은 16 이상의 정수로 입력하세요.".to_string())?
+    };
+    body["max_tokens"] = serde_json::json!(budget);
+    Ok(())
+}
+
+// 토큰 항목을 명시한 알려진 오류만 처리한다. 사용자 상한은 높이지 않는다.
+fn adjust_token_request(body: &mut serde_json::Value, error: &str, is_anthropic: bool) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(error) else { return false; };
+    let Some(message) = value.pointer("/error/message").and_then(|v| v.as_str()) else { return false; };
+    let message = message.to_ascii_lowercase();
+    if !is_anthropic && body.get("max_tokens").is_some()
+        && message.contains("max_tokens") && message.contains("max_completion_tokens")
+        && (message.contains("use 'max_completion_tokens'") || message.contains("use max_completion_tokens"))
+        && message.contains("not supported") {
+        let tokens = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
+        body["max_completion_tokens"] = tokens;
+        return true;
+    }
+    let param = if body.get("max_completion_tokens").is_some() { "max_completion_tokens" } else { "max_tokens" };
+    let normalized = message.replace(['\'', '"', '`'], "");
+    for suffix in [" must be less than or equal to ", " must be at most "] {
+        let prefix = format!("{param}{suffix}");
+        if let Some(rest) = normalized.strip_prefix(&prefix) {
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(limit) = digits.parse::<u32>() {
+                if limit >= 16 && u64::from(limit) < body[param].as_u64().unwrap_or(0) {
+                    body[param] = serde_json::json!(limit);
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 async fn send_stream_request(
     client: &reqwest::Client,
     api_url: &str,
@@ -2098,10 +2135,19 @@ async fn send_stream_request(
         req_builder = req_builder.header("authorization", format!("Bearer {}", api_key));
     }
 
-    match req_builder.json(body).send().await {
-        Ok(resp) => Ok(resp),
-        Err(e) => Err(classify_reqwest_error(&e, fallback_tried)),
+    let mut adjusted = body.clone();
+    for attempt in 0..2 {
+        let response = req_builder.try_clone().expect("JSON 요청은 복제 가능")
+            .json(&adjusted).send().await.map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
+        if response.status() != reqwest::StatusCode::BAD_REQUEST { return Ok(response); }
+        let details = response.text().await.map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
+        if attempt == 0 && adjust_token_request(&mut adjusted, &details, is_anthropic) { continue; }
+        return Err(ExplanationErrorInfo {
+            message: format!("API 요청 오류 400: {details}"), details,
+            kind: ExplanationErrorKind::Response, retryable: false, fallback_tried,
+        });
     }
+    unreachable!()
 }
 
 /// Core streaming logic shared by `explain_skill_stream` and `refresh_skill_explanation`.
@@ -2139,7 +2185,8 @@ async fn do_explain_skill_stream(
 
     let truncated = truncate_content(content);
     let prompt = build_explanation_prompt(&truncated, lang);
-    let body = build_stream_request_body(&model, &prompt);
+    let mut body = build_stream_request_body(&model, &prompt);
+    configure_token_budget(pool, &mut body, None).await?;
 
     // Streaming: only connect_timeout (total `.timeout()` would kill long streams).
     let client = reqwest::Client::builder()
@@ -2405,7 +2452,8 @@ pub(crate) async fn translate_skill_description_impl(
         ExplanationApiProtocol::AnthropicCompatible | ExplanationApiProtocol::Unknown
     );
     let target_lang = normalize_translation_target(target_lang);
-    let body = build_translation_request_body(&model, source_text, target_lang);
+    let mut body = build_translation_request_body(&model, source_text, target_lang);
+    configure_token_budget(pool, &mut body, None).await?;
 
     let client = reqwest::Client::builder()
         .user_agent("skills-manage/0.9.1")
@@ -2482,6 +2530,39 @@ pub async fn refresh_skill_explanation(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn token_settings_validate_and_preserve_empty_override() {
+        let (pool, _dir) = setup_test_db().await;
+        db::set_setting(&pool, "ai_provider", "budget-test").await.unwrap();
+        db::set_setting(&pool, "ai_max_tokens__budget-test", "8192").await.unwrap();
+        let mut body = serde_json::json!({});
+        super::configure_token_budget(&pool, &mut body, None).await.unwrap();
+        assert_eq!(body["max_tokens"], 8192);
+        super::configure_token_budget(&pool, &mut body, Some("")).await.unwrap();
+        assert_eq!(body["max_tokens"], 4096);
+        for invalid in ["0", "1", "15", "-1", "2.5", "4294967296", "abc"] {
+            assert!(super::configure_token_budget(&pool, &mut body, Some(invalid)).await.is_err());
+        }
+    }
+
+    #[test]
+    fn token_adjustment_is_bounded_and_protocol_specific() {
+        let mut body = serde_json::json!({"max_tokens": 4096});
+        let rename = r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead."}}"#;
+        assert!(!super::adjust_token_request(&mut body, rename, true));
+        assert!(super::adjust_token_request(&mut body, rename, false));
+        assert!(body.get("max_tokens").is_none());
+        assert_eq!(body["max_completion_tokens"], 4096);
+        assert!(!super::adjust_token_request(&mut body, rename, false));
+        let lower = r#"{"error":{"message":"max_completion_tokens must be at most 2048"}}"#;
+        assert!(super::adjust_token_request(&mut body, lower, false));
+        assert_eq!(body["max_completion_tokens"], 2048);
+        for message in ["max_completion_tokens must be greater than 8192", "model 5 max_completion_tokens must be at most 100", "max_completion_tokens must be at most 999999"] {
+            let error = serde_json::json!({"error":{"message":message}}).to_string();
+            assert!(!super::adjust_token_request(&mut body, &error, false));
+        }
+    }
+
     use super::{
         add_registry_impl, build_explanation_prompt, build_translation_prompt,
         cache_skill_explanation, classify_reqwest_error, derive_models_url,
