@@ -52,6 +52,20 @@ describe("skillUsageStore", () => {
     });
   });
 
+  it("공용 삭제는 확인한 토큰만 전달하고 성공을 갱신 실패로 바꾸지 않는다", async () => {
+    const plan = { skill_id: "one", skill_name: "one", enabled: false, source_path: "/shared/one", links: [], confirmation_token: "fresh" };
+    const result = { deleted: ["one"], failed: [] };
+    vi.mocked(invoke).mockResolvedValueOnce(plan).mockResolvedValueOnce(result);
+    const store = useSkillUsageStore.getState();
+    expect(await store.previewSharedDelete("one")).toEqual(plan);
+    expect(await store.deleteSharedInstalls([plan])).toEqual(result);
+    expect(invoke).toHaveBeenNthCalledWith(2, "delete_shared_installs", {
+      confirmations: [{ skill_id: "one", confirmation_token: "fresh" }],
+    });
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(useSkillUsageStore.getState().updatingSharedBulk).toBe(false);
+  });
+
   it("reads the usage DTO through the established snake-case command", async () => {
     vi.mocked(invoke).mockResolvedValueOnce([usageStatus]);
 

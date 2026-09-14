@@ -294,6 +294,18 @@
     "start": "Start migration",
     "migrating": "Migrating..."
   },
+  "sharedDelete": {
+    "title": "Delete shared installs and linked shortcuts?",
+    "description": "Active and inactive installs follow the same deletion process. Tools reading the shared path will lose this install, and the shortcuts below will also be removed.",
+    "kept": "Library originals and independent copies elsewhere are kept. Folders are backed up before deletion.",
+    "loading": "Checking installations and linked platforms…",
+    "links": "{{count}} shortcut(s) will also be deleted",
+    "noLinks": "No linked shortcuts to delete.",
+    "failed": "Items not deleted and reasons",
+    "retry": "Review targets again",
+    "confirm": "Delete {{count}} reviewed install(s)",
+    "refreshFailed": "Deletion was processed, but the list could not be refreshed: {{error}}"
+  },
   "universal": {
     "title": "Shared Install (.agents)",
     "description": "Tools that support this path read the same skills. You can also manage skills installed by other programs or added manually here.",
@@ -315,6 +327,13 @@
     "removePartial": "Deleted {{deleted}} shared install(s); {{failed}} could not be deleted",
     "externallyManaged": "Managed manually",
     "externalHint": "Items not created by this app are marked as manually managed and are never deleted automatically."
+  },
+  "skillLocations": {
+    "summary": "{{skills}} skill names · {{locations}} source locations",
+    "selected": "{{count}} selected",
+    "toggle": "Show {{count}} locations for {{name}}",
+    "count": "{{count}} source locations",
+    "help": "These skills share a name but may differ in content. Inspect and manage each location separately below."
   },
   "skillList": {
     "viewModeLabel": "View",

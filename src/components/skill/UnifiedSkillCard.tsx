@@ -174,6 +174,7 @@ export interface UnifiedSkillCardProps {
   onManageUniversal?: () => void;
   uninstallFromLabel?: string;
   uninstallConfirmLabel?: string;
+  uninstallRequiresDialog?: boolean;
   onDeleteFromCentral?: () => void;
   deleteFromCentralLabel?: string;
   deleteFromCentralRequiresDialog?: boolean;
@@ -221,6 +222,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onManageUniversal,
     uninstallFromLabel,
     uninstallConfirmLabel,
+    uninstallRequiresDialog,
     onDeleteFromCentral,
     deleteFromCentralLabel,
     deleteFromCentralRequiresDialog,
@@ -398,7 +400,14 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </button>
                 )}
 
-                {onUninstallFromPlatform && (
+                {onUninstallFromPlatform && (uninstallRequiresDialog ? (
+                  <button type="button" onClick={onUninstallFromPlatform} disabled={isLoading}
+                    aria-label={uninstallFromLabel ?? t("common.uninstall")}
+                    title={uninstallFromLabel ?? t("common.uninstall")}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:opacity-50">
+                    <Trash2 className="size-4" />
+                  </button>
+                ) : (
                   <InlineConfirmAction
                     onConfirm={onUninstallFromPlatform}
                     isLoading={isLoading}
@@ -407,7 +416,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     confirmLabel={uninstallConfirmLabel ?? t("common.confirmDelete")}
                     icon={<X className="size-4" />}
                   />
-                )}
+                ))}
 
                 {onReapplyPlatform && (
                   <button

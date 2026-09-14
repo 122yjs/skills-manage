@@ -21,6 +21,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
+import { SharedInstallDeleteDialog } from "@/components/skill/SharedInstallDeleteDialog";
 import { SkillFrontmatterCard } from "@/components/skill/SkillFrontmatterCard";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { useSkillDetailStore } from "@/stores/skillDetailStore";
@@ -227,7 +228,10 @@ function PlatformInstallRow({
             >
               {isActive ? t("skillUsage.pause") : t("skillUsage.resume")}
             </Button>
-            <InlineConfirmAction
+            {agent.id === "universal" ? <Button type="button" variant="outline" size="sm" disabled={isLoading}
+              aria-label={t("skillUsage.deleteSkill", { name: skillName, platform: displayName })} onClick={onDelete}>
+              <Trash2 className="size-3.5" />{t("common.delete")}
+            </Button> : <InlineConfirmAction
               onConfirm={onDelete}
               disabled={isLoading}
               isLoading={isDeleteLoading}
@@ -242,7 +246,7 @@ function PlatformInstallRow({
               confirmLabel={t("common.confirmDelete")}
               icon={<><Trash2 className="size-3.5" />{t("common.delete")}</>}
               className="h-8 w-auto gap-1.5 px-2.5"
-            />
+            />}
           </>
         )}
       </div>
@@ -507,6 +511,7 @@ export function SkillDetailView({
   const usageUpdatingSkillKeys = useSkillUsageStore((s) => s.updatingSkillKeys);
   const usageUpdatingAgentIds = useSkillUsageStore((s) => s.updatingAgentIds);
   const setSkillUsage = useSkillUsageStore((s) => s.setSkillUsage);
+  const [sharedDeleteIds, setSharedDeleteIds] = useState<string[] | null>(null);
   const deleteSkillFromAgent = useSkillUsageStore((s) => s.deleteSkillFromAgent);
 
   // Local state for filePath mode
@@ -810,6 +815,10 @@ export function SkillDetailView({
     const usage = usageMap.get(agentId);
     const isManaged = Boolean(usage) || installationMap.has(agentId);
     if (!isManaged || (readOnlyAgentIds.has(agentId) && !isManaged)) return;
+    if (agentId === "universal") {
+      setSharedDeleteIds([skillId]);
+      return;
+    }
     if (!beginAgentMutation(agentId)) return;
 
     setDeletingAgentId(agentId);
@@ -996,6 +1005,13 @@ export function SkillDetailView({
 
   return (
     <div className={cn("flex flex-col h-full", variant === "drawer" && "min-h-0")}>
+      {sharedDeleteIds && <SharedInstallDeleteDialog skillIds={sharedDeleteIds}
+        onClose={() => setSharedDeleteIds(null)} onDeleted={async () => {
+          await refreshCounts();
+          await useSkillUsageStore.getState().loadUsageStatus();
+          if (skillId) await refreshInstallations(skillId);
+          await onInstallationsChange?.();
+        }} />}
       {/* ── ViewHeader: leading slot + title/description + TabToggle ─────── */}
       <div className="border-b border-border px-6 py-3 flex items-center gap-3 shrink-0">
         {leading}

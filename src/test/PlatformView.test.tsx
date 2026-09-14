@@ -763,6 +763,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     const detailButtons = screen.getAllByRole("button", { name: /查看 shared-skill 的详情/i });
     expect(detailButtons).toHaveLength(2);
@@ -804,6 +805,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     expect(screen.getAllByRole("button", { name: /查看 shared-skill 的详情/i })).toHaveLength(2);
 
@@ -1322,6 +1324,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     const usageSwitch = screen.getByRole("switch", {
       name: /切换 ponytail-audit 的激活状态/i,
@@ -1364,6 +1367,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     fireEvent.click(
       screen.getByRole("button", { name: "从 Claude Code 删除 ponytail-audit 安装" })
@@ -1437,6 +1441,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     expect(screen.getByRole("tab", { name: claudeTabName("全部", 3) })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tab", { name: claudeTabName("用户来源", 1) })).toBeInTheDocument();
@@ -1456,6 +1461,8 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     fireEvent.click(screen.getByRole("tab", { name: claudeTabName("插件来源", 2) }));
+
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     await waitFor(() => {
       expect(screen.getAllByRole("button", { name: /查看 shared-skill 的详情/i })).toHaveLength(2);
@@ -1515,6 +1522,8 @@ describe("PlatformView", () => {
     fireEvent.change(screen.getByPlaceholderText(/搜索技能/), {
       target: { value: "shared-skill-id" },
     });
+
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     await waitFor(() => {
       expect(
@@ -1600,6 +1609,7 @@ describe("PlatformView", () => {
     });
 
     renderPlatformView();
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     const [userTrigger] = screen.getAllByRole("button", {
       name: /查看 shared-skill 的详情/i,
@@ -1641,6 +1651,8 @@ describe("PlatformView", () => {
 
     const searchInput = screen.getByPlaceholderText(/搜索技能/);
     fireEvent.change(searchInput, { target: { value: "shared-skill-id" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
     await waitFor(() => {
       expect(

@@ -294,6 +294,18 @@
     "start": "마이그레이션 시작",
     "migrating": "마이그레이션 중..."
   },
+  "sharedDelete": {
+    "title": "공용 설치와 연결된 바로가기를 삭제할까요?",
+    "description": "활성·비활성 모두 같은 방식으로 삭제합니다. 공용 경로를 읽는 도구에서 이 설치를 더 이상 사용할 수 없으며, 아래 바로가기도 함께 삭제됩니다.",
+    "kept": "스킬 보관함 원본과 다른 위치의 독립 복사본은 유지됩니다. 삭제할 폴더는 먼저 복구용으로 백업합니다.",
+    "loading": "실제 설치와 연결된 플랫폼을 확인하는 중…",
+    "links": "함께 삭제할 바로가기 {{count}}개",
+    "noLinks": "함께 삭제할 바로가기가 없습니다.",
+    "failed": "삭제하지 못한 항목과 이유",
+    "retry": "대상 다시 확인",
+    "confirm": "확인한 {{count}}개 설치 삭제",
+    "refreshFailed": "삭제 결과는 처리됐지만 목록을 새로고침하지 못했습니다: {{error}}"
+  },
   "universal": {
     "title": "공용 설치 (.agents)",
     "description": "이 경로를 지원하는 여러 도구가 함께 읽는 스킬입니다. 다른 프로그램으로 설치하거나 직접 넣은 스킬도 여기서 관리할 수 있습니다.",
@@ -315,6 +327,13 @@
     "removePartial": "공용 설치 {{deleted}}개를 삭제했고 {{failed}}개는 삭제하지 못했습니다",
     "externallyManaged": "직접 관리됨",
     "externalHint": "앱이 만들지 않은 항목은 직접 관리됨으로 표시하며 자동으로 삭제하지 않습니다."
+  },
+  "skillLocations": {
+    "summary": "스킬 {{skills}}종 · 출처 위치 {{locations}}곳",
+    "selected": "{{count}}곳 선택됨",
+    "toggle": "{{name}} 출처 위치 {{count}}곳 보기",
+    "count": "출처 위치 {{count}}곳",
+    "help": "같은 이름의 스킬입니다. 내용이 다를 수 있으며, 각 위치의 상세 정보와 관리 버튼으로 따로 확인·변경합니다."
   },
   "skillList": {
     "viewModeLabel": "보기",

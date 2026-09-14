@@ -50,7 +50,7 @@ pub struct DeleteInstallationFailure {
     pub error: String,
 }
 
-async fn usage_lock() -> MutexGuard<'static, ()> {
+pub(crate) async fn usage_lock() -> MutexGuard<'static, ()> {
     USAGE_LOCK.get_or_init(|| Mutex::new(())).lock().await
 }
 
@@ -127,7 +127,7 @@ fn ensure_real_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-async fn paused_root(pool: &DbPool) -> Result<PathBuf, String> {
+pub(crate) async fn paused_root(pool: &DbPool) -> Result<PathBuf, String> {
     let root = database_parent_dir(pool)
         .await?
         .join(PAUSED_INSTALLATIONS_DIR);
@@ -353,14 +353,18 @@ async fn ensure_not_shared_universal_root(pool: &DbPool, agent: &db::Agent) -> R
     Ok(())
 }
 
-fn resolved_paused_link_target(paused: &PausedInstallation) -> Option<PathBuf> {
-    let target = PathBuf::from(paused.symlink_target.as_ref()?);
+/// 비활성 상태에서도 원래 설치 위치를 기준으로 상대 링크를 비교한다.
+pub(crate) fn link_target_matches(link: &Path, target: &Path, source: &Path) -> bool {
     let target = if target.is_absolute() {
-        target
+        target.to_path_buf()
     } else {
-        Path::new(&paused.installed_path).parent()?.join(target)
+        link.parent().unwrap_or(Path::new("/")).join(target)
     };
-    target.canonicalize().ok()
+    same_shared_entry(&target.to_string_lossy(), &source.to_string_lossy())
+}
+
+pub(crate) fn link_points_to_entry(link: &Path, source: &Path) -> bool {
+    fs::read_link(link).is_ok_and(|target| link_target_matches(link, &target, source))
 }
 
 async fn ensure_delete_does_not_remove_shared_source(
@@ -368,12 +372,7 @@ async fn ensure_delete_does_not_remove_shared_source(
     installation: &SkillInstallation,
 ) -> Result<(), String> {
     let installed_path = Path::new(&installation.installed_path);
-    let installed_target = installed_path.canonicalize().map_err(|error| {
-        format!(
-            "관리 설치 원본을 확인할 수 없습니다 '{}': {error}",
-            installed_path.display()
-        )
-    })?;
+    let installed_target = installed_path.canonicalize().ok();
 
     for other in db::get_skill_installations(pool, &installation.skill_id).await? {
         if other.agent_id == installation.agent_id {
@@ -381,8 +380,11 @@ async fn ensure_delete_does_not_remove_shared_source(
         }
         if same_install_entry(installed_path, Path::new(&other.installed_path))
             || (other.link_type == "symlink"
-                && resolved_link_target(Path::new(&other.installed_path))
-                    .is_some_and(|target| target == installed_target))
+                && (link_points_to_entry(Path::new(&other.installed_path), installed_path)
+                    || installed_target.as_ref().is_some_and(|target| {
+                        resolved_link_target(Path::new(&other.installed_path)).as_ref()
+                            == Some(target)
+                    })))
         {
             return Err(format!(
                 "다른 플랫폼이 이 설치 원본을 사용하므로 삭제할 수 없습니다: {}",
@@ -396,8 +398,13 @@ async fn ensure_delete_does_not_remove_shared_source(
         }
         if same_install_entry(installed_path, Path::new(&paused.installed_path))
             || (paused.link_type == "symlink"
-                && resolved_paused_link_target(&paused)
-                    .is_some_and(|target| target == installed_target))
+                && paused.symlink_target.as_ref().is_some_and(|target| {
+                    link_target_matches(
+                        Path::new(&paused.installed_path),
+                        Path::new(target),
+                        installed_path,
+                    )
+                }))
         {
             return Err(format!(
                 "다른 플랫폼의 비활성 설치가 이 원본을 사용하므로 삭제할 수 없습니다: {}",
@@ -659,13 +666,25 @@ async fn delete_paused_installation_locked(
         ));
     }
 
+    ensure_delete_does_not_remove_shared_source(
+        pool,
+        &SkillInstallation {
+            skill_id: paused.skill_id.clone(),
+            agent_id: paused.agent_id.clone(),
+            installed_path: paused.installed_path.clone(),
+            link_type: paused.link_type.clone(),
+            symlink_target: paused.symlink_target.clone(),
+            created_at: paused.created_at.clone(),
+        },
+    )
+    .await?;
     let _recovery_guard = recovery::recovery_lock().await;
     recovery::backup_paused_installation_locked(pool, &paused).await?;
     recovery::remove_path_without_following_links(paused_path)?;
     db::delete_paused_installation(pool, &paused.skill_id, &paused.agent_id).await
 }
 
-async fn delete_managed_installation_locked(
+pub(crate) async fn delete_managed_installation_locked(
     pool: &DbPool,
     skill_id: &str,
     agent_id: &str,
@@ -682,6 +701,18 @@ async fn delete_managed_installation_locked(
     let paused = db::get_paused_installation(pool, skill_id, agent_id).await?;
     if active.is_some() && paused.is_some() {
         return Err("활성 설치와 비활성 설치 기록이 함께 있어 삭제하지 않습니다".to_string());
+    }
+    if agent_id == "universal" {
+        if let Some(path) = active
+            .as_ref()
+            .map(|r| &r.installed_path)
+            .or_else(|| paused.as_ref().map(|r| &r.installed_path))
+        {
+            let links = super::shared_delete::find_links(pool, Path::new(path)).await?;
+            if !links.is_empty() {
+                return Err("다른 플랫폼의 바로가기가 연결되어 있습니다. 공용 설치 관리에서 연결 목록을 확인한 뒤 함께 삭제하세요".into());
+            }
+        }
     }
     if let Some(installation) = active {
         return delete_active_installation_locked(pool, &agent, installation).await;
@@ -1016,7 +1047,7 @@ pub struct SharedConfirmation {
     pub confirmation_token: String,
 }
 
-fn live_entry_fingerprint(installed_path: &str) -> String {
+pub(crate) fn live_entry_fingerprint(installed_path: &str) -> String {
     let path = Path::new(installed_path);
     let meta = fs::symlink_metadata(path);
     match meta {

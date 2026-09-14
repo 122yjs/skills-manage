@@ -113,6 +113,15 @@ export interface DeletePlatformInstallationsResult {
   failed: Array<{ skill_id: string; error: string }>;
 }
 
+export interface SharedDeletePreview {
+  skill_id: string;
+  skill_name: string;
+  enabled: boolean;
+  source_path: string;
+  links: Array<{ agent_id: string; display_name: string; path: string; installed_path: string; target: string }>;
+  confirmation_token: string;
+}
+
 interface SkillUsageState {
   statuses: UsageStatus[];
   isLoading: boolean;
@@ -125,6 +134,8 @@ interface SkillUsageState {
   updatingSharedKeys: Record<string, boolean>;
   updatingSharedBulk: boolean;
 
+  previewSharedDelete: (skillId: string) => Promise<SharedDeletePreview>;
+  deleteSharedInstalls: (plans: SharedDeletePreview[]) => Promise<DeletePlatformInstallationsResult>;
   loadUsageStatus: () => Promise<void>;
   setSkillUsage: (skillId: string, agentId: string, enabled: boolean) => Promise<void>;
   setPlatformUsage: (agentId: string, enabled: boolean) => Promise<void>;
@@ -518,6 +529,27 @@ export const useSkillUsageStore = create<SkillUsageState>((set, get) => ({
         delete updatingPlatformControlKeys[actionKey];
         return { updatingPlatformControlKeys };
       });
+    }
+  },
+
+  previewSharedDelete: async (skillId) => {
+    if (!isTauriRuntime()) throw new Error(i18n.t("skillUsage.sharedDesktopRequired"));
+    return invoke<SharedDeletePreview>("preview_shared_install_delete", { skillId });
+  },
+
+  deleteSharedInstalls: async (plans) => {
+    if (hasAnySkillUsageMutation(get())) throw new SkillUsageBusyError();
+    set({ updatingSharedBulk: true, error: null });
+    try {
+      if (!isTauriRuntime()) throw new Error(i18n.t("skillUsage.sharedDesktopRequired"));
+      const result = await invoke<DeletePlatformInstallationsResult>("delete_shared_installs", {
+        confirmations: plans.map(({ skill_id, confirmation_token }) => ({ skill_id, confirmation_token })),
+      });
+      // 삭제 성공과 목록 갱신 실패를 섞지 않는다. 화면에서 갱신 결과를 별도로 알린다.
+      set({ platformControlsByAgent: {}, sharedImpactsById: {} });
+      return result;
+    } finally {
+      set({ updatingSharedBulk: false });
     }
   },
 

@@ -294,6 +294,18 @@
     "start": "开始迁移",
     "migrating": "正在迁移..."
   },
+  "sharedDelete": {
+    "title": "删除共享安装及关联快捷链接？",
+    "description": "已激活和未激活安装使用相同的删除流程。读取共享路径的工具将无法继续使用该安装，以下快捷链接也会一起删除。",
+    "kept": "保留技能仓库原件和其他位置的独立副本。删除文件夹前会创建恢复备份。",
+    "loading": "正在检查安装和关联平台…",
+    "links": "同时删除 {{count}} 个快捷链接",
+    "noLinks": "没有需要一起删除的快捷链接。",
+    "failed": "未删除的项目及原因",
+    "retry": "重新确认目标",
+    "confirm": "删除已确认的 {{count}} 项安装",
+    "refreshFailed": "删除结果已处理，但无法刷新列表：{{error}}"
+  },
   "universal": {
     "title": "共享安装 (.agents)",
     "description": "支持此路径的多个工具会读取同一批技能。通过其他程序安装或手动放入的技能也可以在这里管理。",
@@ -315,6 +327,13 @@
     "removePartial": "已删除 {{deleted}} 项共享安装；{{failed}} 项未能删除",
     "externallyManaged": "手动管理",
     "externalHint": "非本应用创建的项目标记为手动管理，不会被自动删除。"
+  },
+  "skillLocations": {
+    "summary": "{{skills}} 种技能 · {{locations}} 个来源位置",
+    "selected": "已选 {{count}} 个位置",
+    "toggle": "查看 {{name}} 的 {{count}} 个来源位置",
+    "count": "{{count}} 个来源位置",
+    "help": "这些技能名称相同，但内容可能不同。请通过各位置的详情和操作分别查看与管理。"
   },
   "skillList": {
     "viewModeLabel": "视图",

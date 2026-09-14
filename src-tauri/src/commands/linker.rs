@@ -1095,6 +1095,11 @@ pub async fn uninstall_skill_from_agent_impl(
         .map(|r| PathBuf::from(&r.installed_path))
         .unwrap_or_else(|| PathBuf::from(&agent.global_skills_dir).join(skill_id));
     let link_type = record.map(|r| r.link_type.as_str()).unwrap_or("symlink");
+    if agent.id == "universal"
+        && !super::shared_delete::find_links(pool, &install_path).await?.is_empty()
+    {
+        return Err("다른 플랫폼의 바로가기가 연결되어 있습니다. 공용 설치 관리에서 연결 목록을 확인한 뒤 함께 삭제하세요".into());
+    }
     // 복사 설치는 백업 생성부터 DB 기록 정리까지 하나의 복구 잠금으로 처리합니다.
     let _recovery_guard = if link_type == "copy" {
         Some(recovery::recovery_lock().await)

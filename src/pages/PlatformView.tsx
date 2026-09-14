@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/dialog";
 import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
 import { canTransferSkill, skillSelectionKey, useSkillSelection } from "@/hooks/useSkillSelection";
+import { SkillLocationGroup } from "@/components/skill/SkillLocationGroup";
+import { groupSkillLocations } from "@/lib/skillLocations";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SharedSkillImpactDialog } from "@/components/skill/SharedSkillImpactDialog";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
@@ -499,6 +501,7 @@ export function PlatformView() {
     );
   }, [visibleSkills, searchQuery]);
 
+  const locationGroups = useMemo(() => groupSkillLocations(filteredSkills), [filteredSkills]);
   const transferSelection = useSkillSelection(filteredSkills, agentId);
 
   const filteredFolderGroups = useMemo(() => {
@@ -800,6 +803,12 @@ export function PlatformView() {
 
       <SkillTransferToolbar selection={transferSelection} agents={agents} sourceAgentId={agentId} disabled={isLoading} />
 
+      {locationGroups.length < filteredSkills.length && (
+        <p className="px-6 pt-3 text-xs text-muted-foreground">
+          {t("skillLocations.summary", { skills: locationGroups.length, locations: filteredSkills.length })}
+        </p>
+      )}
+
       {/* Content */}
       <div ref={contentRef} className="flex-1 overflow-auto p-6">
         {isLoading ? (
@@ -854,7 +863,9 @@ export function PlatformView() {
                   </div>
                 )}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {filteredSkills.map((skill) => (
+                  {locationGroups.map((group) => (
+                    <SkillLocationGroup key={`${agentId}:${group.map(getSkillRowKey).join("|")}`} skills={group} selectedCount={group.filter((skill) => transferSelection.selected.has(skillSelectionKey(skill))).length}>
+                    {group.map((skill) => (
                     (() => {
                       const usage = usageBySkillId.get(skill.id);
                       const platformControl = platformControls.find(
@@ -878,8 +889,9 @@ export function PlatformView() {
                           candidate.row_id !== skill.row_id
                       );
                       return (
+                        <div key={getSkillRowKey(skill)} className="min-w-0">
+                        {group.length > 1 && <p className="mb-2 break-all px-1 text-xs text-muted-foreground">{skill.dir_path || skill.file_path}</p>}
                         <UnifiedSkillCard
-                          key={getSkillRowKey(skill)}
                           checkbox={canTransferSkill(skill) ? { checked: transferSelection.selected.has(skillSelectionKey(skill)), onChange: () => transferSelection.toggle(skillSelectionKey(skill)) } : undefined}
                           name={skill.name}
                           description={skill.description}
@@ -1027,8 +1039,11 @@ export function PlatformView() {
                           })}
                           detailButtonRef={(node) => setDetailButtonRef(getSkillRowKey(skill), node)}
                         />
+                        </div>
                       );
                     })()
+                  ))}
+                    </SkillLocationGroup>
                   ))}
                 </div>
               </section>
