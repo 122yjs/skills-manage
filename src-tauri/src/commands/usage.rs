@@ -2658,6 +2658,95 @@ mod tests {
     }
     // ─── Shared install regressions (isolated TempDir/file-DB, no env) ───
 
+    #[tokio::test]
+    async fn shared_external_install_scan_pause_restore_and_delete_preserve_files() {
+        for link_type in ["copy", "symlink"] {
+            let tmp = TempDir::new().unwrap();
+            let (pool, vault, universal, _) = shared_setup(&tmp).await;
+            sqlx::query("DELETE FROM agents WHERE id NOT IN ('central', 'universal')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("DELETE FROM scan_directories")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let installed = universal.join("external-skill");
+            let source = if link_type == "symlink" {
+                tmp.path().join("external-source")
+            } else {
+                installed.clone()
+            };
+            fs::create_dir_all(source.join("references")).unwrap();
+            let content = "---\nname: external-skill\n---\n외부에서 설치한 스킬\n";
+            fs::write(source.join("SKILL.md"), content).unwrap();
+            fs::write(source.join("references/guide.md"), "함께 보존할 파일").unwrap();
+            if link_type == "symlink" {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&source, &installed).unwrap();
+                #[cfg(windows)]
+                std::os::windows::fs::symlink_dir(&source, &installed).unwrap();
+            }
+
+            // 설치 명령이나 사전 등록 없이 스캔만 해도 기존 제어를 사용할 수 있다.
+            crate::commands::scanner::scan_all_skills_impl(&pool)
+                .await
+                .unwrap();
+            let skills = db::get_skills_for_agent(&pool, "universal").await.unwrap();
+            assert_eq!(skills.len(), 1);
+            assert!(!skills[0].is_read_only);
+            let id = shared_entry_key(&installed.to_string_lossy());
+            for _ in 0..2 {
+                let impact = compute_shared_impact(&pool, &id).await.unwrap();
+                assert!(impact.reason.is_none());
+                let result =
+                    set_shared_skill_usage_impl(&pool, &id, false, &impact.confirmation_token)
+                        .await
+                        .unwrap();
+                assert!(result.applied);
+                assert!(fs::symlink_metadata(&installed).is_err());
+                crate::commands::scanner::scan_all_skills_impl(&pool)
+                    .await
+                    .unwrap();
+                let impact = compute_shared_impact(&pool, &id).await.unwrap();
+                assert!(!impact.enabled);
+                let result =
+                    set_shared_skill_usage_impl(&pool, &id, true, &impact.confirmation_token)
+                        .await
+                        .unwrap();
+                assert!(result.applied);
+                crate::commands::scanner::scan_all_skills_impl(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fs::read_to_string(installed.join("SKILL.md")).unwrap(),
+                    content
+                );
+                assert_eq!(
+                    fs::read_to_string(installed.join("references/guide.md")).unwrap(),
+                    "함께 보존할 파일"
+                );
+            }
+
+            delete_skill_from_agent_impl(&pool, "external-skill", "universal")
+                .await
+                .unwrap();
+            assert!(fs::symlink_metadata(&installed).is_err());
+            if link_type == "copy" {
+                let backups = recovery::list_recovery_entries_impl(&pool).await.unwrap();
+                assert_eq!(backups.len(), 1);
+                recovery::restore_recovery_entry_impl(&pool, &backups[0].id)
+                    .await
+                    .unwrap();
+            }
+            assert_eq!(
+                fs::read_to_string(source.join("SKILL.md")).unwrap(),
+                content
+            );
+            assert!(vault.read_dir().unwrap().next().is_none());
+        }
+    }
+
     async fn shared_setup(tmp: &TempDir) -> (DbPool, PathBuf, PathBuf, PathBuf) {
         let db_path = tmp.path().join("db.sqlite");
         let pool = db::create_pool(&db_path.to_string_lossy()).await.unwrap();

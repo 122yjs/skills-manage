@@ -296,7 +296,7 @@
   },
   "universal": {
     "title": "Shared Install (.agents)",
-    "description": "Tools that support this path read the same installed skills. Originals remain in the Skill Library.",
+    "description": "Tools that support this path read the same skills. You can also manage skills installed by other programs or added manually here.",
     "claudeWarningTitle": "Not automatically available in Claude Code",
     "claudeWarningDescription": "Claude Code reads skills from ~/.claude/skills. Select skills below, then choose Transfer → Claude Code to install them separately.",
     "searchPlaceholder": "Search shared installs...",
@@ -308,7 +308,7 @@
     "noMatch": "No shared installs match \"{{query}}\"",
     "removeOne": "Delete shared install for {{skill}}",
     "confirmTitle": "Delete {{count}} shared install(s)?",
-    "confirmDescription": "Deletes only app-managed active or inactive links and copies in ~/.agents/skills.",
+    "confirmDescription": "Deletes the selected active or inactive shared installs. Only the link is removed for symlinks; folders are backed up for recovery before deletion.",
     "originalKept": "Originals in the Skill Library are not deleted.",
     "confirmRemove": "Delete shared installs",
     "removeSuccess": "Deleted {{count}} shared install(s)",

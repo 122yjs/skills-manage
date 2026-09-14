@@ -141,6 +141,57 @@ describe("UniversalInstallView", () => {
     expect(screen.queryByRole("button", { name: /删除 Manual skill 的共享安装/ })).not.toBeInTheDocument();
   });
 
+  it("외부 설치도 스캔 후 공용 상태를 바꾸고 삭제할 수 있다", async () => {
+    const skill = { ...unmanagedSkill, is_read_only: false, source_kind: undefined };
+    vi.mocked(useSkillStore).mockImplementation((selector) => selector({
+      skillsByAgent: { universal: [skill] },
+      loadingByAgent: { universal: false },
+      pendingSkillActionKeys: {},
+      getSkillsByAgent,
+    } as never));
+    const impact = {
+      ...bulkImpactA,
+      shared_install_id: skill.dir_path,
+      skill_id: skill.id,
+      skill_name: skill.name,
+      management_path: skill.dir_path,
+    };
+    const setSharedSkillUsage = vi.fn().mockResolvedValue({
+      applied: true,
+      impact: { ...impact, enabled: false },
+    });
+    useSkillUsageStore.setState({
+      statuses: [{
+        agent_id: "universal", active_count: 1, paused_count: 0, external_count: 0,
+        skills: [{ skill_id: skill.id, name: skill.name, enabled: true, paused_by_bulk: false }],
+      }],
+      platformControlsByAgent: { universal: [{
+        ...universalSharedControls().universal[0],
+        row_id: skill.id,
+        skill_id: skill.id,
+        skill_name: skill.name,
+        source_path: skill.dir_path,
+        shared_install: impact,
+      }] },
+      loadSharedSkillImpact: vi.fn().mockResolvedValue(impact),
+      setSharedSkillUsage,
+    });
+
+    render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
+
+    expect(screen.queryByText("手动管理")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除 Manual skill 的共享安装" })).toBeEnabled();
+    const toggle = screen.getByRole("switch", { name: "切换 Manual skill 的公用状态" });
+    expect(toggle).toBeEnabled();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    expect(setSharedSkillUsage).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    await waitFor(() => expect(setSharedSkillUsage).toHaveBeenCalledWith(
+      skill.dir_path, false, impact.confirmation_token
+    ));
+  });
+
   it("selects and deletes active and inactive managed entries while keeping the custom library path", async () => {
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 

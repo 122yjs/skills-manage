@@ -296,7 +296,7 @@
   },
   "universal": {
     "title": "공용 설치 (.agents)",
-    "description": "이 경로를 지원하는 여러 도구가 함께 읽는 설치 목록입니다. 보관함의 원본은 그대로 유지됩니다.",
+    "description": "이 경로를 지원하는 여러 도구가 함께 읽는 스킬입니다. 다른 프로그램으로 설치하거나 직접 넣은 스킬도 여기서 관리할 수 있습니다.",
     "claudeWarningTitle": "Claude Code에는 자동 적용되지 않습니다",
     "claudeWarningDescription": "Claude Code는 ~/.claude/skills의 스킬을 읽습니다. 아래에서 스킬을 선택한 뒤 ‘이식’ → ‘Claude Code’로 별도 설치하세요.",
     "searchPlaceholder": "공용 설치 검색...",
@@ -308,7 +308,7 @@
     "noMatch": "\"{{query}}\"와 일치하는 공용 설치가 없습니다",
     "removeOne": "{{skill}} 공용 설치 삭제",
     "confirmTitle": "선택한 {{count}}개의 공용 설치를 삭제할까요?",
-    "confirmDescription": "~/.agents/skills에 있는 앱이 설치한 활성 또는 비활성 링크와 복사본만 삭제합니다.",
+    "confirmDescription": "공용 폴더에서 선택한 활성 또는 비활성 설치를 삭제합니다. 링크는 링크만 제거하고, 폴더는 복구용 백업을 만든 뒤 삭제합니다.",
     "originalKept": "스킬 보관함의 원본은 삭제되지 않습니다.",
     "confirmRemove": "공용 설치 삭제",
     "removeSuccess": "공용 설치 {{count}}개를 삭제했습니다",

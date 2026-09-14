@@ -68,7 +68,6 @@ enum AgentSkillSourceKind {
     User,
     Plugin,
     Compatibility,
-    Unmanaged,
 }
 
 impl AgentSkillSourceKind {
@@ -77,12 +76,11 @@ impl AgentSkillSourceKind {
             Self::User => "user",
             Self::Plugin => "plugin",
             Self::Compatibility => "compatibility",
-            Self::Unmanaged => "unmanaged",
         }
     }
 
     fn is_read_only(self) -> bool {
-        matches!(self, Self::Plugin | Self::Compatibility | Self::Unmanaged)
+        matches!(self, Self::Plugin | Self::Compatibility)
     }
 }
 
@@ -665,7 +663,8 @@ fn scan_roots_for_agent(
             path: primary_root.clone(),
             source_root: Some(primary_root),
             source_label: None,
-            source_kind: Some(AgentSkillSourceKind::Unmanaged),
+            // 설치한 프로그램과 무관하게 공용 폴더의 설치를 관리한다.
+            source_kind: None,
         }];
     }
 
@@ -767,7 +766,9 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         let is_detected = is_agent_detected(agent);
         let scan_roots =
             scan_roots_for_agent(agent, universal_root.as_deref(), central_root.as_deref());
-        let tracks_observations = scan_roots.iter().any(|root| root.source_kind.is_some());
+        // 이전 버전이 남긴 공용 폴더의 읽기 전용 기록도 정리한다.
+        let tracks_observations =
+            agent.id == "universal" || scan_roots.iter().any(|root| root.source_kind.is_some());
         let has_existing_root = scan_roots.iter().any(|root| root.path.exists());
         let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
@@ -841,23 +842,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
 
             for skill in &root_scanned {
                 let now = Utc::now().to_rfc3339();
-                let source_kind = if root.source_kind == Some(AgentSkillSourceKind::Unmanaged) {
-                    let is_tracked = db::get_skill_installations(pool, &skill.id)
-                        .await?
-                        .into_iter()
-                        .any(|installation| {
-                            installation.agent_id == "universal"
-                                && installation.installed_path == skill.dir_path
-                                && installation.link_type == skill.link_type
-                        });
-                    if is_tracked {
-                        None
-                    } else {
-                        root.source_kind
-                    }
-                } else {
-                    root.source_kind
-                };
+                let source_kind = root.source_kind;
 
                 if let Some(source_kind) = source_kind {
                     let observation = AgentSkillObservation {
@@ -2767,7 +2752,7 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn test_untracked_universal_directory_is_read_only_unmanaged_observation() {
+    async fn test_untracked_universal_directory_becomes_manageable_without_changing_files() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -2782,7 +2767,7 @@ enabled = false
         let central_root = tmp.path().join(".skillsmanage/skills");
         let universal_root = tmp.path().join(".agents/skills");
         fs::create_dir_all(&central_root).unwrap();
-        create_skill_dir(
+        let skill_dir = create_skill_dir(
             &universal_root,
             "manual-skill",
             &valid_skill_md("Manual Skill", "User-managed directory"),
@@ -2796,19 +2781,47 @@ enabled = false
                 .unwrap();
         }
 
+        // 이전 버전의 직접 관리됨 기록은 재스캔으로 관리 설치에 합쳐진다.
+        db::upsert_agent_skill_observation(
+            &pool,
+            &AgentSkillObservation {
+                row_id: format!("universal::{}", skill_dir.display()),
+                agent_id: "universal".to_string(),
+                skill_id: "manual-skill".to_string(),
+                name: "Manual Skill".to_string(),
+                description: None,
+                file_path: skill_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                dir_path: skill_dir.to_string_lossy().into_owned(),
+                source_kind: "unmanaged".to_string(),
+                source_root: universal_root.to_string_lossy().into_owned(),
+                source_label: None,
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                is_read_only: true,
+                scanned_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        let original = fs::read(skill_dir.join("SKILL.md")).unwrap();
+
         scan_all_skills_impl(&pool).await.unwrap();
 
-        assert!(db::get_skill_installations(&pool, "manual-skill")
+        let installation = db::get_skill_installation(&pool, "manual-skill", "universal")
             .await
             .unwrap()
-            .iter()
-            .all(|installation| installation.agent_id != "universal"));
-        let observations = db::get_agent_skill_observations(&pool, "universal")
-            .await
             .unwrap();
-        assert_eq!(observations.len(), 1);
-        assert_eq!(observations[0].source_kind, "unmanaged");
-        assert!(observations[0].is_read_only);
+        assert_eq!(Path::new(&installation.installed_path), skill_dir);
+        assert_eq!(installation.link_type, "copy");
+        assert!(db::get_agent_skill_observations(&pool, "universal")
+            .await
+            .unwrap()
+            .is_empty());
+        let skills = db::get_skills_for_agent(&pool, "universal").await.unwrap();
+        assert_eq!(skills.len(), 1);
+        assert!(!skills[0].is_read_only);
+        assert_eq!(fs::read(skill_dir.join("SKILL.md")).unwrap(), original);
+        assert!(central_root.read_dir().unwrap().next().is_none());
     }
 
     #[tokio::test]
