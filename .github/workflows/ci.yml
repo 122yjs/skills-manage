@@ -9,5 +9,5 @@ jobs:
   call-reusable:
     uses: 122yjs/gha-reusable/.github/workflows/reusable-ci.yml@main
     with:
-      # PR마다 무거운 문서 추출 금지. 코드 지도만 필요하면 true
-      run_graphify: false
+      # code-only Graphify (AST). 문서 Pass 아님.
+      run_graphify: true
