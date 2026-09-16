@@ -5,9 +5,15 @@ on:
   push:
     branches: [main, master]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   call-reusable:
     uses: 122yjs/gha-reusable/.github/workflows/reusable-ci.yml@main
     with:
       # code-only Graphify (AST). 문서 Pass 아님.
       run_graphify: true
+      # 열린 PR끼리 같은 그래프 커뮤니티를 건드리면 실패 + PR 코멘트
+      run_pr_conflicts: true
