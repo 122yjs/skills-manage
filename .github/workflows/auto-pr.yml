@@ -1,0 +1,51 @@
+name: Auto PR
+
+# feat/* 브랜치를 푸시하면 PR이 없을 때 자동 생성
+on:
+  push:
+    branches:
+      - "feat/**"
+      - "fix/**"
+      - "mb/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create PR if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="${GITHUB_REF_NAME}"
+          base="main"
+          if git show-ref --verify --quiet refs/remotes/origin/master; then
+            if ! git show-ref --verify --quiet refs/remotes/origin/main; then
+              base="master"
+            fi
+          fi
+          if gh pr view --head "$branch" >/dev/null 2>&1; then
+            echo "PR already exists for $branch"
+            exit 0
+          fi
+          gh pr create \
+            --base "$base" \
+            --head "$branch" \
+            --title "$branch" \
+            --body "## Summary
+Automated PR for \\`$branch\\`.
+
+## Test plan
+- [ ] CI green
+- [ ] Smoke-check the changed paths
+"
