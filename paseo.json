@@ -1,0 +1,22 @@
+{
+  "worktree": {
+    "setup": "corepack enable\npnpm install --frozen-lockfile || pnpm install",
+    "teardown": "rm -rf .cache || true"
+  },
+  "scripts": {
+    "test": {
+      "command": "pnpm test"
+    },
+    "typecheck": {
+      "command": "pnpm typecheck"
+    },
+    "lint": {
+      "command": "pnpm lint"
+    },
+    "web": {
+      "type": "service",
+      "command": "pnpm web:dev -- --port $PASEO_PORT",
+      "port": 5173
+    }
+  }
+}
