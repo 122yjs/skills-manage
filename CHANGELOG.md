@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixes
+
+- Replace the inaccessible private reusable CI workflow with repository-local frontend build/test/lint and Rust test/Clippy jobs; retain read-only Graphify artifact and PR-overlap checks.
+
+- Detect non-central skill-ID conflicts before GitHub imports; default conflicts to skip and allow an explicit local installation-ID change without modifying the source SKILL.md or existing platform installs.
+- Reject occupied IDs and unmanaged target paths before writing, restore the current target on import failure, and report previously completed imports separately from failed or unattempted items.
+- Restore focus and text selection when editing an installation ID under React 18.
+
+### Improvements
+
+- Persist GitHub provenance across rescans and show repository/source links alongside local installation IDs on skill cards and details.
+- Reuse repository collections for grouping imported skills, independently of provenance, and distinguish collection/refresh failures from import failures.
+
 ## 0.10.0 - 2026-04-30
 
 Feature release focused on broader platform coverage, Discover reliability, and denser Central Skills platform management.

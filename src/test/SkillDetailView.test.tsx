@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { SkillDetailView } from "../components/skill/SkillDetailView";
@@ -1639,5 +1639,118 @@ describe("SkillDetailView", () => {
         rowId: undefined,
       });
     });
+  });
+});
+
+// ─── Imported origin display ─────────────────────────────────────────────────
+
+const importedOriginFixture = {
+  bindingId: "binding-1",
+  targetKey: "/users/test/.agents/skills/frontend-design",
+  targetPath: "/users/test/.agents/skills/frontend-design",
+  repositoryId: null,
+  owner: "mattpocock",
+  repo: "skills",
+  sourcePath: "skills/code-review",
+  refName: "main",
+  baselineState: "verified",
+  baseCommitOid: "abc1234",
+  lastAppliedCommitOid: null,
+  lastAppliedAt: null,
+  lastCheckedAt: null,
+  lastRemoteCommitOid: null,
+  lastError: null,
+  bindingVersion: 1,
+  canUpdate: false,
+};
+
+// A skill imported into a renamed local folder: the SKILL.md name and the
+// repository folder stay untouched while the installation ID changes.
+const renamedDetailFixture: SkillDetailType = {
+  ...mockDetail,
+  id: "code-review-renamed",
+  row_id: "code-review-renamed",
+  name: "code-review",
+  file_path: "~/.agents/skills/code-review-renamed/SKILL.md",
+  dir_path: "~/.agents/skills/code-review-renamed",
+  canonical_path: "~/.agents/skills/code-review-renamed",
+};
+
+function mockOriginInvoke(originFixture: typeof importedOriginFixture | null) {
+  mockTauriInvoke.mockImplementation(async (command, args) => {
+    if (command === "get_skill_origin") {
+      return originFixture;
+    }
+    if (command === "list_skill_directory") {
+      return mockDirectoryTree;
+    }
+    if (command === "read_file_by_path") {
+      if (args && typeof args === "object" && "path" in args) {
+        return args.path === "~/.agents/skills/frontend-design/docs/notes.txt"
+          ? mockNotesContent
+          : mockContent;
+      }
+    }
+    if (command === "open_in_file_manager") {
+      return null;
+    }
+    throw new Error(`Unhandled invoke command: ${String(command)}`);
+  });
+}
+
+describe("SkillDetailView imported origin", () => {
+  afterEach(async () => {
+    const { useSkillOriginStore } = await import("../stores/skillOriginStore");
+    useSkillOriginStore.getState().reset();
+  });
+
+  it("shows the SKILL.md name, the local installation ID, and the manifest link", async () => {
+    mockOriginInvoke(importedOriginFixture);
+    applyStoreMocks({ detail: renamedDetailFixture });
+
+    renderView("code-review-renamed", "page", { skipMockSetup: true });
+
+    const link = await screen.findByRole("link", { name: "在 GitHub 上打开来源" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/mattpocock/skills/blob/main/skills/code-review/SKILL.md"
+    );
+
+    // SKILL.md 이름은 프런트매터 이름, 설치 ID는 로컬 레코드에서 나온다.
+    expect(screen.getByText("SKILL.md 名称").nextElementSibling).toHaveTextContent(
+      "code-review"
+    );
+    expect(screen.getByText("本地安装 ID").nextElementSibling).toHaveTextContent(
+      "code-review-renamed"
+    );
+  });
+
+  it("hides the local ID row when the installation ID matches the SKILL.md name", async () => {
+    mockOriginInvoke(importedOriginFixture);
+
+    renderView();
+
+    const link = await screen.findByRole("link", { name: "在 GitHub 上打开来源" });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://github.com/mattpocock/skills/blob/main/skills/code-review/SKILL.md"
+    );
+    // 저장소 폴더 이름(skills/code-review)이 아니라 표시 이름과 비교한다.
+    expect(screen.getByText("SKILL.md 名称").nextElementSibling).toHaveTextContent(
+      "frontend-design"
+    );
+    expect(screen.queryByText("本地安装 ID")).not.toBeInTheDocument();
+  });
+
+  it("keeps the origin section unlinked without a persisted origin", async () => {
+    mockOriginInvoke(null);
+
+    renderView();
+
+    await waitFor(() => {
+      expect(screen.getByText("Not linked")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("link", { name: "在 GitHub 上打开来源" })).not.toBeInTheDocument();
+    expect(screen.queryByText("SKILL.md 名称")).not.toBeInTheDocument();
   });
 });

@@ -9,7 +9,8 @@ import {
   type Location,
 } from "react-router-dom";
 import { CollectionView } from "../pages/CollectionView";
-import { CollectionDetail, AgentWithStatus } from "../types";
+import { CollectionDetail, AgentWithStatus, SkillWithLinks } from "../types";
+import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import {
   consumeScrollPosition,
   saveScrollPosition,
@@ -485,5 +486,60 @@ describe("CollectionView", () => {
         expect((scroller as HTMLDivElement).scrollTop).toBe(280);
       });
     });
+  });
+});
+
+// ─── Imported origin on collection cards ─────────────────────────────────────
+
+// 출처는 이미 불러온 중앙 스킬 목록에 실려 온다. 컬렉션 이름 변경/삭제와 무관하다.
+const importedCentralSkill: SkillWithLinks = {
+  id: "code-reviewer",
+  name: "code-review",
+  description: "Review code changes",
+  file_path: "~/.agents/skills/code-reviewer/SKILL.md",
+  is_central: true,
+  scanned_at: "2026-04-09T00:00:00Z",
+  linked_agents: [],
+  origin: {
+    owner: "mattpocock",
+    repo: "skills",
+    sourcePath: "skills/code-review",
+    refName: "main",
+  },
+};
+
+describe("CollectionView imported origin", () => {
+  afterEach(() => {
+    useCentralSkillsStore.setState({ skills: [] });
+  });
+
+  // SKILL.md 이름(code-review)이 로컬 설치 ID(code-reviewer)와 다른, 이름이 바뀐 가져오기.
+  const renamedCollectionDetail: CollectionDetail = {
+    ...mockCollectionDetail,
+    skills: mockCollectionDetail.skills.map((skill) =>
+      skill.id === "code-reviewer" ? { ...skill, name: "code-review" } : skill
+    ),
+  };
+
+  it("shows the imported source badge and local install ID on collection cards", () => {
+    useCentralSkillsStore.setState({ skills: [importedCentralSkill] });
+
+    renderCollectionView("col-1", { currentDetail: renamedCollectionDetail });
+
+    expect(
+      screen.getByRole("link", { name: "在 GitHub 上打开来源" })
+    ).toHaveAttribute(
+      "href",
+      "https://github.com/mattpocock/skills/blob/main/skills/code-review/SKILL.md"
+    );
+    // 로컬 설치 ID(code-reviewer)는 SKILL.md 이름(code-review)과 다르다.
+    expect(screen.getByText("安装 ID code-reviewer")).toBeInTheDocument();
+  });
+
+  it("keeps collection cards compact without central origin data", () => {
+    renderCollectionView();
+
+    expect(screen.queryByRole("link", { name: "在 GitHub 上打开来源" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/安装 ID/)).not.toBeInTheDocument();
   });
 });

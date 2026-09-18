@@ -1,7 +1,6 @@
 use chrono::Utc;
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{Cursor, Read};
@@ -9,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::{
+    commands::skill_origin,
     db::{self, DbPool, Skill},
     AppState,
 };
@@ -59,6 +59,18 @@ pub enum DuplicateResolution {
     Rename,
 }
 
+/// 설치 대상 자리에 이미 있는 것이 무엇인지 구분한다.
+///
+/// `central`은 레코드가 대상 폴더를 소유할 때만 명시적으로 덮어쓸 수 있고,
+/// `non_central`과 `unmanaged_path`는 덮어쓸 수 없다.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubSkillConflictKind {
+    Central,
+    NonCentral,
+    UnmanagedPath,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubSkillConflict {
@@ -67,6 +79,8 @@ pub struct GitHubSkillConflict {
     pub existing_canonical_path: Option<String>,
     pub proposed_skill_id: String,
     pub proposed_name: String,
+    pub conflict_kind: GitHubSkillConflictKind,
+    pub existing_path: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -115,6 +129,42 @@ pub struct GitHubRepoImportResult {
     pub imported_skills: Vec<ImportedGitHubSkillSummary>,
     pub skipped_skills: Vec<String>,
 }
+
+/// `blocked`는 쓰기 전 차단, `failed`는 실행 중 실패를 뜻한다.
+/// 실행 중 실패하면 같은 요청의 앞선 스킬이 이미 저장되어 있을 수 있다.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubImportFailure {
+    pub code: GitHubImportFailureCode,
+    pub message: String,
+    pub source_path: Option<String>,
+    pub skill_id: Option<String>,
+    pub existing_path: Option<String>,
+    pub imported_skills: Vec<ImportedGitHubSkillSummary>,
+    pub skipped_skills: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GitHubImportFailureCode {
+    Blocked,
+    Failed,
+}
+
+/// 가져오기 오류는 기존 문자열이거나 구조화된 실패일 수 있다.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum GitHubImportError {
+    Message(String),
+    Failure(Box<GitHubImportFailure>),
+}
+
+impl GitHubImportError {
+    fn plain(message: impl Into<String>) -> Self {
+        Self::Message(message.into())
+    }
+}
+
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -282,7 +332,7 @@ pub async fn import_github_repo_skills(
     state: State<'_, AppState>,
     repo_url: String,
     selections: Vec<GitHubSkillImportSelection>,
-) -> Result<GitHubRepoImportResult, String> {
+) -> Result<GitHubRepoImportResult, GitHubImportError> {
     import_github_repo_skills_impl(&state.db, &repo_url, selections, Some(&app)).await
 }
 
@@ -303,7 +353,8 @@ async fn preview_github_repo_import_impl(
     let auth = github_direct_auth_from_settings(pool).await?;
     let repo = resolve_repo_ref(repo_url, auth.as_deref()).await?;
     let candidates = fetch_repo_skill_candidates(&repo, auth.as_deref()).await?;
-    let skills = build_preview_skills(pool, &candidates).await?;
+    let central_root = central_skills_root(pool).await?;
+    let skills = build_preview_skills(pool, &central_root, &candidates).await?;
 
     if skills.is_empty() {
         return Err(
@@ -320,7 +371,7 @@ async fn import_github_repo_skills_impl(
     repo_url: &str,
     selections: Vec<GitHubSkillImportSelection>,
     app: Option<&AppHandle>,
-) -> Result<GitHubRepoImportResult, String> {
+) -> Result<GitHubRepoImportResult, GitHubImportError> {
     emit_github_import_progress(
         app,
         GitHubImportProgressPayload {
@@ -334,108 +385,175 @@ async fn import_github_repo_skills_impl(
         },
     );
 
-    let auth = github_direct_auth_from_settings(pool).await?;
-    let repo = resolve_repo_ref(repo_url, auth.as_deref()).await?;
-    let client = github_client()?;
-    let snapshot = download_repo_snapshot(&client, &repo, auth.as_deref()).await?;
-    let candidates = build_repo_skill_candidates_from_snapshot(&repo, &snapshot)?;
+    let auth = github_direct_auth_from_settings(pool)
+        .await
+        .map_err(GitHubImportError::plain)?;
+    let repo = resolve_repo_ref(repo_url, auth.as_deref())
+        .await
+        .map_err(GitHubImportError::plain)?;
+    let client = github_client().map_err(GitHubImportError::plain)?;
+
+    // 확인한 커밋이 있으면 그 커밋으로 고정해 내려받는다. 조회에 실패하면 기본
+    // 브랜치로 진행하되, 검증된 기준으로 기록하지 않는다.
+    let commit_oid = resolve_repo_commit_oid(&repo, auth.as_deref()).await.ok();
+    let download_ref = match &commit_oid {
+        Some(commit) => GitHubRepoRef {
+            branch: commit.clone(),
+            ..repo.clone()
+        },
+        None => repo.clone(),
+    };
+    let snapshot = download_repo_snapshot(&client, &download_ref, auth.as_deref())
+        .await
+        .map_err(GitHubImportError::plain)?;
+    let candidates = build_repo_skill_candidates_from_snapshot(&download_ref, &snapshot)
+        .map_err(GitHubImportError::plain)?;
     if candidates.is_empty() {
-        return Err(
-            "No importable skills found in this repository. Supported layouts are repo-root skill directories or a top-level skills/ directory."
-                .to_string(),
+        return Err(GitHubImportError::plain(
+            "No importable skills found in this repository. Supported layouts are repo-root skill directories or a top-level skills/ directory.",
+        ));
+    }
+
+    install_repo_skills_from_snapshot(
+        pool,
+        RepoSnapshotImportRequest {
+            repo,
+            commit_oid,
+            snapshot,
+            candidates,
+            selections,
+        },
+        app,
+    )
+    .await
+}
+
+/// 이미 내려받은 저장소 내용으로 설치만 수행하는 요청. 테스트가 네트워크 없이
+/// 실제 설치 경로를 실행할 수 있도록 분리했다.
+#[derive(Debug, Clone)]
+struct RepoSnapshotImportRequest {
+    repo: GitHubRepoRef,
+    commit_oid: Option<String>,
+    snapshot: GitHubRepoSnapshot,
+    candidates: Vec<RemoteSkillCandidate>,
+    selections: Vec<GitHubSkillImportSelection>,
+}
+
+#[derive(Debug, Clone)]
+struct StagedImport {
+    candidate: RemoteSkillCandidate,
+    final_skill_id: String,
+    resolution: DuplicateResolution,
+    target_dir: PathBuf,
+    /// 기존 중앙 레코드가 대상을 소유해 교체할 수 있는지 여부.
+    owned_target: bool,
+    source_files: Vec<SnapshotSourceFile>,
+}
+
+/// 실제로 완료된 결과. 실패 시 이미 저장된 스킬과 건너뛴 스킬을 정확히 보고한다.
+#[derive(Debug, Clone, Default)]
+struct ImportBatchProgress {
+    imported_skills: Vec<ImportedGitHubSkillSummary>,
+    skipped_skills: Vec<String>,
+}
+
+impl ImportBatchProgress {
+    fn blocked(
+        &self,
+        message: String,
+        source_path: Option<&str>,
+        skill_id: Option<&str>,
+        existing_path: Option<PathBuf>,
+    ) -> GitHubImportError {
+        GitHubImportError::Failure(Box::new(GitHubImportFailure {
+            code: GitHubImportFailureCode::Blocked,
+            message,
+            source_path: source_path.map(str::to_string),
+            skill_id: skill_id.map(str::to_string),
+            existing_path: existing_path.map(|path| path.to_string_lossy().into_owned()),
+            imported_skills: self.imported_skills.clone(),
+            skipped_skills: self.skipped_skills.clone(),
+        }))
+    }
+
+    fn failed(
+        &self,
+        message: String,
+        candidate: &RemoteSkillCandidate,
+        skill_id: &str,
+        existing_path: Option<PathBuf>,
+    ) -> GitHubImportError {
+        GitHubImportError::Failure(Box::new(GitHubImportFailure {
+            code: GitHubImportFailureCode::Failed,
+            message,
+            source_path: Some(candidate.source_path.clone()),
+            skill_id: Some(skill_id.to_string()),
+            existing_path: existing_path.map(|path| path.to_string_lossy().into_owned()),
+            imported_skills: self.imported_skills.clone(),
+            skipped_skills: self.skipped_skills.clone(),
+        }))
+    }
+}
+
+/// 내려받은 스냅샷에서 선택한 스킬만 설치한다.
+///
+/// 첫 쓰기 전에 모든 대상 경로를 검증한다. 각 스킬은 대상 옆의 스테이징
+/// 디렉터리에 먼저 쓰고 나서 교체하므로, 실패해도 반쯤 쓰인 스킬이 남지 않는다.
+/// 뒤 스킬이 실패해도 앞서 완료된 스킬은 되돌리지 않고 그대로 보고한다.
+async fn install_repo_skills_from_snapshot(
+    pool: &DbPool,
+    request: RepoSnapshotImportRequest,
+    app: Option<&AppHandle>,
+) -> Result<GitHubRepoImportResult, GitHubImportError> {
+    if request.selections.is_empty() {
+        return Err(GitHubImportError::plain(
+            "Select at least one skill to import.",
+        ));
+    }
+
+    let central_root = central_skills_root(pool)
+        .await
+        .map_err(GitHubImportError::plain)?;
+    std::fs::create_dir_all(&central_root).map_err(|error| {
+        GitHubImportError::plain(format!(
+            "Failed to create central skills directory: {}",
+            error
+        ))
+    })?;
+
+    let mut progress = ImportBatchProgress::default();
+    let selected = resolve_selected_candidates(&request.candidates, request.selections, &progress)?;
+
+    let mut reserved_ids = HashSet::new();
+    let mut staging_ops = Vec::with_capacity(selected.len());
+    for (candidate, selection) in &selected {
+        if selection.resolution == DuplicateResolution::Skip {
+            progress.skipped_skills.push(candidate.source_path.clone());
+            continue;
+        }
+        staging_ops.push(
+            stage_import_target(
+                pool,
+                &central_root,
+                candidate,
+                selection,
+                &mut reserved_ids,
+                &progress,
+            )
+            .await?,
         );
     }
 
-    if selections.is_empty() {
-        return Err("Select at least one skill to import.".to_string());
-    }
-
-    let mut selected_paths = HashSet::new();
-    let mut selected = Vec::new();
-    for selection in selections {
-        let candidate = candidates
-            .iter()
-            .find(|candidate| candidate.source_path == selection.source_path)
-            .ok_or_else(|| {
-                format!(
-                    "Selected skill '{}' is no longer available in the preview.",
-                    selection.source_path
-                )
-            })?
-            .clone();
-
-        if !selected_paths.insert(candidate.source_path.clone()) {
-            return Err(format!(
-                "Skill '{}' was selected more than once.",
-                candidate.source_path
-            ));
-        }
-
-        selected.push((candidate, selection));
-    }
-
-    let central_root = central_skills_root(pool).await?;
-    std::fs::create_dir_all(&central_root)
-        .map_err(|e| format!("Failed to create central skills directory: {}", e))?;
-
-    let mut occupied_ids = current_central_skill_ids(pool).await?;
-    let mut staging_ops = Vec::new();
-    let mut skipped_skills = Vec::new();
-
-    for (candidate, selection) in &selected {
-        match selection.resolution {
-            DuplicateResolution::Skip => {
-                skipped_skills.push(candidate.source_path.clone());
-                continue;
-            }
-            DuplicateResolution::Overwrite => {
-                if let Some(existing) = db::get_skill_by_id(pool, &candidate.skill_id).await? {
-                    if !existing.is_central {
-                        return Err(format!(
-                            "Skill '{}' conflicts with a non-central record and cannot be overwritten safely.",
-                            candidate.skill_id
-                        ));
-                    }
-                }
-                occupied_ids.insert(candidate.skill_id.clone());
-                staging_ops.push(StagedImport {
-                    candidate: candidate.clone(),
-                    final_skill_id: candidate.skill_id.clone(),
-                    resolution: DuplicateResolution::Overwrite,
-                    source_files: Vec::new(),
-                });
-            }
-            DuplicateResolution::Rename => {
-                let requested_id =
-                    sanitize_skill_id(selection.renamed_skill_id.as_deref().ok_or_else(|| {
-                        format!(
-                            "Skill '{}' requires a renamed skill id for rename resolution.",
-                            candidate.source_path
-                        )
-                    })?)?;
-                if occupied_ids.contains(&requested_id) {
-                    return Err(format!(
-                        "Renamed skill id '{}' is already in use.",
-                        requested_id
-                    ));
-                }
-                occupied_ids.insert(requested_id.clone());
-                staging_ops.push(StagedImport {
-                    candidate: candidate.clone(),
-                    final_skill_id: requested_id,
-                    resolution: DuplicateResolution::Rename,
-                    source_files: Vec::new(),
-                });
-            }
-        }
-    }
-
-    if staging_ops.is_empty() && skipped_skills.is_empty() {
-        return Err("No valid import operations were requested.".to_string());
-    }
-
     for op in &mut staging_ops {
-        op.source_files = collect_snapshot_source_files(&snapshot, &op.candidate.source_path)?;
+        op.source_files = collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path)
+            .map_err(|message| {
+                progress.blocked(
+                    message,
+                    Some(op.candidate.source_path.as_str()),
+                    Some(op.final_skill_id.as_str()),
+                    Some(op.target_dir.clone()),
+                )
+            })?;
     }
 
     let total_files = staging_ops
@@ -467,74 +585,149 @@ async fn import_github_repo_skills_impl(
         },
     );
 
-    let mut imported_skills = Vec::new();
-    let mut created_paths = Vec::new();
-
     for op in &staging_ops {
-        let target_dir = central_root.join(&op.final_skill_id);
-        if target_dir.exists() {
-            if op.resolution == DuplicateResolution::Overwrite {
-                std::fs::remove_dir_all(&target_dir).map_err(|e| {
-                    format!(
-                        "Failed to replace existing canonical skill '{}': {}",
-                        op.final_skill_id, e
-                    )
-                })?;
-            } else {
-                cleanup_created_directories(&created_paths);
-                return Err(format!(
-                    "Target directory '{}' already exists.",
-                    target_dir.display()
-                ));
-            }
-        }
-
-        if let Err(error) = write_snapshot_source_to_target(
-            &snapshot,
+        let staging_container =
+            unique_staging_container(&central_root, &op.final_skill_id, "stage");
+        let staging_dir = staging_container.join(&op.final_skill_id);
+        if let Err(message) = write_snapshot_source_to_target(
+            &request.snapshot,
             &op.source_files,
-            &target_dir,
+            &staging_dir,
             &op.candidate.source_path,
             &mut progress_state,
             app,
         ) {
-            cleanup_created_directories(&created_paths);
-            if target_dir.exists() {
-                let _ = std::fs::remove_dir_all(&target_dir);
-            }
-            return Err(error);
+            remove_directory_if_present(&staging_container);
+            return Err(progress.failed(
+                message,
+                &op.candidate,
+                &op.final_skill_id,
+                Some(op.target_dir.clone()),
+            ));
         }
 
-        created_paths.push(target_dir.clone());
+        let staged_skill_md = staging_dir.join("SKILL.md");
+        let frontmatter = match std::fs::read_to_string(&staged_skill_md)
+            .map_err(|error| format!("Failed to read imported SKILL.md: {}", error))
+            .and_then(|raw| {
+                parse_frontmatter(&raw).ok_or_else(|| {
+                    format!(
+                        "Imported skill '{}' is missing valid frontmatter.",
+                        op.candidate.source_path
+                    )
+                })
+            }) {
+            Ok(frontmatter) => frontmatter,
+            Err(message) => {
+                remove_directory_if_present(&staging_container);
+                return Err(progress.failed(
+                    message,
+                    &op.candidate,
+                    &op.final_skill_id,
+                    Some(op.target_dir.clone()),
+                ));
+            }
+        };
 
-        let skill_md_path = target_dir.join("SKILL.md");
-        let raw = std::fs::read_to_string(&skill_md_path)
-            .map_err(|e| format!("Failed to read imported SKILL.md: {}", e))?;
-        let frontmatter = parse_frontmatter(&raw).ok_or_else(|| {
-            format!(
-                "Imported skill '{}' is missing valid frontmatter.",
-                op.candidate.source_path
-            )
-        })?;
+        // 기존 대상은 새 파일이 준비된 뒤에만 옮긴다. 실패하면 원래 대상을 되돌린다.
+        let backup_container = if op.owned_target {
+            let backup_container =
+                unique_staging_container(&central_root, &op.final_skill_id, "old");
+            let moved_aside = std::fs::create_dir_all(&backup_container).and_then(|_| {
+                std::fs::rename(&op.target_dir, backup_container.join(&op.final_skill_id))
+            });
+            if let Err(error) = moved_aside {
+                remove_directory_if_present(&staging_container);
+                remove_directory_if_present(&backup_container);
+                return Err(progress.failed(
+                    format!(
+                        "Failed to move the existing skill '{}' aside: {}",
+                        op.final_skill_id, error
+                    ),
+                    &op.candidate,
+                    &op.final_skill_id,
+                    Some(op.target_dir.clone()),
+                ));
+            }
+            Some(backup_container)
+        } else {
+            None
+        };
 
+        if let Err(error) = std::fs::rename(&staging_dir, &op.target_dir) {
+            remove_directory_if_present(&staging_container);
+            let mut message =
+                format!("Failed to install skill '{}': {}", op.final_skill_id, error);
+            if let Some(note) =
+                restore_previous_target(&backup_container, &op.final_skill_id, &op.target_dir)
+            {
+                message.push(' ');
+                message.push_str(&note);
+            }
+            return Err(progress.failed(
+                message,
+                &op.candidate,
+                &op.final_skill_id,
+                Some(op.target_dir.clone()),
+            ));
+        }
+        remove_directory_if_present(&staging_container);
+
+        let skill_md_path = op.target_dir.join("SKILL.md");
+        let skill_name = frontmatter.name;
+        let skill_description = frontmatter.description;
         let db_skill = Skill {
             id: op.final_skill_id.clone(),
-            name: frontmatter.name.clone(),
-            description: frontmatter.description.clone(),
+            name: skill_name.clone(),
+            description: skill_description.clone(),
             file_path: skill_md_path.to_string_lossy().into_owned(),
-            canonical_path: Some(target_dir.to_string_lossy().into_owned()),
+            canonical_path: Some(op.target_dir.to_string_lossy().into_owned()),
             is_central: true,
-            source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
+            source: Some(format!("github:{}/{}", request.repo.owner, request.repo.repo)),
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
         };
-        db::upsert_skill(pool, &db_skill).await?;
+        if let Err(error) = skill_origin::persist_imported_skill(
+            pool,
+            &db_skill,
+            &request.repo,
+            &op.candidate.source_path,
+            request.commit_oid.as_deref(),
+        )
+        .await
+        {
+            // 이 스킬의 파일만 되돌린다. 앞서 완료된 가져오기는 그대로 남긴다.
+            let mut message = format!(
+                "Failed to record the imported skill '{}': {}",
+                op.final_skill_id, error
+            );
+            if let Some(note) = remove_imported_target(&op.target_dir) {
+                message.push(' ');
+                message.push_str(&note);
+            }
+            if let Some(note) =
+                restore_previous_target(&backup_container, &op.final_skill_id, &op.target_dir)
+            {
+                message.push(' ');
+                message.push_str(&note);
+            }
+            return Err(progress.failed(
+                message,
+                &op.candidate,
+                &op.final_skill_id,
+                Some(op.target_dir.clone()),
+            ));
+        }
+        if let Some(backup_container) = &backup_container {
+            remove_directory_if_present(backup_container);
+        }
 
-        imported_skills.push(ImportedGitHubSkillSummary {
+        progress.imported_skills.push(ImportedGitHubSkillSummary {
             source_path: op.candidate.source_path.clone(),
             original_skill_id: op.candidate.skill_id.clone(),
             imported_skill_id: op.final_skill_id.clone(),
-            skill_name: frontmatter.name,
-            target_directory: target_dir.to_string_lossy().into_owned(),
+            skill_name,
+            target_directory: op.target_dir.to_string_lossy().into_owned(),
             resolution: op.resolution.clone(),
         });
     }
@@ -553,24 +746,258 @@ async fn import_github_repo_skills_impl(
     );
 
     Ok(GitHubRepoImportResult {
-        repo,
-        imported_skills,
-        skipped_skills,
+        repo: request.repo,
+        imported_skills: progress.imported_skills,
+        skipped_skills: progress.skipped_skills,
     })
 }
 
-#[derive(Debug, Clone)]
-struct StagedImport {
-    candidate: RemoteSkillCandidate,
-    final_skill_id: String,
-    resolution: DuplicateResolution,
-    source_files: Vec<SnapshotSourceFile>,
+fn resolve_selected_candidates<'a>(
+    candidates: &'a [RemoteSkillCandidate],
+    selections: Vec<GitHubSkillImportSelection>,
+    progress: &ImportBatchProgress,
+) -> Result<Vec<(&'a RemoteSkillCandidate, GitHubSkillImportSelection)>, GitHubImportError> {
+    let mut selected_paths = HashSet::new();
+    let mut selected = Vec::with_capacity(selections.len());
+    for selection in selections {
+        if !selected_paths.insert(selection.source_path.clone()) {
+            return Err(progress.blocked(
+                format!(
+                    "Skill '{}' was selected more than once.",
+                    selection.source_path
+                ),
+                Some(selection.source_path.as_str()),
+                None,
+                None,
+            ));
+        }
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.source_path == selection.source_path)
+            .ok_or_else(|| {
+                progress.blocked(
+                    format!(
+                        "Selected skill '{}' is no longer available in the preview.",
+                        selection.source_path
+                    ),
+                    Some(selection.source_path.as_str()),
+                    None,
+                    None,
+                )
+            })?;
+        selected.push((candidate, selection));
+    }
+    Ok(selected)
 }
 
-fn cleanup_created_directories(paths: &[PathBuf]) {
-    for path in paths.iter().rev() {
-        let _ = std::fs::remove_dir_all(path);
+/// 선택 하나를 쓰기 전에 검증하고 대상 경로를 확정한다.
+async fn stage_import_target(
+    pool: &DbPool,
+    central_root: &Path,
+    candidate: &RemoteSkillCandidate,
+    selection: &GitHubSkillImportSelection,
+    reserved_ids: &mut HashSet<String>,
+    progress: &ImportBatchProgress,
+) -> Result<StagedImport, GitHubImportError> {
+    let final_skill_id = match selection.resolution {
+        DuplicateResolution::Rename => sanitize_skill_id(
+            selection.renamed_skill_id.as_deref().ok_or_else(|| {
+                progress.blocked(
+                    format!(
+                        "Skill '{}' requires a renamed skill id for rename resolution.",
+                        candidate.source_path
+                    ),
+                    Some(candidate.source_path.as_str()),
+                    Some(candidate.skill_id.as_str()),
+                    None,
+                )
+            })?,
+        )
+        .map_err(|message| {
+            progress.blocked(
+                message,
+                Some(candidate.source_path.as_str()),
+                Some(candidate.skill_id.as_str()),
+                None,
+            )
+        })?,
+        _ => candidate.skill_id.clone(),
+    };
+    let target_dir = central_root.join(&final_skill_id);
+    let existing_record = db::get_skill_by_id(pool, &final_skill_id)
+        .await
+        .map_err(GitHubImportError::plain)?;
+
+    match (&selection.resolution, &existing_record) {
+        (DuplicateResolution::Rename, Some(existing)) => {
+            return Err(progress.blocked(
+                format!("Renamed skill id '{}' is already in use.", final_skill_id),
+                Some(candidate.source_path.as_str()),
+                Some(final_skill_id.as_str()),
+                Some(existing_instance_path(existing)),
+            ));
+        }
+        (_, Some(existing)) if !existing.is_central => {
+            return Err(progress.blocked(
+                format!(
+                    "Skill '{}' conflicts with a non-central record and cannot be overwritten safely.",
+                    final_skill_id
+                ),
+                Some(candidate.source_path.as_str()),
+                Some(final_skill_id.as_str()),
+                Some(existing_instance_path(existing)),
+            ));
+        }
+        _ => {}
     }
+
+    // 같은 요청 안에서 두 스킬이 같은 대상 id를 차지하지 못하게 한다.
+    if !reserved_ids.insert(final_skill_id.clone()) {
+        return Err(progress.blocked(
+            format!(
+                "Target id '{}' is requested by more than one skill in this import; rename one of them.",
+                final_skill_id
+            ),
+            Some(candidate.source_path.as_str()),
+            Some(final_skill_id.as_str()),
+            Some(target_dir),
+        ));
+    }
+
+    let owned_target =
+        match inspect_import_target(&target_dir, &existing_record, &selection.resolution) {
+            Ok(owned_target) => owned_target,
+            Err(message) => {
+                return Err(progress.blocked(
+                    message,
+                    Some(candidate.source_path.as_str()),
+                    Some(final_skill_id.as_str()),
+                    Some(target_dir),
+                ));
+            }
+        };
+
+    Ok(StagedImport {
+        candidate: candidate.clone(),
+        final_skill_id,
+        resolution: selection.resolution.clone(),
+        target_dir,
+        owned_target,
+        source_files: Vec::new(),
+    })
+}
+
+/// 대상 자리에 이미 있는 것이 중앙 레코드 소유인지 확인한다. 레코드가 소유하지
+/// 않은 폴더와 심볼릭 링크(끊긴 링크 포함)는 절대 교체하지 않는다.
+fn inspect_import_target(
+    target_dir: &Path,
+    existing_record: &Option<Skill>,
+    resolution: &DuplicateResolution,
+) -> Result<bool, String> {
+    let metadata = match std::fs::symlink_metadata(target_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Failed to inspect import target '{}': {}",
+                target_dir.display(),
+                error
+            ));
+        }
+    };
+
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "Import target '{}' is a symbolic link that no skill record owns; rename the imported skill id.",
+            target_dir.display()
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(format!(
+            "Import target '{}' already exists but is not a directory; rename the imported skill id.",
+            target_dir.display()
+        ));
+    }
+
+    let owned = resolution == &DuplicateResolution::Overwrite
+        && existing_record
+            .as_ref()
+            .is_some_and(|record| target_is_owned_by_record(record, target_dir));
+    if !owned {
+        return Err(format!(
+            "Import target '{}' already exists but is not owned by a central skill record; rename the imported skill id.",
+            target_dir.display()
+        ));
+    }
+    Ok(true)
+}
+
+fn paths_equivalent(left: &str, right: &Path) -> bool {
+    let left = Path::new(left.trim());
+    let left = left.canonicalize().unwrap_or_else(|_| left.to_path_buf());
+    let right = right.canonicalize().unwrap_or_else(|_| right.to_path_buf());
+    left == right
+}
+
+fn existing_instance_path(skill: &Skill) -> PathBuf {
+    skill
+        .canonical_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(&skill.file_path))
+}
+
+/// 스테이징과 백업은 대상과 같은 파일 시스템의 숨김 컨테이너 안에 둔다. 컨테이너
+/// 이름은 스캐너가 무시하는 기존 규칙(`.skillsmanage-stage-`, `.skillsmanage-old-`)을
+/// 따르고, 컨테이너 안에 SKILL.md를 두지 않으므로 일반 스캔에도 스킬로 잡히지 않는다.
+fn unique_staging_container(central_root: &Path, final_skill_id: &str, kind: &str) -> PathBuf {
+    central_root.join(format!(
+        ".{}.skillsmanage-{}-{}",
+        final_skill_id,
+        kind,
+        uuid::Uuid::new_v4()
+    ))
+}
+
+/// 백업해 둔 이전 대상을 제자리로 되돌린다. 되돌리지 못하면 백업을 지우지 않고
+/// 원본이 남아 있는 경로를 알려 준다.
+fn restore_previous_target(
+    backup_container: &Option<PathBuf>,
+    final_skill_id: &str,
+    target_dir: &Path,
+) -> Option<String> {
+    let container = backup_container.as_ref()?;
+    let preserved = container.join(final_skill_id);
+    if std::fs::rename(&preserved, target_dir).is_ok() {
+        remove_directory_if_present(container);
+        return None;
+    }
+    Some(format!(
+        "The previous skill '{}' is preserved at '{}'.",
+        final_skill_id,
+        preserved.display()
+    ))
+}
+
+/// 새로 설치한 대상을 지운다. 지우지 못했으면 어디에 남아 있는지 알려 준다.
+fn remove_imported_target(target_dir: &Path) -> Option<String> {
+    if remove_directory_if_present(target_dir) {
+        return None;
+    }
+    Some(format!(
+        "The new files could not be removed from '{}'.",
+        target_dir.display()
+    ))
+}
+
+/// 폴더나 심볼릭 링크가 남아 있으면 지운다. 지우지 못했으면 false를 돌려준다.
+fn remove_directory_if_present(path: &Path) -> bool {
+    if std::fs::symlink_metadata(path).is_err() {
+        return true;
+    }
+    std::fs::remove_dir_all(path).is_ok()
 }
 
 async fn central_skills_root(pool: &DbPool) -> Result<PathBuf, String> {
@@ -580,37 +1007,23 @@ async fn central_skills_root(pool: &DbPool) -> Result<PathBuf, String> {
     Ok(PathBuf::from(central.global_skills_dir))
 }
 
-async fn current_central_skill_ids(pool: &DbPool) -> Result<HashSet<String>, String> {
-    let rows = sqlx::query("SELECT id FROM skills WHERE is_central = 1")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(rows
-        .iter()
-        .map(|row| row.get::<String, _>("id"))
-        .collect::<HashSet<_>>())
-}
-
 async fn build_preview_skills(
     pool: &DbPool,
+    central_root: &Path,
     candidates: &[RemoteSkillCandidate],
 ) -> Result<Vec<GitHubSkillPreview>, String> {
     let mut skills = Vec::with_capacity(candidates.len());
     for candidate in candidates {
+        let target_dir = central_root.join(&candidate.skill_id);
         let existing = db::get_skill_by_id(pool, &candidate.skill_id).await?;
-        let conflict = existing.and_then(|existing| {
-            if existing.is_central {
-                Some(GitHubSkillConflict {
-                    existing_skill_id: existing.id,
-                    existing_name: existing.name,
-                    existing_canonical_path: existing.canonical_path,
-                    proposed_skill_id: candidate.skill_id.clone(),
-                    proposed_name: candidate.skill_name.clone(),
-                })
-            } else {
-                None
+        let conflict = match existing {
+            // 비중앙 레코드는 설치 전에 항상 막히므로 그대로 보고한다.
+            Some(existing) if !existing.is_central => {
+                Some(conflict_from_record(candidate, &existing))
             }
-        });
+            Some(existing) => Some(central_target_conflict(candidate, &existing, &target_dir)),
+            None => unmanaged_target_conflict(candidate, &target_dir),
+        };
 
         skills.push(GitHubSkillPreview {
             source_path: candidate.source_path.clone(),
@@ -624,6 +1037,87 @@ async fn build_preview_skills(
         });
     }
     Ok(skills)
+}
+
+/// 중앙 레코드가 있어도 실제 대상 자리까지 확인한다. 레코드가 소유하지 않은
+/// 링크나 폴더가 자리를 차지하면 설치가 막히므로 미리보기도 같은 이유를 보고한다.
+fn central_target_conflict(
+    candidate: &RemoteSkillCandidate,
+    existing: &Skill,
+    target_dir: &Path,
+) -> GitHubSkillConflict {
+    if !existing_target_is_unsafe(target_dir, Some(existing)) {
+        return conflict_from_record(candidate, existing);
+    }
+    GitHubSkillConflict {
+        existing_skill_id: existing.id.clone(),
+        existing_name: existing.name.clone(),
+        existing_canonical_path: existing.canonical_path.clone(),
+        proposed_skill_id: candidate.skill_id.clone(),
+        proposed_name: candidate.skill_name.clone(),
+        conflict_kind: GitHubSkillConflictKind::UnmanagedPath,
+        existing_path: target_dir.to_string_lossy().into_owned(),
+    }
+}
+
+/// 기존 레코드가 있으면 중앙/비중앙을 구분해 보고한다.
+fn conflict_from_record(candidate: &RemoteSkillCandidate, existing: &Skill) -> GitHubSkillConflict {
+    GitHubSkillConflict {
+        existing_skill_id: existing.id.clone(),
+        existing_name: existing.name.clone(),
+        existing_canonical_path: existing.canonical_path.clone(),
+        proposed_skill_id: candidate.skill_id.clone(),
+        proposed_name: candidate.skill_name.clone(),
+        conflict_kind: if existing.is_central {
+            GitHubSkillConflictKind::Central
+        } else {
+            GitHubSkillConflictKind::NonCentral
+        },
+        existing_path: existing_instance_path(existing)
+            .to_string_lossy()
+            .into_owned(),
+    }
+}
+
+/// 레코드가 없는 폴더나 심볼릭 링크가 대상 자리를 차지한 경우.
+fn unmanaged_target_conflict(
+    candidate: &RemoteSkillCandidate,
+    target_dir: &Path,
+) -> Option<GitHubSkillConflict> {
+    std::fs::symlink_metadata(target_dir).ok()?;
+
+    Some(GitHubSkillConflict {
+        existing_skill_id: candidate.skill_id.clone(),
+        existing_name: candidate.skill_directory_name.clone(),
+        existing_canonical_path: None,
+        proposed_skill_id: candidate.skill_id.clone(),
+        proposed_name: candidate.skill_name.clone(),
+        conflict_kind: GitHubSkillConflictKind::UnmanagedPath,
+        existing_path: target_dir.to_string_lossy().into_owned(),
+    })
+}
+
+/// 대상 자리에 있는 것이 교체 불가능한지 판단한다. 심볼릭 링크(끊긴 링크 포함)와
+/// 파일, 그리고 어떤 중앙 레코드도 소유하지 않은 폴더는 교체 대상이 아니다.
+/// 설치 전 검사와 미리보기가 같은 기준을 쓰도록 여기서만 판단한다.
+fn existing_target_is_unsafe(target_dir: &Path, record: Option<&Skill>) -> bool {
+    let metadata = match std::fs::symlink_metadata(target_dir) {
+        Ok(metadata) => metadata,
+        Err(_) => return false,
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return true;
+    }
+    !record.is_some_and(|record| target_is_owned_by_record(record, target_dir))
+}
+
+/// 중앙 레코드가 이 대상 폴더를 소유하는지 판단한다.
+fn target_is_owned_by_record(record: &Skill, target_dir: &Path) -> bool {
+    record.is_central
+        && record
+            .canonical_path
+            .as_deref()
+            .is_some_and(|path| paths_equivalent(path, target_dir))
 }
 
 pub(crate) async fn resolve_repo_ref(
@@ -673,6 +1167,43 @@ pub(crate) async fn resolve_repo_ref(
         branch,
         normalized_url: format!("https://github.com/{owner}/{repo}"),
     })
+}
+
+/// 브랜치 끝을 불변 커밋으로 확정한다. 내려받기와 출처 기록에 함께 쓴다.
+async fn resolve_repo_commit_oid(
+    repo: &GitHubRepoRef,
+    auth_token: Option<&str>,
+) -> Result<String, String> {
+    let client = github_client()?;
+    let response = send_github_request_with_fallback(
+        &client,
+        GitHubFetchSurface::Api,
+        |endpoint| {
+            github_endpoint_url(
+                endpoint,
+                GitHubFetchSurface::Api,
+                &format!("/repos/{}/{}/commits/{}", repo.owner, repo.repo, repo.branch),
+            )
+        },
+        "Failed to resolve the repository commit",
+        auth_token,
+    )
+    .await?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub ref lookup returned HTTP {}",
+            response.status()
+        ));
+    }
+
+    let payload: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    payload
+        .get("sha")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "GitHub did not return a commit SHA".to_string())
 }
 
 pub(crate) async fn github_direct_auth_from_settings(
@@ -1441,7 +1972,120 @@ mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
     use std::collections::HashMap;
+    use sqlx::Row;
     use tempfile::tempdir;
+
+    fn import_repo() -> GitHubRepoRef {
+        GitHubRepoRef {
+            owner: "anthropics".to_string(),
+            repo: "skills".to_string(),
+            branch: "main".to_string(),
+            normalized_url: "https://github.com/anthropics/skills".to_string(),
+        }
+    }
+
+    /// 중앙 스킬 폴더를 임시 디렉터리로 돌린다.
+    async fn setup_central_dir(pool: &DbPool) -> tempfile::TempDir {
+        let dir = tempdir().expect("central");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(dir.path().to_string_lossy().into_owned())
+            .execute(pool)
+            .await
+            .expect("update central");
+        dir
+    }
+
+    fn import_selection(
+        source_path: &str,
+        resolution: DuplicateResolution,
+    ) -> GitHubSkillImportSelection {
+        GitHubSkillImportSelection {
+            source_path: source_path.to_string(),
+            resolution,
+            renamed_skill_id: None,
+        }
+    }
+
+    fn rename_import_selection(
+        source_path: &str,
+        renamed_skill_id: &str,
+    ) -> GitHubSkillImportSelection {
+        GitHubSkillImportSelection {
+            source_path: source_path.to_string(),
+            resolution: DuplicateResolution::Rename,
+            renamed_skill_id: Some(renamed_skill_id.to_string()),
+        }
+    }
+
+    /// 레코드와 실제 폴더를 함께 만든다.
+    async fn seed_skill_record(pool: &DbPool, id: &str, dir: &Path, is_central: bool, body: &str) {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        std::fs::write(dir.join("SKILL.md"), body).expect("write skill");
+        db::upsert_skill(
+            pool,
+            &Skill {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: Some("existing".to_string()),
+                file_path: dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: Some(dir.to_string_lossy().into_owned()),
+                is_central,
+                source: Some("local".to_string()),
+                content: None,
+                scanned_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .expect("upsert skill");
+    }
+
+    /// 네트워크 없이 실제 설치 경로를 실행한다.
+    async fn install_snapshot(
+        pool: &DbPool,
+        snapshot: GitHubRepoSnapshot,
+        selections: Vec<GitHubSkillImportSelection>,
+    ) -> Result<GitHubRepoImportResult, GitHubImportError> {
+        let repo = import_repo();
+        let candidates = build_repo_skill_candidates_from_snapshot(&repo, &snapshot)
+            .expect("build candidates");
+        install_repo_skills_from_snapshot(
+            pool,
+            RepoSnapshotImportRequest {
+                repo,
+                commit_oid: None,
+                snapshot,
+                candidates,
+                selections,
+            },
+            None,
+        )
+        .await
+    }
+
+    fn import_failure(error: GitHubImportError) -> GitHubImportFailure {
+        match error {
+            GitHubImportError::Failure(failure) => *failure,
+            GitHubImportError::Message(message) => {
+                panic!("expected structured failure, got message: {message}")
+            }
+        }
+    }
+
+    fn import_error_message(error: &GitHubImportError) -> String {
+        match error {
+            GitHubImportError::Message(message) => message.clone(),
+            GitHubImportError::Failure(failure) => failure.message.clone(),
+        }
+    }
+
+    fn central_entries(root: &Path) -> Vec<String> {
+        let mut entries = std::fs::read_dir(root)
+            .expect("read central")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        entries.sort();
+        entries
+    }
 
     async fn setup_test_db() -> DbPool {
         let dir = tempdir().expect("tempdir");
@@ -1711,7 +2355,7 @@ mod tests {
             .expect("candidates");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, &candidates)
+            skills: build_preview_skills(&pool, central_root.path(), &candidates)
                 .await
                 .expect("preview skills"),
         };
@@ -1724,6 +2368,15 @@ mod tests {
             .and_then(|skill| skill.conflict.clone())
             .expect("conflict");
         assert_eq!(conflict.existing_skill_id, "twitterapi-io");
+        assert_eq!(conflict.conflict_kind, GitHubSkillConflictKind::Central);
+        assert_eq!(
+            conflict.existing_path,
+            existing_dir.to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            conflict.existing_canonical_path.as_deref(),
+            Some(existing_dir.to_string_lossy().into_owned().as_str())
+        );
 
         let central_entries = std::fs::read_dir(central_root.path())
             .expect("read dir")
@@ -1734,134 +2387,98 @@ mod tests {
     #[tokio::test]
     async fn import_repo_skills_honors_skip_rename_and_overwrite() {
         let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let planner_dir = central_root.path().join("agent-planner");
+        let planner_original = sample_frontmatter("Agent Planner", "original planner");
+        seed_skill_record(&pool, "agent-planner", &planner_dir, true, &planner_original).await;
+
+        let commit_dir = central_root.path().join("commit");
+        let commit_original = sample_frontmatter("Commit", "original commit");
+        seed_skill_record(&pool, "commit", &commit_dir, true, &commit_original).await;
+
+        let review_dir = central_root.path().join("code-review");
+        let review_original = sample_frontmatter("Code Review", "original review");
+        seed_skill_record(&pool, "code-review", &review_dir, true, &review_original).await;
+
         let snapshot = multi_skill_snapshot();
-        let repo = GitHubRepoRef {
-            owner: "anthropics".to_string(),
-            repo: "skills".to_string(),
-            branch: "main".to_string(),
-            normalized_url: "https://github.com/anthropics/skills".to_string(),
-        };
-
-        let candidates =
-            build_repo_skill_candidates_from_snapshot(&repo, &snapshot).expect("candidates");
-
-        let agent_planner = candidates
-            .iter()
-            .find(|candidate| candidate.source_path == "skills/agent-planner")
-            .expect("agent planner");
-        let commit = candidates
-            .iter()
-            .find(|candidate| candidate.source_path == "skills/commit")
-            .expect("commit");
-        let code_review = candidates
-            .iter()
-            .find(|candidate| candidate.source_path == "skills/code-review")
-            .expect("code review");
-
-        db::upsert_skill(
+        let result = install_snapshot(
             &pool,
-            &Skill {
-                id: agent_planner.skill_id.clone(),
-                name: "Agent Planner".to_string(),
-                description: Some("existing".to_string()),
-                file_path: "/tmp/agent-planner/SKILL.md".to_string(),
-                canonical_path: Some("/tmp/agent-planner".to_string()),
-                is_central: true,
-                source: Some("local".to_string()),
-                content: None,
-                scanned_at: Utc::now().to_rfc3339(),
-            },
+            snapshot.clone(),
+            vec![
+                rename_import_selection("skills/agent-planner", "agent-planner-imported"),
+                import_selection("skills/commit", DuplicateResolution::Skip),
+                import_selection("skills/code-review", DuplicateResolution::Overwrite),
+            ],
         )
         .await
-        .expect("seed rename conflict");
-        db::upsert_skill(
-            &pool,
-            &Skill {
-                id: commit.skill_id.clone(),
-                name: "Commit".to_string(),
-                description: Some("existing".to_string()),
-                file_path: "/tmp/commit/SKILL.md".to_string(),
-                canonical_path: Some("/tmp/commit".to_string()),
-                is_central: true,
-                source: Some("local".to_string()),
-                content: None,
-                scanned_at: Utc::now().to_rfc3339(),
-            },
-        )
-        .await
-        .expect("seed skip conflict");
-        db::upsert_skill(
-            &pool,
-            &Skill {
-                id: code_review.skill_id.clone(),
-                name: "Code Review".to_string(),
-                description: Some("existing".to_string()),
-                file_path: "/tmp/code-review/SKILL.md".to_string(),
-                canonical_path: Some("/tmp/code-review".to_string()),
-                is_central: true,
-                source: Some("local".to_string()),
-                content: None,
-                scanned_at: Utc::now().to_rfc3339(),
-            },
-        )
-        .await
-        .expect("seed overwrite conflict");
+        .expect("import from snapshot");
 
-        let mut occupied = current_central_skill_ids(&pool).await.expect("occupied");
-        assert!(occupied.contains(&agent_planner.skill_id));
-        assert!(occupied.contains(&commit.skill_id));
-        assert!(occupied.contains(&code_review.skill_id));
+        let imported_ids = result
+            .imported_skills
+            .iter()
+            .map(|summary| summary.imported_skill_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            imported_ids,
+            vec![
+                "agent-planner-imported".to_string(),
+                "code-review".to_string()
+            ]
+        );
+        assert_eq!(result.skipped_skills, vec!["skills/commit".to_string()]);
 
-        let rename_target = sanitize_skill_id("agent-planner-imported").expect("rename target");
-        assert!(
-            !occupied.contains(&rename_target),
-            "rename target should be available before import"
+        // 건너뛴 스킬과 이름을 바꾼 원본은 그대로 남는다.
+        assert_eq!(
+            std::fs::read_to_string(commit_dir.join("SKILL.md")).expect("read skipped"),
+            commit_original
         );
-        occupied.insert(rename_target.clone());
-
-        assert!(
-            occupied.contains(&rename_target),
-            "rename should reserve the requested canonical id"
+        assert_eq!(
+            std::fs::read_to_string(planner_dir.join("SKILL.md")).expect("read renamed source"),
+            planner_original
         );
-        assert!(
-            occupied.contains(&code_review.skill_id),
-            "overwrite keeps the original canonical id occupied"
+        // 덮어쓴 중앙 스킬은 저장소 내용으로 교체된다.
+        let review_bytes = snapshot
+            .files
+            .get("skills/code-review/SKILL.md")
+            .expect("review bytes");
+        assert_eq!(
+            std::fs::read(review_dir.join("SKILL.md"))
+                .expect("read overwritten")
+                .as_slice(),
+            review_bytes.as_slice()
         );
-        assert!(
-            occupied.contains(&commit.skill_id),
-            "skip leaves the existing canonical id occupied without needing a new id"
+        assert_eq!(
+            central_entries(central_root.path()),
+            vec![
+                "agent-planner".to_string(),
+                "agent-planner-imported".to_string(),
+                "code-review".to_string(),
+                "commit".to_string()
+            ]
         );
     }
 
     #[tokio::test]
-    async fn import_invalid_repo_leaves_central_storage_unchanged() {
+    async fn blocked_import_leaves_central_storage_unchanged() {
         let pool = setup_test_db().await;
-        let central_root = tempdir().expect("central");
-        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
-            .bind(central_root.path().to_string_lossy().into_owned())
-            .execute(&pool)
-            .await
-            .expect("update central");
+        let central_root = setup_central_dir(&pool).await;
 
-        let result = import_github_repo_skills_impl(
+        let error = install_snapshot(
             &pool,
-            "https://github.com/example/definitely-missing-repo",
-            vec![GitHubSkillImportSelection {
-                source_path: "skills/foo".to_string(),
-                resolution: DuplicateResolution::Skip,
-                renamed_skill_id: None,
-            }],
-            None,
+            multi_skill_snapshot(),
+            vec![import_selection(
+                "skills/missing-skill",
+                DuplicateResolution::Overwrite,
+            )],
         )
-        .await;
+        .await
+        .expect_err("unknown selection must be blocked");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+        assert_eq!(failure.source_path.as_deref(), Some("skills/missing-skill"));
 
-        assert!(result.is_err());
-        assert_eq!(
-            std::fs::read_dir(central_root.path())
-                .expect("read central")
-                .count(),
-            0
-        );
+        assert!(central_entries(central_root.path()).is_empty());
         let central_skills = db::get_central_skills(&pool).await.expect("central skills");
         assert!(central_skills.is_empty());
     }
@@ -1895,7 +2512,7 @@ mod tests {
 
         let error = result.expect_err("denied import should fail");
         assert!(
-            !error.trim().is_empty(),
+            !import_error_message(&error).is_empty(),
             "failure should return an error message"
         );
 
@@ -1915,6 +2532,623 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_flags_non_central_and_unmanaged_targets() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let external_dir = tempdir().expect("external");
+        seed_skill_record(
+            &pool,
+            "commit",
+            external_dir.path(),
+            false,
+            &sample_frontmatter("Commit", "existing"),
+        )
+        .await;
+
+        let unmanaged_dir = central_root.path().join("agent-planner");
+        std::fs::create_dir_all(&unmanaged_dir).expect("mkdir");
+        std::fs::write(unmanaged_dir.join("SKILL.md"), "unmanaged").expect("write");
+
+        let repo = import_repo();
+        let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
+            .expect("candidates");
+        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
+            .await
+            .expect("preview");
+
+        let commit = preview
+            .iter()
+            .find(|skill| skill.skill_id == "commit")
+            .expect("commit preview");
+        let conflict = commit.conflict.as_ref().expect("non-central conflict");
+        assert_eq!(conflict.conflict_kind, GitHubSkillConflictKind::NonCentral);
+        assert_eq!(conflict.existing_skill_id, "commit");
+        assert_eq!(
+            conflict.existing_path,
+            external_dir.path().to_string_lossy().into_owned()
+        );
+
+        let planner = preview
+            .iter()
+            .find(|skill| skill.skill_id == "agent-planner")
+            .expect("planner preview");
+        let conflict = planner.conflict.as_ref().expect("unmanaged conflict");
+        assert_eq!(
+            conflict.conflict_kind,
+            GitHubSkillConflictKind::UnmanagedPath
+        );
+        assert_eq!(
+            conflict.existing_path,
+            unmanaged_dir.to_string_lossy().into_owned()
+        );
+    }
+
+    #[tokio::test]
+    async fn preview_marks_unsafe_central_target_as_unmanaged_path() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let repo = import_repo();
+        let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
+            .expect("candidates");
+
+        // 레코드가 소유한 폴더는 중앙 충돌로 보고한다.
+        let owned_dir = central_root.path().join("agent-planner");
+        seed_skill_record(
+            &pool,
+            "agent-planner",
+            &owned_dir,
+            true,
+            &sample_frontmatter("Agent Planner", "existing"),
+        )
+        .await;
+        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
+            .await
+            .expect("preview");
+        let conflict = preview
+            .iter()
+            .find(|skill| skill.skill_id == "agent-planner")
+            .and_then(|skill| skill.conflict.clone())
+            .expect("owned conflict");
+        assert_eq!(conflict.conflict_kind, GitHubSkillConflictKind::Central);
+        assert_eq!(
+            conflict.existing_path,
+            owned_dir.to_string_lossy().into_owned()
+        );
+
+        // 중앙 레코드가 있어도 실제 대상이 그 레코드 소유가 아니면 교체 불가로 보고한다.
+        let external_dir = tempdir().expect("external");
+        seed_skill_record(
+            &pool,
+            "commit",
+            external_dir.path(),
+            true,
+            &sample_frontmatter("Commit", "existing"),
+        )
+        .await;
+        let mismatched_dir = central_root.path().join("commit");
+        std::fs::create_dir_all(&mismatched_dir).expect("mkdir");
+        std::fs::write(mismatched_dir.join("SKILL.md"), "mismatched").expect("write");
+
+        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
+            .await
+            .expect("preview");
+        let conflict = preview
+            .iter()
+            .find(|skill| skill.skill_id == "commit")
+            .and_then(|skill| skill.conflict.clone())
+            .expect("mismatched conflict");
+        assert_eq!(
+            conflict.conflict_kind,
+            GitHubSkillConflictKind::UnmanagedPath
+        );
+        assert_eq!(conflict.existing_skill_id, "commit");
+        assert_eq!(
+            conflict.existing_path,
+            mismatched_dir.to_string_lossy().into_owned()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preview_marks_symlinked_central_target_as_unmanaged_path() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let external_dir = tempdir().expect("external");
+        seed_skill_record(
+            &pool,
+            "agent-planner",
+            external_dir.path(),
+            true,
+            &sample_frontmatter("Agent Planner", "existing"),
+        )
+        .await;
+        let linked_dir = central_root.path().join("agent-planner");
+        std::os::unix::fs::symlink(external_dir.path(), &linked_dir).expect("symlink");
+
+        let repo = import_repo();
+        let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
+            .expect("candidates");
+        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
+            .await
+            .expect("preview");
+        let conflict = preview
+            .iter()
+            .find(|skill| skill.skill_id == "agent-planner")
+            .and_then(|skill| skill.conflict.clone())
+            .expect("symlink conflict");
+        assert_eq!(
+            conflict.conflict_kind,
+            GitHubSkillConflictKind::UnmanagedPath
+        );
+        assert_eq!(
+            conflict.existing_path,
+            linked_dir.to_string_lossy().into_owned()
+        );
+    }
+
+    #[test]
+    fn restore_previous_target_reports_preserved_backup_when_target_is_occupied() {
+        let root = tempdir().expect("root");
+        let container = root.path().join(".planner.skillsmanage-old-test");
+        let backup_dir = container.join("planner");
+        std::fs::create_dir_all(&backup_dir).expect("mkdir backup");
+        std::fs::write(backup_dir.join("SKILL.md"), "original").expect("write backup");
+
+        // 대상 자리가 막혀 있으면 되돌리지 못하고 백업이 남아 있는 경로를 알려 준다.
+        let target_dir = root.path().join("planner");
+        std::fs::write(&target_dir, "blocking file").expect("write blocker");
+        let note = restore_previous_target(&Some(container.clone()), "planner", &target_dir)
+            .expect("recovery note");
+        assert!(note.contains("preserved at"));
+        assert!(note.contains(&backup_dir.to_string_lossy().into_owned()));
+        assert_eq!(
+            std::fs::read_to_string(backup_dir.join("SKILL.md")).expect("backup kept"),
+            "original"
+        );
+
+        // 대상 자리가 비어 있으면 제자리로 되돌리고 백업 컨테이너를 지운다.
+        std::fs::remove_file(&target_dir).expect("remove blocker");
+        assert!(
+            restore_previous_target(&Some(container.clone()), "planner", &target_dir).is_none()
+        );
+        assert_eq!(
+            std::fs::read_to_string(target_dir.join("SKILL.md")).expect("restored"),
+            "original"
+        );
+        assert!(std::fs::symlink_metadata(&container).is_err());
+        assert!(restore_previous_target(&None, "planner", &target_dir).is_none());
+    }
+
+    #[test]
+    fn remove_imported_target_reports_when_the_new_files_stay() {
+        let root = tempdir().expect("root");
+        let missing_dir = root.path().join("planner");
+        assert!(remove_imported_target(&missing_dir).is_none());
+
+        std::fs::write(&missing_dir, "undeletable").expect("write file");
+        let note = remove_imported_target(&missing_dir).expect("cleanup note");
+        assert!(note.contains("could not be removed"));
+        assert!(note.contains(&missing_dir.to_string_lossy().into_owned()));
+    }
+
+    #[tokio::test]
+    async fn import_blocks_non_central_overwrite_before_writing() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let external_dir = tempdir().expect("external");
+        let original = sample_frontmatter("Commit", "original");
+        seed_skill_record(&pool, "commit", external_dir.path(), false, &original).await;
+
+        let error = install_snapshot(
+            &pool,
+            multi_skill_snapshot(),
+            vec![import_selection(
+                "skills/commit",
+                DuplicateResolution::Overwrite,
+            )],
+        )
+        .await
+        .expect_err("non-central overwrite must be blocked");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+        assert_eq!(failure.source_path.as_deref(), Some("skills/commit"));
+        assert_eq!(failure.skill_id.as_deref(), Some("commit"));
+        assert_eq!(
+            failure.existing_path.as_deref(),
+            external_dir.path().to_str()
+        );
+        assert!(failure.imported_skills.is_empty());
+        assert!(failure.skipped_skills.is_empty());
+        assert!(failure.message.contains("non-central"));
+
+        assert_eq!(
+            std::fs::read_to_string(external_dir.path().join("SKILL.md")).expect("read original"),
+            original
+        );
+        assert!(central_entries(central_root.path()).is_empty());
+        let record = db::get_skill_by_id(&pool, "commit")
+            .await
+            .expect("load record")
+            .expect("commit record");
+        assert!(!record.is_central);
+    }
+
+    #[tokio::test]
+    async fn import_blocks_rename_onto_non_central_id() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let external_dir = tempdir().expect("external");
+        seed_skill_record(
+            &pool,
+            "commit",
+            external_dir.path(),
+            false,
+            &sample_frontmatter("Commit", "original"),
+        )
+        .await;
+
+        let error = install_snapshot(
+            &pool,
+            multi_skill_snapshot(),
+            vec![rename_import_selection("skills/agent-planner", "commit")],
+        )
+        .await
+        .expect_err("rename onto a non-central id must be blocked");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+        assert_eq!(failure.skill_id.as_deref(), Some("commit"));
+        assert!(failure.message.contains("already in use"));
+
+        assert!(central_entries(central_root.path()).is_empty());
+        assert!(db::get_skill_by_id(&pool, "agent-planner")
+            .await
+            .expect("load record")
+            .is_none());
+        assert!(db::get_skill_by_id(&pool, "commit")
+            .await
+            .expect("load record")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn import_unique_rename_keeps_existing_files_records_and_installations() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let existing_dir = central_root.path().join("agent-planner");
+        let original = sample_frontmatter("Agent Planner", "original");
+        seed_skill_record(&pool, "agent-planner", &existing_dir, true, &original).await;
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "agent-planner".to_string(),
+                agent_id: "claude".to_string(),
+                installed_path: "/tmp/claude/agent-planner".to_string(),
+                link_type: "symlink".to_string(),
+                symlink_target: Some(existing_dir.to_string_lossy().into_owned()),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .expect("seed installation");
+
+        let snapshot = multi_skill_snapshot();
+        let result = install_snapshot(
+            &pool,
+            snapshot.clone(),
+            vec![rename_import_selection(
+                "skills/agent-planner",
+                "Agent Planner Imported",
+            )],
+        )
+        .await
+        .expect("unique rename must import");
+
+        assert_eq!(result.imported_skills.len(), 1);
+        let summary = &result.imported_skills[0];
+        assert_eq!(summary.imported_skill_id, "agent-planner-imported");
+        assert_eq!(summary.original_skill_id, "agent-planner");
+        assert_eq!(summary.resolution, DuplicateResolution::Rename);
+        assert!(result.skipped_skills.is_empty());
+
+        // 기존 파일, 레코드, 설치 연결은 그대로 남는다.
+        assert_eq!(
+            std::fs::read_to_string(existing_dir.join("SKILL.md")).expect("read original"),
+            original
+        );
+        let existing_record = db::get_skill_by_id(&pool, "agent-planner")
+            .await
+            .expect("load record")
+            .expect("existing record");
+        assert!(existing_record.is_central);
+        assert_eq!(
+            existing_record.canonical_path.as_deref(),
+            Some(existing_dir.to_string_lossy().into_owned().as_str())
+        );
+        let installations = db::get_skill_installations(&pool, "agent-planner")
+            .await
+            .expect("load installations");
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0].agent_id, "claude");
+
+        // 새 스킬은 저장소 원본 바이트를 그대로 쓴다.
+        let new_dir = central_root.path().join("agent-planner-imported");
+        let repo_bytes = snapshot
+            .files
+            .get("skills/agent-planner/SKILL.md")
+            .expect("repo skill bytes");
+        assert_eq!(
+            std::fs::read(new_dir.join("SKILL.md"))
+                .expect("read new skill")
+                .as_slice(),
+            repo_bytes.as_slice()
+        );
+        let new_record = db::get_skill_by_id(&pool, "agent-planner-imported")
+            .await
+            .expect("load record")
+            .expect("new record");
+        assert!(new_record.is_central);
+        assert_eq!(new_record.source.as_deref(), Some("github:anthropics/skills"));
+        assert_eq!(
+            new_record.canonical_path.as_deref(),
+            Some(new_dir.to_string_lossy().into_owned().as_str())
+        );
+
+        // 스테이징과 백업 디렉터리가 남지 않는다.
+        assert_eq!(
+            central_entries(central_root.path()),
+            vec![
+                "agent-planner".to_string(),
+                "agent-planner-imported".to_string()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn import_records_repository_origin_for_imported_skill() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let result = install_snapshot(
+            &pool,
+            multi_skill_snapshot(),
+            vec![import_selection(
+                "skills/commit",
+                DuplicateResolution::Overwrite,
+            )],
+        )
+        .await
+        .expect("import from snapshot");
+        assert_eq!(result.imported_skills.len(), 1);
+
+        let target_dir = central_root.path().join("commit");
+        let row = sqlx::query(
+            "SELECT owner, repo, source_path, ref_name, baseline_state, base_commit_oid, target_path
+             FROM skill_origins WHERE skill_id = ?",
+        )
+        .bind("commit")
+        .fetch_one(&pool)
+        .await
+        .expect("origin row");
+
+        assert_eq!(row.get::<String, _>("owner"), "anthropics");
+        assert_eq!(row.get::<String, _>("repo"), "skills");
+        assert_eq!(row.get::<String, _>("source_path"), "skills/commit");
+        assert_eq!(row.get::<String, _>("ref_name"), "main");
+        assert_eq!(row.get::<String, _>("baseline_state"), "unknown");
+        assert!(row.get::<Option<String>, _>("base_commit_oid").is_none());
+        assert_eq!(
+            Path::new(&row.get::<String, _>("target_path")),
+            target_dir.as_path()
+        );
+    }
+
+    #[tokio::test]
+    async fn import_blocks_intra_batch_target_collisions_in_both_orders() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let duplicate_renames = vec![
+            vec![
+                rename_import_selection("skills/agent-planner", "commit-imported"),
+                rename_import_selection("skills/commit", "commit-imported"),
+            ],
+            vec![
+                rename_import_selection("skills/commit", "commit-imported"),
+                rename_import_selection("skills/agent-planner", "commit-imported"),
+            ],
+        ];
+        for selections in duplicate_renames {
+            let error = install_snapshot(&pool, multi_skill_snapshot(), selections)
+                .await
+                .expect_err("duplicate targets must be blocked");
+            let failure = import_failure(error);
+            assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+            assert!(failure.message.contains("more than one skill"));
+            assert!(failure.imported_skills.is_empty());
+            assert!(central_entries(central_root.path()).is_empty());
+        }
+
+        // 앞선 rename이 예약한 대상 id를 overwrite가 차지하지 못한다.
+        let rename_then_overwrite = vec![
+            rename_import_selection("skills/agent-planner", "commit"),
+            import_selection("skills/commit", DuplicateResolution::Overwrite),
+        ];
+        let overwrite_then_rename = vec![
+            import_selection("skills/commit", DuplicateResolution::Overwrite),
+            rename_import_selection("skills/agent-planner", "commit"),
+        ];
+        for selections in [rename_then_overwrite, overwrite_then_rename] {
+            let error = install_snapshot(&pool, multi_skill_snapshot(), selections)
+                .await
+                .expect_err("reserved target must not be overwritten");
+            let failure = import_failure(error);
+            assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+            assert!(failure.imported_skills.is_empty());
+            assert!(central_entries(central_root.path()).is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn import_leaves_unmanaged_directory_untouched() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let unmanaged_dir = central_root.path().join("agent-planner");
+        std::fs::create_dir_all(&unmanaged_dir).expect("mkdir");
+        let sentinel = unmanaged_dir.join("SKILL.md");
+        std::fs::write(&sentinel, "unmanaged content").expect("write");
+
+        let error = install_snapshot(
+            &pool,
+            multi_skill_snapshot(),
+            vec![import_selection(
+                "skills/agent-planner",
+                DuplicateResolution::Overwrite,
+            )],
+        )
+        .await
+        .expect_err("unmanaged directory must be blocked");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+        assert_eq!(failure.skill_id.as_deref(), Some("agent-planner"));
+        assert_eq!(
+            failure.existing_path.as_deref(),
+            unmanaged_dir.to_str()
+        );
+        assert!(failure.message.contains("rename the imported skill id"));
+
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).expect("read sentinel"),
+            "unmanaged content"
+        );
+        assert_eq!(
+            central_entries(central_root.path()),
+            vec!["agent-planner".to_string()]
+        );
+        assert!(db::get_skill_by_id(&pool, "agent-planner")
+            .await
+            .expect("load record")
+            .is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn import_leaves_broken_symlink_target_untouched() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let missing_target = central_root.path().join("missing-target");
+        let broken_link = central_root.path().join("commit");
+        std::os::unix::fs::symlink(&missing_target, &broken_link).expect("symlink");
+
+        let error = install_snapshot(
+            &pool,
+            multi_skill_snapshot(),
+            vec![import_selection(
+                "skills/commit",
+                DuplicateResolution::Overwrite,
+            )],
+        )
+        .await
+        .expect_err("broken symlink target must be blocked");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
+        assert_eq!(failure.existing_path.as_deref(), broken_link.to_str());
+        assert!(failure.message.contains("symbolic link"));
+
+        let metadata = std::fs::symlink_metadata(&broken_link).expect("symlink metadata");
+        assert!(metadata.file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_link(&broken_link).expect("read link"),
+            missing_target
+        );
+    }
+
+    #[tokio::test]
+    async fn import_late_failure_keeps_earlier_imports_and_restores_failed_target() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+
+        let planner_dir = central_root.path().join("agent-planner");
+        let planner_original = sample_frontmatter("Agent Planner", "original");
+        seed_skill_record(&pool, "agent-planner", &planner_dir, true, &planner_original).await;
+
+        let commit_dir = central_root.path().join("commit");
+        let commit_original = sample_frontmatter("Commit", "original");
+        seed_skill_record(&pool, "commit", &commit_dir, true, &commit_original).await;
+
+        // 두 번째 스킬의 저장 단계만 실패시킨다.
+        sqlx::query(
+            "CREATE TRIGGER github_import_fail_commit BEFORE INSERT ON skills
+             WHEN NEW.id = 'commit'
+             BEGIN SELECT RAISE(ABORT, 'simulated persistence failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("create trigger");
+
+        let snapshot = multi_skill_snapshot();
+        let error = install_snapshot(
+            &pool,
+            snapshot.clone(),
+            vec![
+                import_selection("skills/agent-planner", DuplicateResolution::Overwrite),
+                import_selection("skills/commit", DuplicateResolution::Overwrite),
+            ],
+        )
+        .await
+        .expect_err("second skill must fail");
+        let failure = import_failure(error);
+        assert_eq!(failure.code, GitHubImportFailureCode::Failed);
+        assert_eq!(failure.skill_id.as_deref(), Some("commit"));
+        assert_eq!(failure.source_path.as_deref(), Some("skills/commit"));
+        assert_eq!(failure.imported_skills.len(), 1);
+        assert_eq!(failure.imported_skills[0].imported_skill_id, "agent-planner");
+        assert_eq!(
+            failure.imported_skills[0].resolution,
+            DuplicateResolution::Overwrite
+        );
+        assert!(failure.skipped_skills.is_empty());
+
+        // 되돌리기가 성공했으면 보존 안내를 남기지 않는다.
+        assert!(!failure.message.contains("preserved at"));
+        assert!(!failure.message.contains("could not be removed"));
+
+        // 앞서 저장된 스킬은 새 내용, 실패한 스킬은 원래 내용을 유지한다.
+        let planner_bytes = snapshot
+            .files
+            .get("skills/agent-planner/SKILL.md")
+            .expect("planner bytes");
+        assert_eq!(
+            std::fs::read(planner_dir.join("SKILL.md"))
+                .expect("read planner")
+                .as_slice(),
+            planner_bytes.as_slice()
+        );
+        assert_eq!(
+            std::fs::read_to_string(commit_dir.join("SKILL.md")).expect("read commit"),
+            commit_original
+        );
+        assert_eq!(
+            central_entries(central_root.path()),
+            vec!["agent-planner".to_string(), "commit".to_string()]
+        );
+
+        // DB도 실제 완료 상태와 일치한다.
+        let planner_record = db::get_skill_by_id(&pool, "agent-planner")
+            .await
+            .expect("load record")
+            .expect("planner record");
+        assert_eq!(planner_record.source.as_deref(), Some("github:anthropics/skills"));
+        let commit_record = db::get_skill_by_id(&pool, "commit")
+            .await
+            .expect("load record")
+            .expect("commit record");
+        assert_eq!(commit_record.source.as_deref(), Some("local"));
+    }
+
+    #[tokio::test]
     async fn preview_top_level_skills_directory_discovers_candidates() {
         let pool = setup_test_db().await;
         let repo = GitHubRepoRef {
@@ -1925,9 +3159,10 @@ mod tests {
         };
         let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
             .expect("candidates");
+        let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, &candidates)
+            skills: build_preview_skills(&pool, central_root.path(), &candidates)
                 .await
                 .expect("skills"),
         };
@@ -1974,9 +3209,10 @@ mod tests {
         assert_eq!(system.skill_directory_name, "skill-creator");
         assert_eq!(system.skill_id, "skill-creator");
 
+        let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, &candidates)
+            skills: build_preview_skills(&pool, central_root.path(), &candidates)
                 .await
                 .expect("preview skills"),
         };

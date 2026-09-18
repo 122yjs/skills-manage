@@ -10,6 +10,8 @@ import {
   GitHubRepoImportResult,
   GitHubSkillImportSelection,
   GitHubImportProgressPayload,
+  GitHubImportFailure,
+  ImportedGitHubSkillSummary,
 } from "@/types";
 
 interface GitHubImportState {
@@ -19,6 +21,10 @@ interface GitHubImportState {
   importResult: GitHubRepoImportResult | null;
   previewedRepoUrl: string | null;
   error: string | null;
+  /** Preview-stage error, kept apart so an import failure never shows up as a preview error. */
+  previewError: string | null;
+  /** Structured import failure, kept after the request so the wizard can report exact state. */
+  importFailure: GitHubImportFailure | null;
   importProgress: GitHubImportProgressPayload | null;
   importStartedAt: number | null;
   skillMarkdown: Record<string, SkillMarkdownEntry>;
@@ -78,6 +84,7 @@ interface MarketplaceState {
     refresh?: boolean
   ) => Promise<void>;
   resetGitHubImport: () => void;
+  clearGitHubImportFailure: () => void;
   // skills.sh search
   searchSkillsSh: (query: string) => Promise<void>;
   installFromSkillsSh: (source: string, skillId: string) => Promise<void>;
@@ -90,6 +97,8 @@ const initialGitHubImportState = (): GitHubImportState => ({
   importResult: null,
   previewedRepoUrl: null,
   error: null,
+  previewError: null,
+  importFailure: null,
   importProgress: null,
   importStartedAt: null,
   skillMarkdown: {},
@@ -135,6 +144,78 @@ async function setupGitHubImportEventListeners(
       }));
     },
   );
+}
+
+const GITHUB_IMPORT_FAILURE_CODES: Record<string, true> = {
+  blocked: true,
+  failed: true,
+};
+
+function coerceImportErrorObject(error: unknown): Record<string, unknown> | null {
+  if (typeof error === "string") {
+    const trimmed = error.trim();
+    if (!trimmed.startsWith("{")) return null;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      return parsed && typeof parsed === "object"
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+  if (error instanceof Error) return coerceImportErrorObject(error.message);
+  return error && typeof error === "object"
+    ? (error as Record<string, unknown>)
+    : null;
+}
+
+function isImportedGitHubSkillSummary(
+  value: unknown,
+): value is ImportedGitHubSkillSummary {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.sourcePath === "string" &&
+    typeof record.importedSkillId === "string" &&
+    typeof record.skillName === "string"
+  );
+}
+
+/**
+ * Reads the structured failure the backend reports for a blocked or partially
+ * completed import. Legacy string errors (network, validation) return null so
+ * callers can keep their previous handling.
+ */
+export function toGitHubImportFailure(
+  error: unknown,
+): GitHubImportFailure | null {
+  const candidate = coerceImportErrorObject(error);
+  if (!candidate) return null;
+
+  const { code, message } = candidate;
+  if (typeof code !== "string" || GITHUB_IMPORT_FAILURE_CODES[code] !== true) {
+    return null;
+  }
+  if (typeof message !== "string") return null;
+
+  return {
+    code: code as GitHubImportFailure["code"],
+    message,
+    sourcePath:
+      typeof candidate.sourcePath === "string" ? candidate.sourcePath : null,
+    skillId: typeof candidate.skillId === "string" ? candidate.skillId : null,
+    existingPath:
+      typeof candidate.existingPath === "string" ? candidate.existingPath : null,
+    importedSkills: Array.isArray(candidate.importedSkills)
+      ? candidate.importedSkills.filter(isImportedGitHubSkillSummary)
+      : [],
+    skippedSkills: Array.isArray(candidate.skippedSkills)
+      ? candidate.skippedSkills.filter(
+          (value): value is string => typeof value === "string",
+        )
+      : [],
+  };
 }
 
 export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
@@ -317,6 +398,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           importResult: null,
           previewedRepoUrl: repoUrl,
           error,
+          previewError: error,
+          importFailure: null,
           importProgress: null,
           importStartedAt: null,
         },
@@ -332,6 +415,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         importResult: null,
         previewedRepoUrl: repoUrl,
         error: null,
+        previewError: null,
+        importFailure: null,
         importProgress: null,
         importStartedAt: null,
       },
@@ -349,6 +434,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           importResult: null,
           previewedRepoUrl: repoUrl,
           error: null,
+          previewError: null,
+          importFailure: null,
           importProgress: null,
           importStartedAt: null,
         },
@@ -363,6 +450,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           importResult: null,
           previewedRepoUrl: repoUrl,
           error: String(err),
+          previewError: String(err),
+          importFailure: null,
           importProgress: null,
           importStartedAt: null,
         },
@@ -379,6 +468,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           ...state.githubImport,
           isImporting: false,
           error,
+          importFailure: null,
           importProgress: null,
           importStartedAt: null,
         },
@@ -391,6 +481,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         ...state.githubImport,
         isImporting: true,
         error: null,
+        importFailure: null,
         importProgress: {
           phase: "preparing",
           currentSkill: null,
@@ -417,17 +508,20 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           isImporting: false,
           importResult,
           error: null,
+          importFailure: null,
           importProgress: null,
           importStartedAt: null,
         },
       }));
       return importResult;
     } catch (err) {
+      const importFailure = toGitHubImportFailure(err);
       set((state) => ({
         githubImport: {
           ...state.githubImport,
           isImporting: false,
-          error: String(err),
+          error: importFailure?.message ?? String(err),
+          importFailure,
           importProgress: null,
           importStartedAt: null,
         },
@@ -677,5 +771,14 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   resetGitHubImport: () => {
     cleanupGitHubImportAiSummaryListener();
     set({ githubImport: initialGitHubImportState() });
+  },
+
+  clearGitHubImportFailure: () => {
+    set((state) => ({
+      githubImport: {
+        ...state.githubImport,
+        importFailure: null,
+      },
+    }));
   },
 }));

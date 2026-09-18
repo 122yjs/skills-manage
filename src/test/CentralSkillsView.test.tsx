@@ -25,6 +25,8 @@ vi.mock("../stores/skillStore", () => ({
 
 vi.mock("../stores/marketplaceStore", () => ({
   useMarketplaceStore: vi.fn(),
+  toGitHubImportFailure: (error: unknown) =>
+    error && typeof error === "object" && "code" in error ? error : null,
 }));
 
 vi.mock("../stores/skillUsageStore", () => ({
@@ -1066,6 +1068,8 @@ describe("CentralSkillsView", () => {
                   existingSkillId: "frontend-design",
                   existingName: "frontend-design",
                   existingCanonicalPath: "/Users/test/.agents/skills/frontend-design",
+                  existingPath: "/Users/test/.agents/skills/frontend-design",
+                  conflictKind: "central",
                   proposedSkillId: "frontend-design",
                   proposedName: "frontend-design",
                 },

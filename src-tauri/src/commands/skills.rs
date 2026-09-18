@@ -14,6 +14,7 @@ use super::linker::{
 };
 use super::recovery;
 use super::scanner::{scan_skill_root, ScanDirectoryOptions};
+use super::skill_origin::{self, GitHubSkillOriginSummary};
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,9 @@ pub struct SkillWithLinks {
     pub read_only_agents: Vec<String>,
     /// 설치 대화상자에서 추가 설치가 필요 없는 출처를 보여준다.
     pub available_sources: BTreeMap<String, Vec<String>>,
+    /// 이 스킬의 실제 폴더에 연결된 GitHub 출처. 카드 배지용 요약이며 전체
+    /// 출처 정보는 `get_skill_origin`이 반환한다.
+    pub origin: Option<GitHubSkillOriginSummary>,
 }
 
 /// An installation record enriched with the `installed_at` timestamp for
@@ -890,7 +894,11 @@ pub async fn get_skills_by_agent(
     get_skills_by_agent_impl(&state.db, &agent_id).await
 }
 
-async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLinks, String> {
+async fn skill_with_links(
+    pool: &DbPool,
+    skill: db::Skill,
+    origin: Option<GitHubSkillOriginSummary>,
+) -> Result<SkillWithLinks, String> {
     let linked_agents: Vec<String> = db::get_skill_installations(pool, &skill.id)
         .await?
         .into_iter()
@@ -926,7 +934,30 @@ async fn skill_with_links(pool: &DbPool, skill: db::Skill) -> Result<SkillWithLi
         linked_agents,
         read_only_agents,
         available_sources,
+        origin,
     })
+}
+
+/// 스킬 카드 목록에 필요한 출처 요약을 한 번의 조회로 채웁니다.
+///
+/// 조회 키는 각 스킬의 실제 폴더 경로이므로 같은 이름의 다른 사본에는 출처가
+/// 붙지 않습니다.
+async fn skills_with_links(
+    pool: &DbPool,
+    skills: Vec<db::Skill>,
+) -> Result<Vec<SkillWithLinks>, String> {
+    let target_keys: Vec<String> = skills
+        .iter()
+        .map(|skill| skill_origin::origin_target_key(&skill_directory_path_buf(skill)))
+        .collect();
+    let origins = skill_origin::origin_summaries_for_targets(pool, &target_keys).await?;
+    let mut result = Vec::with_capacity(skills.len());
+    for (skill, target_key) in skills.into_iter().zip(target_keys) {
+        // 같은 물리 폴더를 가리키는 항목이 둘 이상이어도 모두 요약을 받는다.
+        let origin = origins.get(&target_key).cloned();
+        result.push(skill_with_links(pool, skill, origin).await?);
+    }
+    Ok(result)
 }
 
 fn scan_count_for_bundle(target: &CentralBundleTarget) -> usize {
@@ -984,20 +1015,17 @@ async fn central_bundle_preview_for_target(
 
     let bundle =
         central_skill_bundle_from_target(pool, &target, &skills, scanned_skill_count).await?;
+    let linked_skills = skills_with_links(pool, skills).await?;
     let mut affected_agents = BTreeSet::new();
     let mut skipped_read_only_agents = BTreeSet::new();
-    let mut skills_with_links = Vec::with_capacity(skills.len());
-
-    for skill in skills {
-        let linked = skill_with_links(pool, skill).await?;
+    for linked in &linked_skills {
         affected_agents.extend(linked.linked_agents.iter().cloned());
         skipped_read_only_agents.extend(linked.read_only_agents.iter().cloned());
-        skills_with_links.push(linked);
     }
 
     Ok(CentralSkillBundleDeletePreview {
         bundle,
-        skills: skills_with_links,
+        skills: linked_skills,
         affected_agents: affected_agents.into_iter().collect(),
         skipped_read_only_agents: skipped_read_only_agents.into_iter().collect(),
     })
@@ -1012,12 +1040,7 @@ async fn central_bundle_preview_for_target(
 pub async fn get_central_skills(state: State<'_, AppState>) -> Result<Vec<SkillWithLinks>, String> {
     let skills = db::get_central_skills(&state.db).await?;
 
-    let mut result = Vec::with_capacity(skills.len());
-    for skill in skills {
-        result.push(skill_with_links(&state.db, skill).await?);
-    }
-
-    Ok(result)
+    skills_with_links(&state.db, skills).await
 }
 
 pub async fn get_central_skill_bundles_impl(
@@ -1089,14 +1112,11 @@ pub async fn get_central_skill_bundle_detail_impl(
 
     let bundle =
         central_skill_bundle_from_target(pool, &target, &skills, scanned_skill_count).await?;
-    let mut skills_with_links = Vec::with_capacity(skills.len());
-    for skill in skills {
-        skills_with_links.push(skill_with_links(pool, skill).await?);
-    }
+    let linked_skills = skills_with_links(pool, skills).await?;
 
     Ok(CentralSkillBundleDetail {
         bundle,
-        skills: skills_with_links,
+        skills: linked_skills,
     })
 }
 
@@ -1222,6 +1242,21 @@ pub async fn delete_central_skill_bundle_impl(
         }
     }
 
+    // 폴더가 사라지는 동안에만 경로를 해석할 수 있으므로 삭제 전에 키를 모은다.
+    // 남겨 둔 바인딩은 같은 경로에 들어온 다음 스킬에 이전 저장소 출처를 붙인다.
+    // 심볼릭 링크 항목은 링크만 사라지고 내용은 남으므로 출처를 유지한다.
+    let mut origin_target_keys = Vec::new();
+    if !target.is_symlink {
+        for skill in &skills {
+            let dir = skill_directory_path_buf(skill);
+            if std::fs::symlink_metadata(&dir)
+                .is_ok_and(|metadata| !metadata.file_type().is_symlink())
+            {
+                origin_target_keys.push(skill_origin::origin_target_key(&dir));
+            }
+        }
+    }
+
     remove_central_bundle_target(&target)?;
 
     let mut removed_skill_ids = Vec::with_capacity(skills.len());
@@ -1229,6 +1264,7 @@ pub async fn delete_central_skill_bundle_impl(
         db::delete_central_skill_records(pool, &skill.id, &skill.name).await?;
         removed_skill_ids.push(skill.id.clone());
     }
+    skill_origin::discard_origin_bindings(pool, &origin_target_keys).await?;
 
     let removed_kind = target.removed_kind().to_string();
 
@@ -1326,8 +1362,16 @@ pub async fn delete_central_skill_impl(
         }
     }
 
+    // 심볼릭 링크 항목은 링크만 사라지고 내용은 남으므로 출처를 유지한다.
+    let removed_origin_key = std::fs::symlink_metadata(&delete_target)
+        .is_ok_and(|metadata| !metadata.file_type().is_symlink())
+        .then(|| skill_origin::origin_target_key(&delete_target));
     remove_central_skill_dir(&delete_target)?;
     db::delete_central_skill_records(pool, skill_id, &skill.name).await?;
+    if let Some(origin_target_key) = removed_origin_key {
+        skill_origin::discard_origin_bindings(pool, std::slice::from_ref(&origin_target_key))
+            .await?;
+    }
 
     Ok(DeleteCentralSkillResult {
         skill_id: skill_id.to_string(),
@@ -2566,11 +2610,7 @@ mod tests {
 
     async fn get_central_skills_impl(pool: &SqlitePool) -> Result<Vec<SkillWithLinks>, String> {
         let skills = db::get_central_skills(pool).await?;
-        let mut result = Vec::with_capacity(skills.len());
-        for skill in skills {
-            result.push(skill_with_links(pool, skill).await?);
-        }
-        Ok(result)
+        skills_with_links(pool, skills).await
     }
 
     async fn get_skill_detail_impl(
@@ -3420,5 +3460,208 @@ mod tests {
         let result =
             open_in_file_manager("/nonexistent/path/that/does/not/exist".to_string()).await;
         assert!(result.is_err());
+    }
+
+    // ── 가져온 출처 요약 ──────────────────────────────────────────────────────
+
+    async fn create_named_central_skill(
+        pool: &SqlitePool,
+        central_dir: &Path,
+        skill_id: &str,
+        name: &str,
+    ) -> Skill {
+        let skill_dir = central_dir.join(skill_id);
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_md_path = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_md_path,
+            format!("---\nname: {name}\ndescription: Test skill\n---\n\n# {name}\n"),
+        )
+        .unwrap();
+
+        let skill = Skill {
+            id: skill_id.to_string(),
+            name: name.to_string(),
+            description: Some("Test skill".to_string()),
+            file_path: skill_md_path.to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(pool, &skill).await.unwrap();
+        skill
+    }
+
+    fn imported_repo() -> crate::commands::github_import::GitHubRepoRef {
+        crate::commands::github_import::GitHubRepoRef {
+            owner: "acme".to_string(),
+            repo: "skills".to_string(),
+            branch: "main".to_string(),
+            normalized_url: "https://github.com/acme/skills".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn central_skill_list_attaches_origin_only_to_the_imported_directory() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        let imported =
+            create_named_central_skill(&pool, &central_dir, "code-review-hermes", "code-review")
+                .await;
+        // 같은 프런트매터 이름을 쓰는 다른 폴더의 사본.
+        let foreign =
+            create_named_central_skill(&pool, &central_dir, "code-review-vendor", "code-review")
+                .await;
+
+        skill_origin::persist_imported_skill(
+            &pool,
+            &imported,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+
+        let listed = skills_with_links(&pool, vec![imported, foreign])
+            .await
+            .unwrap();
+
+        let imported_entry = listed
+            .iter()
+            .find(|skill| skill.id == "code-review-hermes")
+            .unwrap();
+        let origin = imported_entry
+            .origin
+            .as_ref()
+            .expect("imported skill keeps its repository origin");
+        assert_eq!(origin.owner, "acme");
+        assert_eq!(origin.repo, "skills");
+        assert_eq!(origin.source_path, "skills/code-review");
+        assert_eq!(origin.ref_name, "main");
+        assert!(listed
+            .iter()
+            .find(|skill| skill.id == "code-review-vendor")
+            .unwrap()
+            .origin
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn bundle_delete_of_a_symlinked_bundle_keeps_surviving_origin_bindings() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let shared_bundle = tmp.path().join("shared/bundle-a");
+        let skill_dir = shared_bundle.join("code-review-hermes");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: code-review\ndescription: linked bundle\n---\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&shared_bundle, central_dir.join("bundle-a")).unwrap();
+
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        let linked_dir = central_dir.join("bundle-a/code-review-hermes");
+        let skill = Skill {
+            id: "code-review-hermes".to_string(),
+            name: "code-review".to_string(),
+            description: Some("linked bundle".to_string()),
+            file_path: linked_dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(linked_dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("native".to_string()),
+            content: None,
+            scanned_at: Utc::now().to_rfc3339(),
+        };
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        skill_origin::persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+        let target_key = skill_origin::origin_target_key(&skill_dir);
+
+        delete_central_skill_bundle_impl(
+            &pool,
+            "bundle-a",
+            DeleteCentralSkillBundleOptions {
+                cascade_uninstall: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(central_dir.join("bundle-a")).is_err(),
+            "the central bundle entry is removed"
+        );
+        assert!(
+            skill_dir.join("SKILL.md").is_file(),
+            "the symlink target survives"
+        );
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT target_key FROM skill_origins")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec![target_key]);
+    }
+
+    #[tokio::test]
+    async fn central_delete_discards_only_its_own_origin_binding() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+
+        let doomed = create_named_central_skill(&pool, &central_dir, "doomed-skill", "doomed").await;
+        let kept = create_named_central_skill(&pool, &central_dir, "kept-skill", "kept").await;
+        for skill in [&doomed, &kept] {
+            skill_origin::persist_imported_skill(
+                &pool,
+                skill,
+                &imported_repo(),
+                "skills/shared",
+                Some("abc123"),
+            )
+            .await
+            .unwrap();
+        }
+
+        delete_central_skill_impl(
+            &pool,
+            "doomed-skill",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT target_key FROM skill_origins ORDER BY target_key")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(
+            remaining[0],
+            skill_origin::origin_target_key(&central_dir.join("kept-skill"))
+        );
+        assert!(db::get_skill_by_id(&pool, "doomed-skill")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

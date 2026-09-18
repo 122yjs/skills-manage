@@ -399,6 +399,8 @@ export function CollectionView() {
                   resourceId: `local:${skill.file_path}`,
                   filePath: skill.file_path,
                 }}
+                origin={centralSkills.find((central) => central.id === skill.id)?.origin ?? null}
+                installId={skill.id}
                 onDetail={() =>
                   navigate(`/skill/${skill.id}`, {
                     state: {

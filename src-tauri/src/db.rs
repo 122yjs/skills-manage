@@ -1308,6 +1308,17 @@ pub fn builtin_agents() -> Vec<Agent> {
 /// orders). Once a skill is flagged as central it must never be downgraded to
 /// non-central by a subsequent scan of the same directory by a non-central agent.
 pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
+    upsert_skill_with(pool, skill).await
+}
+
+/// [`upsert_skill`]와 같은 SQL을 넘겨받은 executor에서 실행합니다.
+///
+/// 가져온 스킬 기록과 출처 바인딩처럼 서로 다른 테이블의 행을 하나의 트랜잭션으로
+/// 커밋해야 할 때 커넥션을 그대로 넘겨받아 씁니다.
+pub(crate) async fn upsert_skill_with<'e, E>(executor: E, skill: &Skill) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
         "INSERT INTO skills
          (id, name, description, file_path, canonical_path, is_central, source, content, scanned_at)
@@ -1349,7 +1360,7 @@ pub async fn upsert_skill(pool: &DbPool, skill: &Skill) -> Result<(), String> {
     .bind(&skill.source)
     .bind(&skill.content)
     .bind(&skill.scanned_at)
-    .execute(pool)
+    .execute(executor)
     .await
     .map(|_| ())
     .map_err(|e| e.to_string())

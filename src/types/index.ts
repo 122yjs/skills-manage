@@ -119,6 +119,13 @@ export interface SkillDetailRequest {
 
 // ─── GitHub Origin / Update Types ────────────────────────────────────────────
 
+export interface GitHubSkillOriginSummary {
+  owner: string;
+  repo: string;
+  sourcePath: string;
+  refName: string;
+}
+
 export interface SkillOriginInfo {
   bindingId: string;
   targetKey: string;
@@ -195,6 +202,8 @@ export interface SkillWithLinks {
   /** Agent IDs that can see this skill through a read-only compatibility root. */
   read_only_agents?: string[];
   available_sources?: Record<string, string[]>;
+  /** GitHub repository origin recorded when this skill was imported. */
+  origin?: GitHubSkillOriginSummary | null;
 }
 
 // ─── Skill Usage Types ──────────────────────────────────────────────────────
@@ -575,10 +584,19 @@ export interface GitHubRepoRef {
   normalizedUrl: string;
 }
 
+export type GitHubSkillConflictKind =
+  | "central"
+  | "non_central"
+  | "unmanaged_path";
+
 export interface GitHubSkillConflict {
   existingSkillId: string;
   existingName: string;
   existingCanonicalPath?: string | null;
+  /** Path that already owns the conflicting id; the colliding target for unmanaged paths. */
+  existingPath: string;
+  /** Ownership of the conflicting path; only `central` conflicts can be overwritten. */
+  conflictKind: GitHubSkillConflictKind;
   proposedSkillId: string;
   proposedName: string;
 }
@@ -618,6 +636,17 @@ export interface ImportedGitHubSkillSummary {
 
 export interface GitHubRepoImportResult {
   repo: GitHubRepoRef;
+  importedSkills: ImportedGitHubSkillSummary[];
+  skippedSkills: string[];
+}
+
+export interface GitHubImportFailure {
+  /** `blocked` wrote nothing; `failed` committed earlier skills in the same batch. */
+  code: "blocked" | "failed";
+  message: string;
+  sourcePath?: string | null;
+  skillId?: string | null;
+  existingPath?: string | null;
   importedSkills: ImportedGitHubSkillSummary[];
   skippedSkills: string[];
 }

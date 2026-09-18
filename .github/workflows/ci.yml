@@ -4,10 +4,162 @@ on:
   pull_request:
   push:
     branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  call-reusable:
-    uses: 122yjs/gha-reusable/.github/workflows/reusable-ci.yml@main
-    with:
-      # code-only Graphify (AST). 문서 Pass 아님.
-      run_graphify: true
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.12.3
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Test
+        run: pnpm test
+
+      - name: Lint
+        run: pnpm lint
+
+  backend:
+    name: Backend
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Rust artifacts
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri -> target
+
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Clippy
+        working-directory: src-tauri
+        run: cargo clippy --lib -- -D warnings
+
+  graphify:
+    name: Graphify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Graphify (code-only)
+        id: graphify
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -U pip graphifyy
+          graphify . --code-only || graphify extract . --code-only || graphify update . --no-cluster || true
+          if [[ -f graphify-out/graph.json ]]; then
+            echo "has_graph=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_graph=false" >> "$GITHUB_OUTPUT"
+          fi
+          ls -la graphify-out || true
+
+      - name: Upload graphify artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphify-out
+          path: graphify-out/
+          if-no-files-found: ignore
+
+      - name: Graphify PR community conflicts
+        if: >-
+          github.event_name == 'pull_request' &&
+          steps.graphify.outputs.has_graph == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="${{ github.base_ref || 'main' }}"
+
+          # A community-overlap comparison needs at least two open PRs targeting
+          # the same base. Avoid Graphify's statusCheckRollup query when there is
+          # nothing to compare; this also keeps single-PR CI compatible with the
+          # repository-scoped GitHub Actions token.
+          open_pr_count="$(gh api "repos/${GH_REPO}/pulls?state=open&base=${base}&per_page=2" --jq 'length')"
+          if [ "$open_pr_count" -le 1 ]; then
+            {
+              echo "## Graphify PR community conflicts"
+              echo ""
+              printf 'Base: `%s`\n\n' "$base"
+              echo "No other open PR targets this base; no community overlap is possible."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          python -m pip install -U pip graphifyy
+          out="$(mktemp)"
+          set +e
+          graphify prs --conflicts --base "$base" --repo "$GH_REPO" | tee "$out"
+          code=$?
+          set -e
+
+          {
+            echo "## Graphify PR community conflicts"
+            echo ""
+            printf 'Base: `%s`\n\n' "$base"
+            echo '```'
+            cat "$out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if grep -q "Community conflicts (PRs sharing the same graph community)" "$out"; then
+            echo "::error::Open PRs share graph communities — review merge order before landing both."
+            exit 1
+          fi
+          exit "$code"

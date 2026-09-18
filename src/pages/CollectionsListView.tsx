@@ -465,6 +465,8 @@ export function CollectionsListView() {
                             resourceId: `local:${skill.file_path}`,
                             filePath: skill.file_path,
                           }}
+                          origin={centralSkills.find((central) => central.id === skill.id)?.origin ?? null}
+                          installId={skill.id}
                           onDetail={() => handleOpenDrawer(skill.id)}
                           detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
                           onInstallTo={() => handleInstallSingleSkillClick(skill.id)}
