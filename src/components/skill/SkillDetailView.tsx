@@ -41,6 +41,7 @@ import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agent
 import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
+import { githubSkillSourceUrl } from "@/lib/skillOrigin";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import {
   isSkillUsageBusyError,
@@ -1424,7 +1425,31 @@ export function SkillDetailView({
                         {origin ? (
                           <>
                             <div className="space-y-1 text-[11px] text-muted-foreground">
-                              <div className="font-mono break-all">{origin.sourcePath} @ {origin.refName}</div>
+                              <div className="font-mono break-all">
+                                <a
+                                  href={githubSkillSourceUrl(origin)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={t("skillOrigin.viewSource", { repo: `${origin.owner}/${origin.repo}` })}
+                                  aria-label={t("skillOrigin.viewSource", { repo: `${origin.owner}/${origin.repo}` })}
+                                  className="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                                >
+                                  {origin.sourcePath}
+                                </a>
+                                {" @ "}
+                                {origin.refName}
+                              </div>
+                              <div className="flex flex-wrap items-center gap-x-1.5">
+                                <span>{t("skillOrigin.originalName")}</span>
+                                <span className="font-mono text-foreground/80">{detail.name}</span>
+                                {detail.id !== detail.name && (
+                                  <>
+                                    <span aria-hidden="true">·</span>
+                                    <span>{t("skillOrigin.localId")}</span>
+                                    <span className="font-mono text-foreground/80">{detail.id}</span>
+                                  </>
+                                )}
+                              </div>
                               <div>
                                 Baseline: {origin.baselineState === "verified" ? "verified" : "unknown"}
                                 {origin.baseCommitOid ? ` · ${origin.baseCommitOid.slice(0, 7)}` : ""}

@@ -6,8 +6,9 @@ import type {
   GitHubRepoPreview,
   GitHubRepoImportResult,
   MarketplaceSkill,
-  SkillsShSkill,
   SkillRegistry,
+  SkillsShSkill,
+  GitHubImportFailure,
 } from "@/types";
 
 const mockLoadRegistries = vi.fn();
@@ -57,6 +58,8 @@ type StoreState = {
     importResult: GitHubRepoImportResult | null;
     previewedRepoUrl: string | null;
     error: string | null;
+    previewError: string | null;
+    importFailure: GitHubImportFailure | null;
   };
 };
 
@@ -72,6 +75,8 @@ const storeState: StoreState = {
     importResult: null,
     previewedRepoUrl: null,
     error: null,
+    previewError: null,
+    importFailure: null,
   },
 };
 
@@ -168,6 +173,10 @@ vi.mock("@/stores/marketplaceStore", () => ({
       importGitHubRepoSkills: mockImportGitHubRepoSkills,
       resetGitHubImport: mockResetGitHubImport,
     }),
+  toGitHubImportFailure: (error: unknown) =>
+    error && typeof error === "object" && "code" in error
+      ? (error as GitHubImportFailure)
+      : null,
 }));
 
 vi.mock("@/stores/platformStore", () => ({
@@ -196,8 +205,14 @@ vi.mock("@/stores/skillStore", () => ({
     }),
 }));
 
+import { toast } from "sonner";
+
 import { MarketplaceView } from "@/pages/MarketplaceView";
 import * as tauriBridge from "@/lib/tauri";
+
+import zh from "@/i18n/locales/zh.json";
+
+const renameActionLabel = zh.marketplace.githubImportStatusChangeToRename;
 
 describe("MarketplaceView", () => {
   beforeEach(() => {
@@ -241,6 +256,8 @@ describe("MarketplaceView", () => {
       importResult: null,
       previewedRepoUrl: null,
       error: null,
+      previewError: null,
+      importFailure: null,
     };
   });
 
@@ -428,6 +445,8 @@ describe("MarketplaceView", () => {
           existingSkillId: "skill-creator",
           existingName: "Skill Creator",
           existingCanonicalPath: "/Users/test/.agents/skills/skill-creator",
+          existingPath: "/Users/test/.claude/skills/skill-creator",
+          conflictKind: "central",
           proposedSkillId: "skill-creator",
           proposedName: "Skill Creator",
         },
@@ -438,8 +457,8 @@ describe("MarketplaceView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Import GitHub repo|导入 GitHub 仓库/i }));
 
     await screen.findByTestId("github-import-preview-workspace");
-    fireEvent.click(screen.getByRole("button", { name: /Rename|重命名/i }));
-    fireEvent.change(screen.getByPlaceholderText(/New skill id|新的技能 ID/i), {
+    fireEvent.click(screen.getByRole("button", { name: renameActionLabel }));
+    fireEvent.change(screen.getByPlaceholderText(/New skill id|新的安装 ID/i), {
       target: { value: "skill-creator-renamed" },
     });
     fireEvent.click(screen.getByRole("button", { name: /Confirm|确认/i }));
@@ -487,7 +506,7 @@ describe("MarketplaceView", () => {
   });
 
   it("shows settings guidance when github preview fails with auth or rate-limit help", async () => {
-    storeState.githubImport.error = "GitHub API rate limit exceeded. Save a Personal Access Token in Settings and retry.";
+    storeState.githubImport.previewError = "GitHub API rate limit exceeded. Save a Personal Access Token in Settings and retry.";
 
     renderView();
     fireEvent.click(screen.getByRole("button", { name: /Import GitHub repo|导入 GitHub 仓库/i }));
@@ -495,6 +514,80 @@ describe("MarketplaceView", () => {
     expect(
       await screen.findByText(/GitHub Personal Access Token/i),
     ).toBeInTheDocument();
+  });
+
+  it("does not toast import success when every skill was skipped", async () => {
+    storeState.githubImport.preview = makePreview([
+      {
+        sourcePath: "skills/.curated/openai-docs",
+        skillId: "openai-docs",
+        skillName: "OpenAI Docs",
+        description: "Docs helper",
+        rootDirectory: "skills/.curated",
+        skillDirectoryName: "openai-docs",
+        downloadUrl: "https://example.com/openai-docs/SKILL.md",
+        conflict: null,
+      },
+    ]);
+    mockImportGitHubRepoSkills.mockResolvedValueOnce({
+      repo: {
+        owner: "openai",
+        repo: "skills",
+        branch: "main",
+        normalizedUrl: "https://github.com/openai/skills",
+      },
+      importedSkills: [],
+      skippedSkills: ["skills/.curated/openai-docs"],
+    });
+    vi.mocked(toast.success).mockClear();
+
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /Import GitHub repo|导入 GitHub 仓库/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Review import|检查导入内容/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "导入" }));
+
+    await waitFor(() => expect(mockImportGitHubRepoSkills).toHaveBeenCalled());
+    expect(vi.mocked(toast.success)).not.toHaveBeenCalled();
+    expect(screen.getByTestId("github-import-confirm-summary")).toBeInTheDocument();
+  });
+
+  it("keeps a structured import failure in the wizard instead of toasting the raw error", async () => {
+    const failure: GitHubImportFailure = {
+      code: "blocked",
+      message: "Local platform skill already owns this id.",
+      sourcePath: "skills/.curated/openai-docs",
+      skillId: "openai-docs",
+      existingPath: "/Users/test/.claude/skills/openai-docs",
+      importedSkills: [],
+      skippedSkills: [],
+    };
+    storeState.githubImport.preview = makePreview([
+      {
+        sourcePath: "skills/.curated/openai-docs",
+        skillId: "openai-docs",
+        skillName: "OpenAI Docs",
+        description: "Docs helper",
+        rootDirectory: "skills/.curated",
+        skillDirectoryName: "openai-docs",
+        downloadUrl: "https://example.com/openai-docs/SKILL.md",
+        conflict: null,
+      },
+    ]);
+    mockImportGitHubRepoSkills.mockRejectedValueOnce(failure);
+    vi.mocked(toast.error).mockClear();
+
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: /Import GitHub repo|导入 GitHub 仓库/i }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Review import|检查导入内容/i }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "导入" }));
+
+    await waitFor(() => expect(mockImportGitHubRepoSkills).toHaveBeenCalled());
+    expect(screen.getByTestId("github-import-confirm-summary")).toBeInTheDocument();
+    expect(vi.mocked(toast.error)).not.toHaveBeenCalled();
   });
 
   it("routes skills.sh detail install through installFromSkillsSh", async () => {

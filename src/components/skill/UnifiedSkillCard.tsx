@@ -23,6 +23,7 @@ import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import type {
   AgentWithStatus,
   ClaudeSourceKind,
+  GitHubSkillOriginSummary,
   SharedSkillImpact,
   SkillDescriptionTranslationMeta,
 } from "@/types";
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 import { formatPathForDisplay } from "@/lib/path";
+import { githubSkillSourceUrl } from "@/lib/skillOrigin";
 
 const FEATURED_CODING_AGENT_IDS = [
   "cursor",
@@ -160,6 +162,12 @@ export interface UnifiedSkillCardProps {
   /** 비활성으로 바꿔도 남아 있는 공용/플러그인 제공 항목 수다. */
   externalUsageCount?: number;
 
+  // ── origin (persisted github provenance) ──
+  /** Owner/repo + original repo path recorded when this skill was imported. */
+  origin?: GitHubSkillOriginSummary | null;
+  /** Local installation ID; defaults to the central variant's platformIcons.skillId. */
+  installId?: string;
+
   // ── marketplace variant ──
   isInstalled?: boolean;
   tags?: { key: string; label: string }[];
@@ -212,6 +220,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     platformControlNotice,
     externalUsageCount = 0,
     isInstalled,
+    origin,
+    installId,
     tags,
     publisher,
     onDetail,
@@ -256,6 +266,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   const codingAgents = targetPlatformAgents.filter((agent) => agent.category !== "lobster");
   const linkedAgentIds = new Set(platformIcons?.linkedAgents ?? []);
   const readOnlyAgentIds = new Set(platformIcons?.readOnlyAgents ?? []);
+  /** Local installation ID: collection callers pass it; the central variant carries it as platformIcons.skillId. */
+  const localSkillId = installId ?? platformIcons?.skillId;
   const usageByAgent = platformIcons?.usageByAgent ?? {};
   const featuredCodingAgents = FEATURED_CODING_AGENT_IDS
     .map((agentId) => codingAgents.find((agent) => agent.id === agentId))
@@ -500,6 +512,9 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
           {/* Row 3: Info badges */}
           <div className="flex flex-wrap items-center gap-1.5 empty:hidden">
+            {origin && (
+              <GitHubOriginBadge origin={origin} installId={localSkillId} originalName={name} />
+            )}
             {originKind && <SourceOriginBadge originKind={originKind} />}
             {isExternallyManaged
               ? <ExternalManagedBadge />
@@ -868,5 +883,44 @@ function ExternalManagedBadge() {
       <Lock className="size-3 shrink-0" />
       {t("universal.externallyManaged")}
     </span>
+  );
+}
+
+// ─── GitHub Origin Badge (internal) ───────────────────────────────────────────
+
+function GitHubOriginBadge({
+  origin,
+  installId,
+  originalName,
+}: {
+  origin: GitHubSkillOriginSummary;
+  installId?: string;
+  originalName: string;
+}) {
+  const { t } = useTranslation();
+  const url = githubSkillSourceUrl(origin);
+  return (
+    <>
+      <a
+        href={url}
+        target="_blank"
+        rel="noreferrer"
+        title={url}
+        aria-label={t("skillOrigin.viewSource", { repo: `${origin.owner}/${origin.repo}` })}
+        className="inline-flex max-w-full items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300 hover:underline"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <Link2 className="size-3 shrink-0" />
+        <span className="min-w-0 truncate">{origin.owner}/{origin.repo}</span>
+      </a>
+      {installId !== undefined && installId !== originalName && (
+        <span
+          className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70"
+          title={t("skillOrigin.installedAsTitle", { id: installId })}
+        >
+          {t("skillOrigin.installedAs", { id: installId })}
+        </span>
+      )}
+    </>
   );
 }

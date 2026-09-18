@@ -102,6 +102,8 @@ vi.mock("@/stores/marketplaceStore", () => ({
       importGitHubRepoSkills: mockImportGitHubRepoSkills,
       resetGitHubImport: mockResetGitHubImport,
     }),
+  toGitHubImportFailure: (error: unknown) =>
+    error && typeof error === "object" && "code" in error ? error : null,
 }));
 
 vi.mock("@/stores/platformStore", () => ({

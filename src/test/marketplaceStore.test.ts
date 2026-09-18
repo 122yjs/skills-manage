@@ -37,6 +37,8 @@ describe("marketplaceStore", () => {
         importResult: null,
         previewedRepoUrl: null,
         error: null,
+        previewError: null,
+        importFailure: null,
         importProgress: null,
         importStartedAt: null,
         skillMarkdown: {},
@@ -498,5 +500,121 @@ describe("marketplaceStore", () => {
     await expect(importPromise).resolves.toEqual(result);
     expect(useMarketplaceStore.getState().githubImport.importProgress).toBeNull();
     expect(useMarketplaceStore.getState().githubImport.importStartedAt).toBeNull();
+  });
+  it("keeps the structured failure when an import is blocked before writing", async () => {
+    const failure = {
+      code: "blocked",
+      message: "Local platform skill already owns this id.",
+      sourcePath: "skills/.system/skill-creator/SKILL.md",
+      skillId: "skill-creator",
+      existingPath: "/Users/test/.claude/skills/skill-creator",
+      importedSkills: [],
+      skippedSkills: [],
+    };
+    mockInvoke.mockRejectedValueOnce(failure);
+
+    await expect(
+      useMarketplaceStore.getState().importGitHubRepoSkills(
+        "https://github.com/anthropics/skills",
+        [
+          {
+            sourcePath: "skills/.system/skill-creator/SKILL.md",
+            resolution: "rename",
+            renamedSkillId: "skill-creator-copy",
+          },
+        ]
+      )
+    ).rejects.toEqual(failure);
+
+    const { githubImport } = useMarketplaceStore.getState();
+    expect(githubImport.importFailure).toEqual(failure);
+    expect(githubImport.error).toBe("Local platform skill already owns this id.");
+    expect(githubImport.previewError).toBeNull();
+    expect(githubImport.isImporting).toBe(false);
+  });
+
+  it("keeps the skills a partially failed import already committed", async () => {
+    const failure = {
+      code: "failed",
+      message: "Could not write skills/extra/SKILL.md",
+      sourcePath: "skills/extra/SKILL.md",
+      skillId: null,
+      existingPath: null,
+      importedSkills: [
+        {
+          sourcePath: "skills/docs/SKILL.md",
+          originalSkillId: "docs",
+          importedSkillId: "docs",
+          skillName: "OpenAI Docs",
+          targetDirectory: "/Users/test/.agents/skills/docs",
+          resolution: "overwrite",
+        },
+      ],
+      skippedSkills: ["skills/legacy/SKILL.md"],
+    };
+    mockInvoke.mockRejectedValueOnce(JSON.stringify(failure));
+
+    await expect(
+      useMarketplaceStore
+        .getState()
+        .importGitHubRepoSkills("https://github.com/anthropics/skills", [])
+    ).rejects.toBeDefined();
+
+    const { githubImport } = useMarketplaceStore.getState();
+    expect(githubImport.importFailure?.code).toBe("failed");
+    expect(githubImport.importFailure?.importedSkills).toEqual(failure.importedSkills);
+    expect(githubImport.importFailure?.skippedSkills).toEqual(["skills/legacy/SKILL.md"]);
+    expect(githubImport.importResult).toBeNull();
+    expect(githubImport.error).toBe("Could not write skills/extra/SKILL.md");
+  });
+
+  it("treats plain Error failures as legacy errors without a structured failure", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("network down"));
+
+    await expect(
+      useMarketplaceStore
+        .getState()
+        .importGitHubRepoSkills("https://github.com/anthropics/skills", [])
+    ).rejects.toThrow("network down");
+
+    const { githubImport } = useMarketplaceStore.getState();
+    expect(githubImport.importFailure).toBeNull();
+    expect(githubImport.error).toContain("network down");
+  });
+
+  it("records preview errors separately from import failures", async () => {
+    mockInvoke.mockRejectedValueOnce(new Error("GitHub API rate limit exceeded"));
+
+    await expect(
+      useMarketplaceStore
+        .getState()
+        .previewGitHubRepoImport("https://github.com/anthropics/skills")
+    ).rejects.toThrow("rate limit");
+
+    const { githubImport } = useMarketplaceStore.getState();
+    expect(githubImport.previewError).toContain("rate limit");
+    expect(githubImport.error).toContain("rate limit");
+    expect(githubImport.importFailure).toBeNull();
+  });
+
+  it("clears a stored failure once the user changes a decision", () => {
+    useMarketplaceStore.setState((state) => ({
+      githubImport: {
+        ...state.githubImport,
+        importFailure: {
+          code: "blocked",
+          message: "blocked",
+          sourcePath: null,
+          skillId: null,
+          existingPath: null,
+          importedSkills: [],
+          skippedSkills: [],
+        },
+      },
+    }));
+
+    useMarketplaceStore.getState().clearGitHubImportFailure();
+
+    expect(useMarketplaceStore.getState().githubImport.importFailure).toBeNull();
   });
 });

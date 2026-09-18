@@ -41,9 +41,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { AgentWithStatus, CentralSkillBundle, ScannedSkill, SkillWithLinks } from "@/types";
+import {
+  AgentWithStatus,
+  CentralSkillBundle,
+  GitHubRepoImportResult,
+  ScannedSkill,
+  SkillWithLinks,
+} from "@/types";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
-import { useMarketplaceStore } from "@/stores/marketplaceStore";
+import {
+  toGitHubImportFailure,
+  useMarketplaceStore,
+} from "@/stores/marketplaceStore";
 import { useSkillListViewMode } from "@/hooks/useSkillListViewMode";
 import { formatPathForDisplay } from "@/lib/path";
 import { getAgentDisplayName } from "@/lib/agents";
@@ -110,6 +119,8 @@ const EMPTY_GITHUB_IMPORT_STATE = {
   importResult: null,
   previewedRepoUrl: null,
   error: null,
+  previewError: null,
+  importFailure: null,
 };
 const noopLoadCentralSkills = async () => {};
 const noopLoadCentralBundles = async () => {};
@@ -117,6 +128,7 @@ const noopRefreshCounts = async () => {};
 const noopGetSkillsByAgent = async (_agentId: string) => {};
 const noopPreviewGitHubRepoImport = async () => null;
 const noopResetGitHubImport = () => {};
+const noopClearGitHubImportFailure = () => {};
 const noopTogglePlatformLink = async (_skillId: string, _agentId: string) => {};
 const noopDeleteCentralSkill = async (
   _skillId: string,
@@ -334,6 +346,9 @@ export function CentralSkillsView() {
     noopImportGitHubRepoSkills;
   const resetGitHubImport =
     useMarketplaceStore((state) => state.resetGitHubImport) ?? noopResetGitHubImport;
+  const clearGitHubImportFailure =
+    useMarketplaceStore((state) => state.clearGitHubImportFailure) ??
+    noopClearGitHubImportFailure;
 
   type SortField = "name" | "createdAt" | "updatedAt";
   type SortDirection = "asc" | "desc";
@@ -679,13 +694,13 @@ export function CentralSkillsView() {
     selections: Parameters<typeof importGitHubRepoSkills>[1]
   ) {
     try {
-      const result = await importGitHubRepoSkills(githubRepoUrl, selections);
-      await refreshCounts();
-      await loadCentralSkills();
-      toast.success(t("marketplace.githubImportCentralSuccess"));
-      return result;
+      return await importGitHubRepoSkills(githubRepoUrl, selections);
     } catch (err) {
-      toast.error(t("marketplace.installError", { error: String(err) }));
+      // Structured failures render inline in the wizard; keep the raw message only
+      // for legacy errors that carry no target or recovery hint.
+      if (!toGitHubImportFailure(err)) {
+        toast.error(t("marketplace.installError", { error: String(err) }));
+      }
       throw err;
     }
   }
@@ -716,10 +731,14 @@ export function CentralSkillsView() {
     [platformDrawerSkillId, skills]
   );
 
-  async function handleAfterImportSuccess() {
+  async function handleAfterImportSuccess(result: GitHubRepoImportResult) {
     const agentIds = Object.keys(skillsByAgent);
-    if (agentIds.length === 0) return;
-    await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
+    if (agentIds.length > 0) {
+      await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
+    }
+    if (result.importedSkills.length > 0) {
+      toast.success(t("marketplace.githubImportCentralSuccess"));
+    }
   }
 
   return (
@@ -897,6 +916,7 @@ export function CentralSkillsView() {
                       className="library-skill-card"
                       name={skill.name}
                       description={skill.description}
+                      origin={skill.origin ?? null}
                       translation={{
                         resourceId: `local:${skill.file_path}`,
                         filePath: skill.file_path,
@@ -1038,16 +1058,18 @@ export function CentralSkillsView() {
         repoUrl={githubRepoUrl}
         onRepoUrlChange={setGitHubRepoUrl}
         preview={githubImport.preview}
-        previewError={githubImport.error}
+        previewError={githubImport.previewError}
         isPreviewLoading={githubImport.isPreviewLoading}
         isImporting={githubImport.isImporting}
         importResult={githubImport.importResult}
+        importFailure={githubImport.importFailure}
         onPreview={handleGitHubPreview}
         onImport={handleGitHubImport}
         availableAgents={availableInstallAgents}
         installableSkills={installableImportedSkills}
         onInstallImportedSkill={handleInstallImportedSkill}
         onAfterImportSuccess={handleAfterImportSuccess}
+        onClearImportFailure={clearGitHubImportFailure}
         onReset={() => {
           resetGitHubImport();
           setGitHubRepoUrl("");

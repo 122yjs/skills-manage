@@ -16,7 +16,10 @@ import i18n from "@/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
-import { useMarketplaceStore } from "@/stores/marketplaceStore";
+import {
+  toGitHubImportFailure,
+  useMarketplaceStore,
+} from "@/stores/marketplaceStore";
 import { usePlatformStore } from "@/stores/platformStore";
 import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useSkillStore } from "@/stores/skillStore";
@@ -32,7 +35,12 @@ import { MarketplaceSkillDetailDrawer, type MarketplaceSkillDetail } from "@/com
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
-import type { GitHubRepoPreview, SkillsShFileEntry, SkillsShSkill } from "@/types";
+import type {
+  GitHubRepoImportResult,
+  GitHubRepoPreview,
+  SkillsShFileEntry,
+  SkillsShSkill,
+} from "@/types";
 
 type TabId = "recommended" | "official" | "skillssh";
 
@@ -110,6 +118,7 @@ export function MarketplaceView() {
   const previewGitHubRepoImport = useMarketplaceStore((s) => s.previewGitHubRepoImport);
   const importGitHubRepoSkills = useMarketplaceStore((s) => s.importGitHubRepoSkills);
   const resetGitHubImport = useMarketplaceStore((s) => s.resetGitHubImport);
+  const clearGitHubImportFailure = useMarketplaceStore((s) => s.clearGitHubImportFailure);
   const skillsShResults = useMarketplaceStore((s) => s.skillsShResults);
   const isSkillsShLoading = useMarketplaceStore((s) => s.isSkillsShLoading);
   const searchSkillsSh = useMarketplaceStore((s) => s.searchSkillsSh);
@@ -331,7 +340,14 @@ export function MarketplaceView() {
       await Promise.all([rescan(), loadCentralSkills()]);
       toast.success(t("marketplace.installSuccess"));
     } catch (err) {
-      toast.error(String(err));
+      const failure = toGitHubImportFailure(err);
+      if (failure?.code === "blocked" && skill.repoUrl) {
+        setGitHubRepoUrl(skill.repoUrl);
+        setIsGitHubImportOpen(true);
+        toast.error(t("marketplace.previewConflictOpenWizard"));
+      } else {
+        toast.error(failure ? failure.message : String(err));
+      }
     } finally {
       setPreviewInstallingIds((prev) => {
         const next = new Set(prev);
@@ -360,12 +376,13 @@ export function MarketplaceView() {
 
   async function handleGitHubImport(selections: Parameters<typeof importGitHubRepoSkills>[1]) {
     try {
-      const result = await importGitHubRepoSkills(githubRepoUrl, selections);
-      await Promise.all([rescan(), loadRegistries(), loadCentralSkills()]);
-      toast.success(t("marketplace.githubImportCentralSuccess"));
-      return result;
+      return await importGitHubRepoSkills(githubRepoUrl, selections);
     } catch (err) {
-      toast.error(String(err));
+      // Structured failures are reported inline by the wizard with the failing target;
+      // keep the raw toast for legacy errors only.
+      if (!toGitHubImportFailure(err)) {
+        toast.error(String(err));
+      }
       throw err;
     }
   }
@@ -400,10 +417,15 @@ export function MarketplaceView() {
     }
   }
 
-  async function handleAfterImportSuccess() {
+  async function handleAfterImportSuccess(result: GitHubRepoImportResult) {
+    await Promise.all([rescan(), loadRegistries(), loadCentralSkills()]);
     const agentIds = Object.keys(skillsByAgent);
-    if (agentIds.length === 0) return;
-    await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
+    if (agentIds.length > 0) {
+      await Promise.all(agentIds.map((agentId) => getSkillsByAgent(agentId)));
+    }
+    if (result.importedSkills.length > 0) {
+      toast.success(t("marketplace.githubImportCentralSuccess"));
+    }
   }
 
   // ── Tabs ───────────────────────────────────────────────────────────────
@@ -913,16 +935,18 @@ export function MarketplaceView() {
         repoUrl={githubRepoUrl}
         onRepoUrlChange={setGitHubRepoUrl}
         preview={githubImport.preview}
-        previewError={githubImport.error}
+        previewError={githubImport.previewError}
         isPreviewLoading={githubImport.isPreviewLoading}
         isImporting={githubImport.isImporting}
         importResult={githubImport.importResult}
+        importFailure={githubImport.importFailure}
         onPreview={handleGitHubPreview}
         onImport={handleGitHubImport}
         availableAgents={availableInstallAgents}
         installableSkills={installableImportedSkills}
         onInstallImportedSkill={handleInstallImportedSkill}
         onAfterImportSuccess={handleAfterImportSuccess}
+        onClearImportFailure={clearGitHubImportFailure}
         onReset={() => {
           resetGitHubImport();
           setGitHubRepoUrl("");

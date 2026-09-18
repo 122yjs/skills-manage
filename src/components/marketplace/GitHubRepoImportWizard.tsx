@@ -20,6 +20,7 @@ import {
   GitHubRepoPreview,
   GitHubSkillImportSelection,
   GitHubSkillPreview,
+  GitHubImportFailure,
   AgentWithStatus,
   SkillWithLinks,
 } from "@/types";
@@ -39,6 +40,7 @@ import { InstallDialog } from "@/components/central/InstallDialog";
 import { MarkdownPreview } from "@/components/marketplace/MarkdownPreview";
 import {
   useMarketplaceStore,
+  toGitHubImportFailure,
   type GitHubImportAiSummaryEntry,
   type SkillMarkdownEntry,
 } from "@/stores/marketplaceStore";
@@ -86,11 +88,15 @@ interface GitHubRepoImportWizardProps {
   isPreviewLoading: boolean;
   isImporting: boolean;
   importResult: GitHubRepoImportResult | null;
+  /** Structured outcome of the last import attempt; kept until a decision changes. */
+  importFailure?: GitHubImportFailure | null;
   onPreview: () => Promise<GitHubRepoPreview | null> | GitHubRepoPreview | null;
   onImport: (
     selections: GitHubSkillImportSelection[],
   ) => Promise<GitHubRepoImportResult | void> | GitHubRepoImportResult | void;
   onReset: () => void;
+  /** Drops a stale failure banner once the user changes a selection. */
+  onClearImportFailure?: () => void;
   launcherLabel: string;
   availableAgents?: AgentWithStatus[];
   installableSkills?: SkillWithLinks[];
@@ -133,6 +139,19 @@ function clampPercent(value: number) {
   return Math.max(0, Math.min(100, value));
 }
 
+/** Mirrors the backend `sanitize_skill_id` rules so local checks match what will be written. */
+function normalizeSkillId(raw: string) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+type RenameIssue =
+  | { kind: "empty" }
+  | { kind: "duplicate"; otherName: string };
+
 export function GitHubRepoImportWizard({
   open,
   onOpenChange,
@@ -143,9 +162,11 @@ export function GitHubRepoImportWizard({
   isPreviewLoading,
   isImporting,
   importResult,
+  importFailure = null,
   onPreview,
   onImport,
   onReset,
+  onClearImportFailure,
   launcherLabel,
   availableAgents = [],
   installableSkills = [],
@@ -197,6 +218,18 @@ export function GitHubRepoImportWizard({
     (state) => state.githubImport.importStartedAt,
   ) ?? null;
   const [progressNow, setProgressNow] = useState(() => Date.now());
+  const [lastSubmittedPaths, setLastSubmittedPaths] = useState<string[]>([]);
+  const [legacyImportError, setLegacyImportError] = useState<string | null>(
+    null,
+  );
+  const [postImportSyncError, setPostImportSyncError] = useState<string | null>(
+    null,
+  );
+  const stepRef = useRef<WizardStep>(step);
+
+  useEffect(() => {
+    stepRef.current = step;
+  }, [step]);
 
   useEffect(() => {
     if (!open) {
@@ -207,10 +240,17 @@ export function GitHubRepoImportWizard({
       setDetailTab("overview");
       setCreateRepoCollection(true);
       setRepoCollectionState(null);
+      setLegacyImportError(null);
+      setPostImportSyncError(null);
+      setLastSubmittedPaths([]);
       return;
     }
-    if (importResult) {
+    if (importResult || importFailure?.code === "failed") {
       setStep("result");
+      return;
+    }
+    if (importFailure?.code === "blocked" && stepRef.current === "confirm") {
+      // Keep the confirm step so the blocked reason and the user's decisions stay visible.
       return;
     }
     if (preview) {
@@ -225,7 +265,7 @@ export function GitHubRepoImportWizard({
     }
     setSelectedSkillPath(null);
     setStep("input");
-  }, [open, preview, importResult]);
+  }, [open, preview, importResult, importFailure]);
 
   useEffect(() => {
     setCreateRepoCollection(true);
@@ -263,23 +303,62 @@ export function GitHubRepoImportWizard({
     return `https://github.com/${preview.repo.owner}/${preview.repo.repo}`;
   }, [preview]);
 
-  const blockingConflict = useMemo(() => {
-    return selectedSkills.find((skill) => {
-      if (!skill.conflict) return false;
+  const renameIssues = useMemo(() => {
+    const issues: Record<string, RenameIssue> = {};
+    const targets = new Map<string, GitHubSkillPreview[]>();
+
+    selectedSkills.forEach((skill) => {
       const state = selectionState[skill.sourcePath];
-      if (!state) return true;
-      if (state.resolution === "skip") return false;
-      if (state.resolution === "rename") {
-        return !state.renamedSkillId.trim();
+      const resolution =
+        state?.resolution ?? (skill.conflict ? "skip" : "overwrite");
+      if (resolution === "skip") return;
+
+      const rawId =
+        resolution === "rename"
+          ? (state?.renamedSkillId ?? "")
+          : skill.skillId;
+      const normalized = normalizeSkillId(rawId);
+
+      if (resolution === "rename" && !normalized) {
+        issues[skill.sourcePath] = { kind: "empty" };
+        return;
       }
-      return false;
+
+      const bucket = targets.get(normalized);
+      if (bucket) {
+        bucket.push(skill);
+      } else {
+        targets.set(normalized, [skill]);
+      }
     });
+
+    targets.forEach((skills) => {
+      if (skills.length < 2) return;
+      skills.forEach((skill) => {
+        if (issues[skill.sourcePath]) return;
+        const other = skills.find((candidate) => candidate !== skill);
+        issues[skill.sourcePath] = {
+          kind: "duplicate",
+          otherName: other?.skillName ?? "",
+        };
+      });
+    });
+
+    return issues;
   }, [selectedSkills, selectionState]);
+
+  const blockingConflict = useMemo(() => {
+    return (
+      selectedSkills.find((skill) => !selectionState[skill.sourcePath]) ??
+      selectedSkills.find((skill) => renameIssues[skill.sourcePath]) ??
+      null
+    );
+  }, [selectedSkills, selectionState, renameIssues]);
 
   const isInputStep = step === "input" && !preview && !importResult;
   const showRepoToolbar =
     Boolean(preview) && (step === "preview" || step === "confirm");
-  const showSharedShellBody = Boolean(preview || importResult);
+  const showSharedShellBody = Boolean(preview || importResult || importFailure);
   const footerMode =
     step === "result" ? "result" : step === "confirm" ? "confirm" : "preview";
   const dialogContentClassName = cn(
@@ -450,15 +529,13 @@ export function GitHubRepoImportWizard({
       const state = selectionState[skill.sourcePath];
       const resolution =
         state?.resolution ?? (skill.conflict ? "skip" : "overwrite");
-      if (!skill.conflict) {
-        counts.write += 1;
-        return;
-      }
-      if (resolution === "overwrite") {
-        counts.overwrite += 1;
-        counts.write += 1;
-      } else if (resolution === "rename") {
+      if (resolution === "rename") {
         counts.rename += 1;
+        counts.write += 1;
+      } else if (resolution === "overwrite") {
+        if (skill.conflict) {
+          counts.overwrite += 1;
+        }
         counts.write += 1;
       } else {
         counts.skip += 1;
@@ -503,6 +580,9 @@ export function GitHubRepoImportWizard({
     skill: GitHubSkillPreview,
     next: Partial<SelectionState>,
   ) {
+    if (importFailure) {
+      onClearImportFailure?.();
+    }
     setSelectionState((current) => ({
       ...current,
       [skill.sourcePath]: {
@@ -510,6 +590,14 @@ export function GitHubRepoImportWizard({
         ...next,
       },
     }));
+  }
+
+  function renameIssueMessage(skillPath: string) {
+    const issue = renameIssues[skillPath];
+    if (!issue) return t("marketplace.resolveConflictsBeforeImport");
+    return issue.kind === "empty"
+      ? t("marketplace.githubImportRenameEmpty")
+      : t("marketplace.githubImportRenameDuplicate", { name: issue.otherName });
   }
 
   function startRenameEditing(skill: GitHubSkillPreview) {
@@ -527,7 +615,9 @@ export function GitHubRepoImportWizard({
       (skill.conflict ? "skip" : "overwrite");
 
     if (currentResolution === "rename") {
-      updateSelection(skill, { resolution: "skip" });
+      updateSelection(skill, {
+        resolution: skill.conflict ? "skip" : "overwrite",
+      });
     }
     setIsRenameEditing(false);
   }
@@ -568,8 +658,24 @@ export function GitHubRepoImportWizard({
   }
 
   async function handleImportConfirmClick() {
-    const result = await onImport(selectedImportPayload);
-    const completedResult = result ?? importResult;
+    setLastSubmittedPaths(
+      selectedImportPayload.map((selection) => selection.sourcePath),
+    );
+    setLegacyImportError(null);
+    setPostImportSyncError(null);
+
+    let completedResult: GitHubRepoImportResult | null = null;
+    try {
+      const result = await onImport(selectedImportPayload);
+      completedResult = result ?? importResult ?? null;
+    } catch (err) {
+      // Structured failures live in the store and render inline; anything else keeps
+      // the legacy message so the reason is still visible next to the choices.
+      if (!toGitHubImportFailure(err)) {
+        setLegacyImportError(normalizeMessage(String(err)));
+      }
+      return;
+    }
     if (!completedResult) return;
 
     if (createRepoCollection && completedResult.importedSkills.length > 0) {
@@ -587,7 +693,17 @@ export function GitHubRepoImportWizard({
       }
     }
 
-    await onAfterImportSuccess?.(completedResult);
+    await runAfterImportSuccess(completedResult);
+  }
+
+  async function runAfterImportSuccess(result: GitHubRepoImportResult) {
+    if (!onAfterImportSuccess) return;
+    setPostImportSyncError(null);
+    try {
+      await onAfterImportSuccess(result);
+    } catch (error) {
+      setPostImportSyncError(normalizeMessage(String(error)));
+    }
   }
 
   function handleInstallImported(skillId: string) {
@@ -610,6 +726,9 @@ export function GitHubRepoImportWizard({
     setSelectedSkillPath(null);
     setCreateRepoCollection(true);
     setRepoCollectionState(null);
+    setLegacyImportError(null);
+    setPostImportSyncError(null);
+    setLastSubmittedPaths([]);
     onReset();
     setStep("input");
   }
@@ -826,61 +945,235 @@ export function GitHubRepoImportWizard({
     );
   }
 
-  function renderImportResultHub(currentImportResult: GitHubRepoImportResult) {
+  function renderImportResultHub() {
+    const failure = importFailure?.code === "failed" ? importFailure : null;
+    const importedSkills = failure
+      ? failure.importedSkills
+      : (importResult?.importedSkills ?? []);
+    const skippedPaths = failure
+      ? failure.skippedSkills
+      : (importResult?.skippedSkills ?? []);
+    const repoLabel = importResult
+      ? `${importResult.repo.owner}/${importResult.repo.repo}`
+      : preview
+        ? `${preview.repo.owner}/${preview.repo.repo}`
+        : null;
+    const failedPath = failure?.sourcePath ?? null;
+    const failedSkill = failedPath
+      ? (preview?.skills.find((skill) => skill.sourcePath === failedPath) ??
+        null)
+      : null;
+    const accountedPaths = new Set([
+      ...importedSkills.map((skill) => skill.sourcePath),
+      ...skippedPaths,
+      ...(failedPath ? [failedPath] : []),
+    ]);
+    const notAttemptedPaths = lastSubmittedPaths.filter(
+      (sourcePath) => !accountedPaths.has(sourcePath),
+    );
+    const skillNameForPath = (sourcePath: string) =>
+      preview?.skills.find((skill) => skill.sourcePath === sourcePath)
+        ?.skillName ?? sourcePath;
+
+    // A conflict-free skill is sent with the same wire resolution as an
+    // explicit overwrite, so only the retained preview can tell a fresh write
+    // apart from a real overwrite. Without preview evidence keep the overwrite
+    // label rather than claiming a new install.
+    const importedResolutionLabel = (
+      sourcePath: string,
+      resolution: string,
+    ) => {
+      if (resolution !== "overwrite") {
+        return t(`marketplace.duplicateResolution.${resolution}`);
+      }
+      const previewed = preview?.skills.find(
+        (skill) => skill.sourcePath === sourcePath,
+      );
+      return previewed && !previewed.conflict
+        ? t("marketplace.githubImportResolutionNew")
+        : t("marketplace.duplicateResolution.overwrite");
+    };
+    const skippedOnly =
+      !failure && importedSkills.length === 0 && skippedPaths.length > 0;
+
     return (
       <div
         className="flex h-full min-h-0 flex-col overflow-hidden"
         data-testid="github-import-result-hub"
       >
         <div className="min-h-0 flex-1 overflow-y-auto space-y-5 pr-1">
-          <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-5">
-            <div className="flex items-start gap-3">
-              <div className="rounded-full bg-emerald-500/10 p-2 text-emerald-700 dark:text-emerald-300">
-                <PartyPopper className="size-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-2 text-emerald-700 dark:text-emerald-300">
-                  <div className="text-base font-semibold">
-                    {t("marketplace.githubImportSuccessTitle")}
-                  </div>
-                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium">
-                    {currentImportResult.repo.owner}/{currentImportResult.repo.repo}
-                  </span>
+          {failure ? (
+            <div
+              className="rounded-xl border border-destructive/30 bg-destructive/5 p-5"
+              data-testid="github-import-partial-failure"
+            >
+              <div className="flex items-start gap-3">
+                <div className="rounded-full bg-destructive/10 p-2 text-destructive">
+                  <AlertCircle className="size-5" />
                 </div>
-                <div className="mt-2 text-sm text-muted-foreground">
-                  {t("marketplace.githubImportSuccessDesc", {
-                    count: currentImportResult.importedSkills.length,
-                  })}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="text-base font-semibold text-destructive">
+                      {t("marketplace.githubImportPartialFailureTitle")}
+                    </div>
+                    {repoLabel ? (
+                      <span className="rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-medium text-destructive">
+                        {repoLabel}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    {t("marketplace.githubImportPartialFailureDesc", {
+                      imported: importedSkills.length,
+                      skipped: skippedPaths.length,
+                      failed: 1,
+                      notAttempted: notAttemptedPaths.length,
+                    })}
+                  </div>
+                  {failedSkill ? (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {t("marketplace.githubImportFailureSkill", {
+                        name: failedSkill.skillName,
+                      })}
+                    </div>
+                  ) : null}
+                  <div className="mt-1 break-words text-xs text-destructive/90">
+                    {failure.message}
+                  </div>
+                  {failure.existingPath ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                      <span>
+                        {t("marketplace.githubImportFailureExistingPathLabel")}
+                      </span>
+                      <code className="break-all rounded bg-background/80 px-1.5 py-0.5 font-mono">
+                        {failure.existingPath}
+                      </code>
+                    </div>
+                  ) : null}
+                  <div className="mt-2 text-xs text-muted-foreground">
+                    {t("marketplace.githubImportPartialRetryHint")}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div
+              className={cn(
+                "rounded-xl border p-5",
+                skippedOnly
+                  ? "border-border/70 bg-muted/20"
+                  : "border-emerald-500/30 bg-emerald-500/5",
+              )}
+              data-testid="github-import-success-header"
+            >
+              <div className="flex items-start gap-3">
+                <div
+                  className={cn(
+                    "rounded-full p-2",
+                    skippedOnly
+                      ? "bg-muted text-muted-foreground"
+                      : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                  )}
+                >
+                  <PartyPopper className="size-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div
+                    className={cn(
+                      "flex flex-wrap items-center gap-2",
+                      skippedOnly
+                        ? "text-muted-foreground"
+                        : "text-emerald-700 dark:text-emerald-300",
+                    )}
+                  >
+                    <div className="text-base font-semibold">
+                      {skippedOnly
+                        ? t("marketplace.githubImportSkippedOnlyTitle")
+                        : t("marketplace.githubImportSuccessTitle")}
+                    </div>
+                    {repoLabel ? (
+                      <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] font-medium">
+                        {repoLabel}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    {skippedOnly
+                      ? t("marketplace.githubImportSkipped", {
+                          count: skippedPaths.length,
+                        })
+                      : t("marketplace.githubImportSuccessDesc", {
+                          count: importedSkills.length,
+                        })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
-          <div className="grid gap-4 md:grid-cols-3">
+          <div
+            className={cn(
+              "grid gap-4",
+              failure ? "md:grid-cols-4" : "md:grid-cols-3",
+            )}
+          >
             <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {t("marketplace.githubImportDecision.import")}
               </div>
-              <div className="mt-2 text-2xl font-semibold">
-                {currentImportResult.importedSkills.length}
+              <div
+                className="mt-2 text-2xl font-semibold"
+                data-testid="github-import-result-imported-count"
+              >
+                {importedSkills.length}
               </div>
             </div>
             <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
               <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {t("marketplace.githubImportDecision.skip")}
               </div>
-              <div className="mt-2 text-2xl font-semibold">
-                {currentImportResult.skippedSkills.length}
+              <div
+                className="mt-2 text-2xl font-semibold"
+                data-testid="github-import-result-skipped-count"
+              >
+                {skippedPaths.length}
               </div>
             </div>
-            <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                {t("marketplace.githubImportResultInstalledReady")}
+            {failure ? (
+              <>
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
+                  <div className="text-[11px] font-medium uppercase tracking-wide text-destructive">
+                    {t("marketplace.githubImportResultFailedTitle")}
+                  </div>
+                  <div
+                    className="mt-2 text-2xl font-semibold text-destructive"
+                    data-testid="github-import-result-failed-count"
+                  >
+                    1
+                  </div>
+                </div>
+                <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
+                  <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("marketplace.githubImportResultNotAttemptedTitle")}
+                  </div>
+                  <div
+                    className="mt-2 text-2xl font-semibold"
+                    data-testid="github-import-result-not-attempted-count"
+                  >
+                    {notAttemptedPaths.length}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-xl border border-border/70 bg-card/80 px-4 py-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {t("marketplace.githubImportResultInstalledReady")}
+                </div>
+                <div className="mt-2 text-2xl font-semibold">
+                  {importedSkills.length}
+                </div>
               </div>
-              <div className="mt-2 text-2xl font-semibold">
-                {currentImportResult.importedSkills.length}
-              </div>
-            </div>
+            )}
           </div>
 
           {repoCollectionState ? (
@@ -917,13 +1210,43 @@ export function GitHubRepoImportWizard({
             </div>
           ) : null}
 
+          {postImportSyncError ? (
+            <div
+              className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-4 text-sm"
+              data-testid="github-import-post-sync-error"
+            >
+              <div className="flex items-start gap-2">
+                <AlertCircle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-300" />
+                <div className="min-w-0">
+                  <div className="font-medium">
+                    {t("marketplace.githubImportPostSyncFailed")}
+                  </div>
+                  <div className="mt-1 break-words text-xs text-muted-foreground">
+                    {postImportSyncError}
+                  </div>
+                  {importResult ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-2"
+                      onClick={() => void runAfterImportSuccess(importResult)}
+                    >
+                      <RefreshCw className="size-3.5" />
+                      <span>{t("marketplace.githubImportPostSyncRetry")}</span>
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.95fr)]">
             <div className="rounded-xl border border-border/70 bg-card/80 p-4">
               <div className="text-sm font-semibold">
                 {t("marketplace.githubImportResultImportedTitle")}
               </div>
               <ul className="mt-4 space-y-2 text-sm">
-                {currentImportResult.importedSkills.map((skill) => (
+                {importedSkills.map((skill) => (
                   <li
                     key={`${skill.sourcePath}-${skill.importedSkillId}`}
                     className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 bg-background/80 px-3 py-2"
@@ -936,9 +1259,12 @@ export function GitHubRepoImportWizard({
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs text-muted-foreground">
-                        {t(`marketplace.duplicateResolution.${skill.resolution}`)}
+                        {importedResolutionLabel(
+                          skill.sourcePath,
+                          skill.resolution,
+                        )}
                       </span>
-                      {onInstallImportedSkill ? (
+                      {!failure && onInstallImportedSkill ? (
                         <Button
                           variant="outline"
                           size="sm"
@@ -964,14 +1290,11 @@ export function GitHubRepoImportWizard({
                   {t("marketplace.githubImportResultNextDesc")}
                 </div>
                 <div className="mt-4 flex flex-col gap-2">
-                  {currentImportResult.importedSkills.length > 0 &&
-                  onInstallImportedSkill ? (
+                  {importedSkills.length > 0 && !failure && onInstallImportedSkill ? (
                     <Button
                       className="justify-between"
                       onClick={() =>
-                        handleInstallImported(
-                          currentImportResult.importedSkills[0].importedSkillId,
-                        )
+                        handleInstallImported(importedSkills[0].importedSkillId)
                       }
                     >
                       <span>
@@ -1004,11 +1327,27 @@ export function GitHubRepoImportWizard({
                   {t("marketplace.githubImportResultSkippedTitle")}
                 </div>
                 <div className="mt-3 text-xs text-muted-foreground">
-                  {currentImportResult.skippedSkills.length > 0
-                    ? currentImportResult.skippedSkills.join(", ")
+                  {skippedPaths.length > 0
+                    ? skippedPaths.map(skillNameForPath).join(", ")
                     : t("marketplace.githubImportResultSkippedNone")}
                 </div>
               </div>
+
+              {failure ? (
+                <div
+                  className="rounded-xl border border-border/70 bg-card/80 p-4"
+                  data-testid="github-import-not-attempted"
+                >
+                  <div className="text-sm font-semibold">
+                    {t("marketplace.githubImportResultNotAttemptedTitle")}
+                  </div>
+                  <div className="mt-3 text-xs text-muted-foreground">
+                    {notAttemptedPaths.length > 0
+                      ? notAttemptedPaths.map(skillNameForPath).join(", ")
+                      : t("marketplace.githubImportResultNotAttemptedNone")}
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -1121,6 +1460,58 @@ export function GitHubRepoImportWizard({
                 data-testid="github-import-confirm-summary"
               >
                 <div className="min-h-0 flex-1 overflow-y-auto space-y-5 pr-1">
+                  {importFailure?.code === "blocked" ? (
+                    <div
+                      className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"
+                      data-testid="github-import-blocked-failure"
+                    >
+                      <div className="font-semibold text-destructive">
+                        {t("marketplace.githubImportBlockedTitle")}
+                      </div>
+                      {preview?.skills.find(
+                        (skill) => skill.sourcePath === importFailure.sourcePath,
+                      ) ? (
+                        <div className="mt-1 text-xs text-destructive/90">
+                          {t("marketplace.githubImportFailureSkill", {
+                            name:
+                              preview.skills.find(
+                                (skill) =>
+                                  skill.sourcePath === importFailure.sourcePath,
+                              )?.skillName ?? "",
+                          })}
+                        </div>
+                      ) : null}
+                      <div className="mt-1 break-words text-xs text-destructive/90">
+                        {importFailure.message}
+                      </div>
+                      {importFailure.existingPath ? (
+                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                          <span>
+                            {t("marketplace.githubImportFailureExistingPathLabel")}
+                          </span>
+                          <code className="break-all rounded bg-background/80 px-1.5 py-0.5 font-mono">
+                            {importFailure.existingPath}
+                          </code>
+                        </div>
+                      ) : null}
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        {t("marketplace.githubImportBlockedHint")}
+                      </div>
+                    </div>
+                  ) : null}
+                  {legacyImportError ? (
+                    <div
+                      className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm"
+                      data-testid="github-import-legacy-failure"
+                    >
+                      <div className="font-semibold text-destructive">
+                        {t("marketplace.githubImportFailureTitle")}
+                      </div>
+                      <div className="mt-1 break-words text-xs text-destructive/90">
+                        {legacyImportError}
+                      </div>
+                    </div>
+                  ) : null}
                   <div className="rounded-xl border border-border/70 bg-card/80 p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="space-y-1">
@@ -1243,7 +1634,10 @@ export function GitHubRepoImportWizard({
                                 <div className="text-right text-xs text-muted-foreground">
                                   <div>
                                     {t(
-                                      `marketplace.duplicateResolution.${resolution}`,
+                                      !skill.conflict &&
+                                        resolution === "overwrite"
+                                        ? "marketplace.githubImportResolutionNew"
+                                        : `marketplace.duplicateResolution.${resolution}`,
                                     )}
                                   </div>
                                   {resolution === "rename" &&
@@ -1324,7 +1718,7 @@ export function GitHubRepoImportWizard({
 
                       {blockingConflict ? (
                         <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-                          {t("marketplace.resolveConflictsBeforeImport")}
+                          {renameIssueMessage(blockingConflict.sourcePath)}
                         </div>
                       ) : (
                         <div className="rounded-xl border border-primary/20 bg-primary/5 p-4 text-sm text-muted-foreground">
@@ -1335,7 +1729,9 @@ export function GitHubRepoImportWizard({
                   </div>
                 </div>
               </div>
-            ) : step === "result" && importResult ? renderImportResultHub(importResult) : (
+            ) : step === "result" && (importResult || importFailure) ? (
+              renderImportResultHub()
+            ) : (
               <div className="flex h-full min-h-0 flex-col gap-4 overflow-hidden">
                 <div
                   className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-[minmax(320px,0.9fr)_minmax(0,1.45fr)] xl:grid-cols-[minmax(360px,0.88fr)_minmax(0,1.52fr)]"
@@ -1384,7 +1780,10 @@ export function GitHubRepoImportWizard({
                           >
                             <div className="flex items-start gap-3">
                               <input
-                                aria-label={t("marketplace.selectSkill")}
+                                aria-label={t(
+                                  "marketplace.githubImportSelectSkill",
+                                  { name: skill.skillName },
+                                )}
                                 type="checkbox"
                                 className="mt-1"
                                 checked={selected}
@@ -1433,6 +1832,8 @@ export function GitHubRepoImportWizard({
                           const resolvedRenameId =
                             currentSelection?.renamedSkillId?.trim() ||
                             selectedPreviewSkill.skillId;
+                          const renameIssue =
+                            renameIssues[selectedPreviewSkill.sourcePath];
                           const statusBadgeClassName =
                             !selectedPreviewSkill.conflict
                               ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
@@ -1460,23 +1861,23 @@ export function GitHubRepoImportWizard({
                                             statusBadgeClassName,
                                           )}
                                         >
-                                          {!selectedPreviewSkill.conflict
+                                          {currentResolution === "rename"
                                             ? t(
-                                                "marketplace.githubImportStatusReady",
+                                                "marketplace.githubImportStatusWillRename",
+                                                {
+                                                  id: resolvedRenameId,
+                                                },
                                               )
-                                            : currentResolution === "overwrite"
+                                            : !selectedPreviewSkill.conflict
                                               ? t(
-                                                  "marketplace.githubImportStatusWillOverwrite",
-                                                  {
-                                                    name: selectedPreviewSkill
-                                                      .conflict.existingName,
-                                                  },
+                                                  "marketplace.githubImportStatusReady",
                                                 )
-                                              : currentResolution === "rename"
+                                              : currentResolution === "overwrite"
                                                 ? t(
-                                                    "marketplace.githubImportStatusWillRename",
+                                                    "marketplace.githubImportStatusWillOverwrite",
                                                     {
-                                                      id: resolvedRenameId,
+                                                      name: selectedPreviewSkill
+                                                        .conflict.existingName,
                                                     },
                                                   )
                                                 : t(
@@ -1567,28 +1968,187 @@ export function GitHubRepoImportWizard({
                                         </>
                                       )}
                                     </div>
-                                  </div>
-                                  <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
-                                    {!isRenameEditing &&
-                                    selectedPreviewSkill.conflict ? (
-                                      currentResolution === "overwrite" ? (
-                                        <Button
-                                          type="button"
-                                          size="sm"
-                                          variant="outline"
-                                          onClick={() =>
-                                            updateSelection(
-                                              selectedPreviewSkill,
-                                              {
-                                                resolution: "skip",
-                                              },
-                                            )
-                                          }
+                                    {selectedPreviewSkill.conflict ? (
+                                      <div
+                                        className="mt-3 space-y-1.5 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-[11px]"
+                                        data-testid="github-import-conflict-details"
+                                      >
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                          <span className="text-muted-foreground">
+                                            {t(
+                                              "marketplace.githubImportConflictExistingLabel",
+                                            )}
+                                          </span>
+                                          <span className="font-medium">
+                                            {
+                                              selectedPreviewSkill.conflict
+                                                .existingName
+                                            }
+                                          </span>
+                                          <code className="rounded bg-background/80 px-1.5 py-0.5 font-mono">
+                                            {
+                                              selectedPreviewSkill.conflict
+                                                .existingSkillId
+                                            }
+                                          </code>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                          <span className="text-muted-foreground">
+                                            {t(
+                                              "marketplace.githubImportConflictExistingPathLabel",
+                                            )}
+                                          </span>
+                                          <code
+                                            className="break-all rounded bg-background/80 px-1.5 py-0.5 font-mono"
+                                            data-testid="github-import-conflict-existing-path"
+                                          >
+                                            {selectedPreviewSkill.conflict.existingPath}
+                                          </code>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                          <span className="text-muted-foreground">
+                                            {t(
+                                              "marketplace.githubImportConflictIncomingLabel",
+                                            )}
+                                          </span>
+                                          <code
+                                            className="break-all rounded bg-background/80 px-1.5 py-0.5 font-mono"
+                                            data-testid="github-import-conflict-incoming-path"
+                                          >
+                                            {selectedPreviewSkill.sourcePath}
+                                          </code>
+                                        </div>
+                                        <div
+                                          className="text-amber-800 dark:text-amber-200"
+                                          data-testid="github-import-conflict-reason"
                                         >
                                           {t(
-                                            "marketplace.githubImportStatusResetDefault",
+                                            `marketplace.githubImportConflictReason.${selectedPreviewSkill.conflict.conflictKind}`,
                                           )}
-                                        </Button>
+                                        </div>
+                                        {renameIssue ? (
+                                          <div
+                                            className="font-medium text-destructive"
+                                            data-testid="github-import-rename-issue"
+                                          >
+                                            {renameIssueMessage(
+                                              selectedPreviewSkill.sourcePath,
+                                            )}
+                                          </div>
+                                        ) : null}
+                                      </div>
+                                    ) : renameIssue ? (
+                                      <div
+                                        className="mt-3 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-[11px] font-medium text-destructive"
+                                        data-testid="github-import-rename-issue"
+                                      >
+                                        {renameIssueMessage(
+                                          selectedPreviewSkill.sourcePath,
+                                        )}
+                                      </div>
+                                    ) : null}
+                                    {currentResolution === "rename" ? (
+                                      <div
+                                        className="mt-3 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-[11px] text-muted-foreground"
+                                        data-testid="github-import-rename-notice"
+                                      >
+                                        {t("marketplace.githubImportRenameNotice")}
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                  <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+                                    {!isRenameEditing ? (
+                                      selectedPreviewSkill.conflict ? (
+                                        currentResolution === "overwrite" ? (
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() =>
+                                              updateSelection(
+                                                selectedPreviewSkill,
+                                                {
+                                                  resolution: "skip",
+                                                },
+                                              )
+                                            }
+                                          >
+                                            {t(
+                                              "marketplace.githubImportStatusResetDefault",
+                                            )}
+                                          </Button>
+                                        ) : currentResolution === "rename" ? (
+                                          <>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() =>
+                                                startRenameEditing(
+                                                  selectedPreviewSkill,
+                                                )
+                                              }
+                                            >
+                                              {t(
+                                                "marketplace.githubImportStatusChangeToRename",
+                                              )}
+                                            </Button>
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() =>
+                                                updateSelection(
+                                                  selectedPreviewSkill,
+                                                  {
+                                                    resolution: "skip",
+                                                  },
+                                                )
+                                              }
+                                            >
+                                              {t(
+                                                "marketplace.githubImportStatusResetDefault",
+                                              )}
+                                            </Button>
+                                          </>
+                                        ) : (
+                                          <>
+                                            {selectedPreviewSkill.conflict
+                                              .conflictKind === "central" ? (
+                                              <Button
+                                                type="button"
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={() =>
+                                                  updateSelection(
+                                                    selectedPreviewSkill,
+                                                    {
+                                                      resolution: "overwrite",
+                                                    },
+                                                  )
+                                                }
+                                              >
+                                                {t(
+                                                  "marketplace.githubImportStatusChangeToOverwrite",
+                                                )}
+                                              </Button>
+                                            ) : null}
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() =>
+                                                startRenameEditing(
+                                                  selectedPreviewSkill,
+                                                )
+                                              }
+                                            >
+                                              {t(
+                                                "marketplace.githubImportStatusChangeToRename",
+                                              )}
+                                            </Button>
+                                          </>
+                                        )
                                       ) : currentResolution === "rename" ? (
                                         <>
                                           <Button
@@ -1613,7 +2173,7 @@ export function GitHubRepoImportWizard({
                                               updateSelection(
                                                 selectedPreviewSkill,
                                                 {
-                                                  resolution: "skip",
+                                                  resolution: "overwrite",
                                                 },
                                               )
                                             }
@@ -1624,39 +2184,20 @@ export function GitHubRepoImportWizard({
                                           </Button>
                                         </>
                                       ) : (
-                                        <>
-                                          <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                              updateSelection(
-                                                selectedPreviewSkill,
-                                                {
-                                                  resolution: "overwrite",
-                                                },
-                                              )
-                                            }
-                                          >
-                                            {t(
-                                              "marketplace.githubImportStatusChangeToOverwrite",
-                                            )}
-                                          </Button>
-                                          <Button
-                                            type="button"
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={() =>
-                                              startRenameEditing(
-                                                selectedPreviewSkill,
-                                              )
-                                            }
-                                          >
-                                            {t(
-                                              "marketplace.githubImportStatusChangeToRename",
-                                            )}
-                                          </Button>
-                                        </>
+                                        <Button
+                                          type="button"
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() =>
+                                            startRenameEditing(
+                                              selectedPreviewSkill,
+                                            )
+                                          }
+                                        >
+                                          {t(
+                                            "marketplace.githubImportStatusChangeToRename",
+                                          )}
+                                        </Button>
                                       )
                                     ) : null}
                                     {skillGithubHref && !isRenameEditing ? (
@@ -1927,8 +2468,8 @@ export function GitHubRepoImportWizard({
                 </div>
               </div>
             )
-          ) : step === "result" && importResult ? (
-            renderImportResultHub(importResult)
+          ) : step === "result" && (importResult || importFailure) ? (
+            renderImportResultHub()
           ) : null}
         </div>
 

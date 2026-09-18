@@ -2,7 +2,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, Row};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -44,6 +44,9 @@ pub(crate) async fn mutation_lock() -> MutexGuard<'static, ()> {
 const MAX_SKILL_FILES: usize = 5_000;
 const MAX_SKILL_BYTES: usize = 100 * 1024 * 1024;
 const MAX_SKILL_FILE_BYTES: usize = 20 * 1024 * 1024;
+/// 한 번의 출처 요약 조회에 담는 대상 경로 수. SQLite의 바인딩 변수 한도보다
+/// 충분히 작게 잡아 긴 목록에서도 조회가 실패하지 않게 합니다.
+const MAX_ORIGIN_QUERY_KEYS: usize = 500;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +106,19 @@ pub struct SkillOriginInfo {
     pub last_error: Option<String>,
     pub binding_version: i64,
     pub can_update: bool,
+}
+
+/// 카드와 목록에 붙일 최소 GitHub 출처 요약입니다.
+///
+/// 기준 manifest나 마지막 확인 시각 같은 상세 정보는 `get_skill_origin`이
+/// 돌려주는 전체 출처가 담당합니다.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSkillOriginSummary {
+    pub owner: String,
+    pub repo: String,
+    pub source_path: String,
+    pub ref_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -396,23 +412,31 @@ async fn resolve_target(
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(&detail.dir_path))
     };
-    let normalized = target_path
-        .canonicalize()
-        .unwrap_or_else(|_| target_path.clone());
+    let target_key = origin_target_key(&target_path);
     Ok(ResolvedSkillTarget {
         skill_id: request.skill_id.clone(),
         agent_id: request.agent_id.clone(),
         row_id: request.row_id.clone(),
-        target_key: normalized.to_string_lossy().into_owned(),
+        target_key,
         target_path,
         is_read_only: detail.is_read_only,
     })
 }
 
 async fn load_origin(pool: &DbPool, target_key: &str) -> Result<Option<SkillOriginRow>, String> {
+    load_origin_with(pool, target_key).await
+}
+
+async fn load_origin_with<'e, E>(
+    executor: E,
+    target_key: &str,
+) -> Result<Option<SkillOriginRow>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query_as::<_, SkillOriginRow>("SELECT * FROM skill_origins WHERE target_key = ?")
         .bind(target_key)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .map_err(|error| error.to_string())
 }
@@ -437,6 +461,183 @@ fn origin_info(origin: &SkillOriginRow, can_update: bool) -> SkillOriginInfo {
         binding_version: origin.binding_version,
         can_update,
     }
+}
+
+// ─── 가져온 스킬 출처 ─────────────────────────────────────────────────────────
+
+/// 출처 바인딩 키. 실제 물리 대상 경로를 canonicalize한 문자열을 씁니다.
+///
+/// 가져오기와 조회가 같은 규칙을 쓰지 않으면 폴더 이름만 바꿔 가져온 뒤 방금
+/// 기록한 출처를 같은 경로에서 찾지 못합니다.
+pub(crate) fn origin_target_key(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// GitHub에서 방금 기록한 스킬과 출처 바인딩을 하나의 트랜잭션으로 저장합니다.
+///
+/// 저장소 내용은 다시 내려받지 않고 호출자가 실제로 기록한 대상 폴더에서 기준
+/// manifest를 만듭니다. 확인한 커밋을 받았을 때만 그 커밋을 검증된 기준선으로
+/// 기록하고, 그렇지 않으면 기준선을 `unknown`으로 남깁니다.
+///
+/// 같은 대상 경로에 이미 바인딩이 있으면 저장소와 기준선을 통째로 교체합니다.
+/// 이전 저장소의 커밋 기록이 새 스킬에 남지 않습니다.
+pub async fn persist_imported_skill(
+    pool: &DbPool,
+    skill: &db::Skill,
+    repo: &github_import::GitHubRepoRef,
+    source_path: &str,
+    commit_oid: Option<&str>,
+) -> Result<(), String> {
+    let target_dir = skill
+        .canonical_path
+        .as_deref()
+        .map(PathBuf::from)
+        .or_else(|| Path::new(&skill.file_path).parent().map(Path::to_path_buf))
+        .ok_or_else(|| format!("Imported skill '{}' has no target directory", skill.id))?;
+    let target_key = origin_target_key(&target_dir);
+    let manifest_json_text = manifest_json(&manifest_from_local_directory(&target_dir)?)?;
+    // 로컬 설치 ID를 바꿔 가져와도 저장소 안 원본 경로는 그대로 남긴다.
+    let source_path = if source_path.trim().is_empty() {
+        ".".to_string()
+    } else {
+        source_path.trim_matches('/').to_string()
+    };
+    let commit_oid = commit_oid
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let now = Utc::now().to_rfc3339();
+    let baseline_state = if commit_oid.is_some() {
+        "verified"
+    } else {
+        "unknown"
+    };
+    let base_commit_oid = commit_oid.map(str::to_string);
+    let base_manifest_json = commit_oid.map(|_| manifest_json_text.clone());
+    let last_applied_commit_oid = commit_oid.map(str::to_string);
+    let last_applied_at = commit_oid.map(|_| now.clone());
+    let last_checked_at = commit_oid.map(|_| now.clone());
+    let last_remote_commit_oid = commit_oid.map(str::to_string);
+    let last_remote_manifest_json = commit_oid.map(|_| manifest_json_text.clone());
+
+    let mut transaction = pool.begin().await.map_err(|error| error.to_string())?;
+    db::upsert_skill_with(&mut *transaction, skill).await?;
+    let binding_id = load_origin_with(&mut *transaction, &target_key)
+        .await?
+        .map(|origin| origin.binding_id)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    sqlx::query(
+        "INSERT INTO skill_origins
+         (binding_id, target_key, skill_id, agent_id, row_id, target_path, provider, repository_id,
+          owner, repo, source_path, ref_name, baseline_state, base_commit_oid, base_manifest_json,
+          last_applied_commit_oid, last_applied_at, last_checked_at,
+          last_remote_commit_oid, last_remote_manifest_json, last_error,
+          binding_version, created_at, updated_at)
+         VALUES (?, ?, ?, NULL, NULL, ?, 'github', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+         ON CONFLICT(target_key) DO UPDATE SET
+          skill_id=excluded.skill_id, agent_id=NULL, row_id=NULL,
+          target_path=excluded.target_path, repository_id=NULL,
+          owner=excluded.owner, repo=excluded.repo, source_path=excluded.source_path,
+          ref_name=excluded.ref_name, baseline_state=excluded.baseline_state,
+          base_commit_oid=excluded.base_commit_oid, base_manifest_json=excluded.base_manifest_json,
+          last_applied_commit_oid=excluded.last_applied_commit_oid,
+          last_applied_at=excluded.last_applied_at, last_checked_at=excluded.last_checked_at,
+          last_remote_commit_oid=excluded.last_remote_commit_oid,
+          last_remote_manifest_json=excluded.last_remote_manifest_json,
+          last_error=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at",
+    )
+    .bind(&binding_id)
+    .bind(&target_key)
+    .bind(&skill.id)
+    .bind(target_dir.to_string_lossy().into_owned())
+    .bind(&repo.owner)
+    .bind(&repo.repo)
+    .bind(&source_path)
+    .bind(&repo.branch)
+    .bind(baseline_state)
+    .bind(&base_commit_oid)
+    .bind(&base_manifest_json)
+    .bind(&last_applied_commit_oid)
+    .bind(&last_applied_at)
+    .bind(&last_checked_at)
+    .bind(&last_remote_commit_oid)
+    .bind(&last_remote_manifest_json)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| error.to_string())?;
+    transaction.commit().await.map_err(|error| error.to_string())
+}
+
+/// 카드 목록용 출처 요약을 한 번의 조회로 가져옵니다.
+///
+/// 기준 manifest나 확인 기록은 읽지 않습니다. 실제 대상 경로가 정확히 일치하는
+/// 바인딩만 돌려주므로 같은 이름의 다른 사본에는 출처가 붙지 않습니다.
+pub(crate) async fn origin_summaries_for_targets(
+    pool: &DbPool,
+    target_keys: &[String],
+) -> Result<HashMap<String, GitHubSkillOriginSummary>, String> {
+    let mut summaries = HashMap::new();
+    if target_keys.is_empty() {
+        return Ok(summaries);
+    }
+    // 바인딩 변수 한도를 넘지 않게 나눠 조회하고 하나의 맵으로 합칩니다.
+    // 보통 크기의 목록은 한 번의 조회로 끝납니다.
+    for chunk in target_keys.chunks(MAX_ORIGIN_QUERY_KEYS) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT target_key, owner, repo, source_path, ref_name
+             FROM skill_origins WHERE target_key IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql);
+        for target_key in chunk {
+            query = query.bind(target_key.as_str());
+        }
+        for row in query
+            .fetch_all(pool)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            summaries.insert(
+                row.get::<String, _>("target_key"),
+                GitHubSkillOriginSummary {
+                    owner: row.get("owner"),
+                    repo: row.get("repo"),
+                    source_path: row.get("source_path"),
+                    ref_name: row.get("ref_name"),
+                },
+            );
+        }
+    }
+    Ok(summaries)
+}
+
+/// 사라진 물리 대상의 출처 바인딩을 제거합니다.
+///
+/// 보관함 스킬을 지우면 같은 경로에 다른 스킬이 들어올 수 있습니다. 대상이
+/// 없어진 바인딩을 남겨 두면 그 스킬이 이전 저장소 출처를 물려받습니다.
+/// 다른 경로의 출처와 컬렉션 기록은 건드리지 않습니다.
+pub(crate) async fn discard_origin_bindings(
+    pool: &DbPool,
+    target_keys: &[String],
+) -> Result<(), String> {
+    if target_keys.is_empty() {
+        return Ok(());
+    }
+    let placeholders = vec!["?"; target_keys.len()].join(",");
+    let sql = format!("DELETE FROM skill_origins WHERE target_key IN ({placeholders})");
+    let mut query = sqlx::query(&sql);
+    for target_key in target_keys {
+        query = query.bind(target_key.as_str());
+    }
+    query
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 async fn fetch_remote_snapshot(
@@ -1167,5 +1368,358 @@ mod tests {
             classify_state(None, &remote, &remote),
             OriginSyncState::LocalMatchesRemote
         );
+    }
+
+    // ── 가져온 스킬 출처 ──────────────────────────────────────────────────────
+
+    use crate::commands::github_import::GitHubRepoRef;
+    use sqlx::SqlitePool;
+
+    async fn setup_origin_db() -> crate::db::DbPool {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        crate::db::init_database(&pool).await.unwrap();
+        pool
+    }
+
+    fn imported_repo() -> GitHubRepoRef {
+        GitHubRepoRef {
+            owner: "acme".to_string(),
+            repo: "skills".to_string(),
+            branch: "main".to_string(),
+            normalized_url: "https://github.com/acme/skills".to_string(),
+        }
+    }
+
+    /// 가져오기 직후처럼 SKILL.md와 동봉 파일을 가진 대상 폴더를 만든다.
+    fn write_imported_skill(root: &Path, local_id: &str, frontmatter_name: &str) -> db::Skill {
+        let dir = root.join(local_id);
+        fs::create_dir_all(dir.join("references")).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {frontmatter_name}\ndescription: imported\n---\n\n# body\n"),
+        )
+        .unwrap();
+        fs::write(dir.join("references/guide.md"), "guide\n").unwrap();
+        db::Skill {
+            id: local_id.to_string(),
+            name: frontmatter_name.to_string(),
+            description: Some("imported".to_string()),
+            file_path: dir.join("SKILL.md").to_string_lossy().into_owned(),
+            canonical_path: Some(dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("github:acme/skills".to_string()),
+            content: None,
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[tokio::test]
+    async fn imported_skill_binds_renamed_directory_to_upstream_path() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+
+        let target_key = origin_target_key(&central.join("code-review-hermes"));
+        let origin = load_origin(&pool, &target_key)
+            .await
+            .unwrap()
+            .expect("binding for the just-written target");
+        assert_eq!(origin.skill_id, "code-review-hermes");
+        assert_eq!(origin.source_path, "skills/code-review");
+        assert_eq!(origin.ref_name, "main");
+        assert_eq!(
+            (origin.owner.as_str(), origin.repo.as_str()),
+            ("acme", "skills")
+        );
+        assert_eq!(origin.baseline_state, "verified");
+        assert_eq!(origin.base_commit_oid.as_deref(), Some("abc123"));
+        assert_eq!(origin.last_applied_commit_oid.as_deref(), Some("abc123"));
+        assert_eq!(origin.last_remote_commit_oid.as_deref(), Some("abc123"));
+        assert_eq!(
+            origin.target_path,
+            central
+                .join("code-review-hermes")
+                .to_string_lossy()
+                .into_owned()
+        );
+        let manifest: SkillManifest =
+            serde_json::from_str(origin.base_manifest_json.as_deref().unwrap()).unwrap();
+        assert!(manifest
+            .entries
+            .iter()
+            .any(|entry| entry.path == "references/guide.md"));
+        assert!(db::get_skill_by_id(&pool, "code-review-hermes")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn reimport_without_commit_keeps_unknown_baseline_without_stale_fields() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+        let target_key = origin_target_key(&central.join("code-review-hermes"));
+        // 이전 확인이 저장소 ID를 채워 둔 상태를 만든다.
+        sqlx::query("UPDATE skill_origins SET repository_id = '4242' WHERE target_key = ?")
+            .bind(&target_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let other_repo = GitHubRepoRef {
+            owner: "other".to_string(),
+            repo: "vault".to_string(),
+            branch: "release".to_string(),
+            normalized_url: "https://github.com/other/vault".to_string(),
+        };
+        persist_imported_skill(&pool, &skill, &other_repo, "skills/renamed", None)
+            .await
+            .unwrap();
+
+        let origin = load_origin(&pool, &target_key).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                origin.owner.as_str(),
+                origin.repo.as_str(),
+                origin.ref_name.as_str()
+            ),
+            ("other", "vault", "release")
+        );
+        assert_eq!(origin.source_path, "skills/renamed");
+        assert_eq!(origin.baseline_state, "unknown");
+        assert!(origin.base_commit_oid.is_none());
+        assert!(origin.base_manifest_json.is_none());
+        assert!(origin.last_applied_commit_oid.is_none());
+        assert!(origin.last_applied_at.is_none());
+        assert!(origin.last_checked_at.is_none());
+        assert!(origin.last_remote_commit_oid.is_none());
+        assert!(origin.repository_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn persist_refuses_target_without_skill_md_and_leaves_no_records() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let dir = central.join("not-a-skill");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("README.md"), "no frontmatter\n").unwrap();
+        let skill = db::Skill {
+            id: "not-a-skill".to_string(),
+            name: "not-a-skill".to_string(),
+            description: None,
+            file_path: dir.join("README.md").to_string_lossy().into_owned(),
+            canonical_path: Some(dir.to_string_lossy().into_owned()),
+            is_central: true,
+            source: Some("github:acme/skills".to_string()),
+            content: None,
+            scanned_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        let error = persist_imported_skill(&pool, &skill, &imported_repo(), "skills/x", Some("abc"))
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("SKILL.md"), "unexpected error: {error}");
+        assert!(db::get_skill_by_id(&pool, "not-a-skill")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(load_origin(&pool, &origin_target_key(&dir))
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn detail_lookup_sees_the_imported_origin() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+
+        let target = resolve_target(
+            &pool,
+            &SkillTargetRequest {
+                skill_id: "code-review-hermes".to_string(),
+                agent_id: None,
+                row_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            target.target_key,
+            origin_target_key(&central.join("code-review-hermes"))
+        );
+        let origin = load_origin(&pool, &target.target_key)
+            .await
+            .unwrap()
+            .expect("skill detail resolves the imported origin");
+        assert_eq!(origin.source_path, "skills/code-review");
+    }
+
+    #[tokio::test]
+    async fn central_rescan_keeps_the_imported_origin() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        sqlx::query("DELETE FROM agents WHERE id <> 'central'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM scan_directories")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central.to_string_lossy().into_owned())
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        crate::commands::scanner::scan_all_skills_impl(&pool)
+            .await
+            .unwrap();
+
+        let scanned = db::get_skill_by_id(&pool, "code-review-hermes")
+            .await
+            .unwrap()
+            .expect("rescan keeps the central skill");
+        let target_key = origin_target_key(Path::new(
+            scanned
+                .canonical_path
+                .as_deref()
+                .expect("central rescan records the canonical path"),
+        ));
+        let summaries = origin_summaries_for_targets(&pool, &[target_key.clone()])
+            .await
+            .unwrap();
+        assert_eq!(
+            summaries
+                .get(&target_key)
+                .map(|summary| summary.source_path.as_str()),
+            Some("skills/code-review")
+        );
+        assert_eq!(
+            load_origin(&pool, &target_key).await.unwrap().unwrap().owner,
+            "acme"
+        );
+    }
+
+    #[tokio::test]
+    async fn collection_rename_and_delete_keep_the_origin_reference() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+        let target_key = origin_target_key(&central.join("code-review-hermes"));
+
+        let collection = db::create_collection(&pool, "acme/skills", Some("bundle"))
+            .await
+            .unwrap();
+        db::add_skill_to_collection(&pool, &collection.id, &skill.id)
+            .await
+            .unwrap();
+        db::update_collection(&pool, &collection.id, "acme/skills (renamed)", None)
+            .await
+            .unwrap();
+        assert!(load_origin(&pool, &target_key).await.unwrap().is_some());
+
+        db::delete_collection(&pool, &collection.id).await.unwrap();
+
+        let origin = load_origin(&pool, &target_key)
+            .await
+            .unwrap()
+            .expect("collection deletion keeps the repository origin");
+        assert_eq!(origin.source_path, "skills/code-review");
+        assert_eq!(origin.owner, "acme");
+    }
+
+    #[tokio::test]
+    async fn origin_summaries_resolve_targets_beyond_the_first_query_chunk() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let central = temp.path().join("central");
+        let skill = write_imported_skill(&central, "code-review-hermes", "code-review");
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/code-review",
+            Some("abc123"),
+        )
+        .await
+        .unwrap();
+
+        // 첫 조회 묶음을 넘겨도 실제 바인딩이 있는 경로는 같은 맵에 담긴다.
+        let mut target_keys: Vec<String> = (0..MAX_ORIGIN_QUERY_KEYS)
+            .map(|index| format!("/nowhere/missing-{index}"))
+            .collect();
+        target_keys.push(origin_target_key(&central.join("code-review-hermes")));
+
+        let summaries = origin_summaries_for_targets(&pool, &target_keys)
+            .await
+            .unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        let origin = summaries
+            .get(&target_keys[MAX_ORIGIN_QUERY_KEYS])
+            .expect("a named target in the second chunk still resolves");
+        assert_eq!(origin.repo, "skills");
+        assert_eq!(origin.source_path, "skills/code-review");
+        assert_eq!(origin.ref_name, "main");
     }
 }

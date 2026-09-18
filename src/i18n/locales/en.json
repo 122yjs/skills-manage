@@ -217,6 +217,13 @@
       "universal": "Shared install"
     }
   },
+  "skillOrigin": {
+    "viewSource": "Open source on GitHub",
+    "installedAs": "installed as {{id}}",
+    "installedAsTitle": "Installed locally as {{id}}; the SKILL.md name is shown above",
+    "originalName": "SKILL.md name",
+    "localId": "Local ID"
+  },
   "skillUsage": {
     "active": "Active",
     "paused": "Inactive",
@@ -887,9 +894,10 @@
     "githubImportSkillDescription": "Description",
     "githubImportSkillFolder": "Skill folder",
     "githubImportRootDirectory": "Repo root",
-    "githubImportIdLabel": "ID",
+    "githubImportIdLabel": "Local installation id",
     "githubImportSelectionToggle": "Import selection",
     "githubImportSelectCurrentSkill": "Include this skill in the import",
+    "githubImportSelectSkill": "Include {{name}} in this import",
     "githubImportDetailTabs": {
       "overview": "Overview",
       "options": "Import options",
@@ -908,10 +916,21 @@
     "githubImportStatusReady": "Ready to import into the Skill Library",
     "githubImportStatusWillSkip": "Local \"{{name}}\" already exists — will be skipped",
     "githubImportStatusWillOverwrite": "Will overwrite local \"{{name}}\"",
-    "githubImportStatusWillRename": "Will import as new id: {{id}}",
+    "githubImportStatusWillRename": "Will import as local id: {{id}}",
     "githubImportStatusChangeToOverwrite": "Overwrite",
-    "githubImportStatusChangeToRename": "Rename",
+    "githubImportStatusChangeToRename": "Change installation ID",
     "githubImportStatusResetDefault": "Reset",
+    "githubImportConflictExistingLabel": "Existing local skill",
+    "githubImportConflictExistingPathLabel": "Existing path",
+    "githubImportConflictIncomingLabel": "Incoming source",
+    "githubImportConflictReason": {
+      "central": "A managed central skill already uses this id. Choosing overwrite replaces that central skill's files.",
+      "non_central": "A platform skill outside the central library already uses this id. Its files, record and installations are preserved, so overwrite is not available.",
+      "unmanaged_path": "The target folder already exists on disk without a managed record. Overwrite is not available; choose a different installation id."
+    },
+    "githubImportRenameNotice": "Only the local installation id and folder name change. The source SKILL.md name and contents stay unchanged.",
+    "githubImportRenameEmpty": "Enter an installation id.",
+    "githubImportRenameDuplicate": "This installation id is already used by \"{{name}}\" in this import. Enter a different id or unselect one of them.",
     "githubImportTabBadgeUnresolved": "This skill has an unresolved conflict",
     "githubImportNoConflictTitle": "No conflict handling needed",
     "githubImportNoConflictBody": "This skill can be imported directly with its current id unless you deselect it from the import.",
@@ -922,9 +941,9 @@
     "duplicateResolution": {
       "overwrite": "Overwrite",
       "skip": "Skip",
-      "rename": "Rename"
+      "rename": "Change installation ID"
     },
-    "renameSkillIdPlaceholder": "New skill id",
+    "renameSkillIdPlaceholder": "New installation id",
     "reviewImportSelection": "Review import",
     "confirmImportTitle": "Confirm import",
     "confirmImportDesc": "Import {{count}} selected skill(s) into the Skill Library.",
@@ -934,8 +953,9 @@
       "import": "Imported",
       "skip": "Skipped",
       "overwrite": "Overwrite",
-      "rename": "Rename"
+      "rename": "Will change installation ID"
     },
+    "githubImportResolutionNew": "New install",
     "githubImportDecisionHintUnselected": "{{count}} skill(s) are unselected and won't be part of this import.",
     "githubImportReadyListTitle": "Ready to import",
     "githubImportReadyListDesc": "Final check of the skills that will be written into the Skill Library.",
@@ -943,7 +963,7 @@
     "githubImportDecisionNone": "No skills in this group.",
     "githubImportConfirmCalmHint": "Need to adjust selection or conflict decisions? Go back to Preview to edit before importing.",
     "githubImportCreateCollection": "Create the ‘{{name}}’ collection",
-    "githubImportCreateCollectionDesc": "Only skills successfully imported in this run will be added.",
+    "githubImportCreateCollectionDesc": "Only the skills imported in this run are added. The collection is just a group label and is not installed as a plugin.",
     "githubImportCollectionDescription": "Skills imported from the GitHub repository {{name}}",
     "githubImportCollectionCreating": "Creating the ‘{{name}}’ collection.",
     "githubImportCollectionCreated": "Created the ‘{{name}}’ collection.",
@@ -966,7 +986,7 @@
     "githubImportResultInstalledReady": "Ready for install",
     "githubImportResultImportedTitle": "Imported skills",
     "githubImportResultNextTitle": "Next steps",
-    "githubImportResultNextDesc": "Choose what you want to do next now that the repo import is complete.",
+    "githubImportResultNextDesc": "Review the import results, then choose your next action.",
     "githubImportResultActionInstall": "Continue platform setup",
     "githubImportResultActionCentral": "Open Skill Library",
     "previewInstallUnavailable": "Could not find the skill path to import from this preview.",
@@ -974,6 +994,20 @@
     "githubImportResultActionRestart": "Start another import",
     "githubImportResultSkippedTitle": "Skipped items",
     "githubImportResultSkippedNone": "No skills were skipped.",
+    "githubImportBlockedTitle": "Import blocked before writing anything",
+    "githubImportBlockedHint": "Change the installation id or unselect this skill, then try again.",
+    "githubImportFailureTitle": "Import failed",
+    "githubImportFailureSkill": "Failing skill: {{name}}",
+    "githubImportFailureExistingPathLabel": "Existing path:",
+    "githubImportPartialFailureTitle": "Import stopped partway",
+    "githubImportPartialFailureDesc": "The import stopped after {{imported}} skill(s) were already imported. Skipped {{skipped}}, failed {{failed}}, not attempted {{notAttempted}}. Nothing already imported was rolled back.",
+    "githubImportPartialRetryHint": "Resolve the error, then start another import and select only failed or unattempted skills. Exclude skills that were already imported.",
+    "githubImportResultFailedTitle": "Failed",
+    "githubImportResultNotAttemptedTitle": "Not attempted",
+    "githubImportResultNotAttemptedNone": "No skills were left unattempted.",
+    "githubImportPostSyncFailed": "The skills were imported, but refreshing the app data failed. Retrying the refresh does not import anything again.",
+    "githubImportPostSyncRetry": "Retry refresh",
+    "githubImportSkippedOnlyTitle": "Nothing was imported",
     "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow."
   },
   "libraryBrowser": {

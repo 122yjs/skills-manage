@@ -217,6 +217,13 @@
       "universal": "共享安装"
     }
   },
+  "skillOrigin": {
+    "viewSource": "在 GitHub 上打开来源",
+    "installedAs": "安装 ID {{id}}",
+    "installedAsTitle": "本地安装 ID 为 {{id}}；SKILL.md 名称见上方",
+    "originalName": "SKILL.md 名称",
+    "localId": "本地安装 ID"
+  },
   "skillUsage": {
     "active": "已激活",
     "paused": "未激活",
@@ -887,9 +894,10 @@
     "githubImportSkillDescription": "描述",
     "githubImportSkillFolder": "技能目录",
     "githubImportRootDirectory": "仓库根目录",
-    "githubImportIdLabel": "ID",
+    "githubImportIdLabel": "本地安装 ID",
     "githubImportSelectionToggle": "导入选择",
     "githubImportSelectCurrentSkill": "将当前技能纳入导入",
+    "githubImportSelectSkill": "将「{{name}}」纳入本次导入",
     "githubImportDetailTabs": {
       "overview": "概览",
       "options": "导入选项",
@@ -908,10 +916,21 @@
     "githubImportStatusReady": "可直接导入技能仓库",
     "githubImportStatusWillSkip": "本地已存在「{{name}}」，默认跳过不写入",
     "githubImportStatusWillOverwrite": "将覆盖本地「{{name}}」",
-    "githubImportStatusWillRename": "将以新 ID 导入：{{id}}",
+    "githubImportStatusWillRename": "将以本地 ID 导入：{{id}}",
     "githubImportStatusChangeToOverwrite": "改为覆盖",
-    "githubImportStatusChangeToRename": "重命名",
+    "githubImportStatusChangeToRename": "更改安装 ID",
     "githubImportStatusResetDefault": "还原默认",
+    "githubImportConflictExistingLabel": "现有本地技能",
+    "githubImportConflictExistingPathLabel": "现有路径",
+    "githubImportConflictIncomingLabel": "导入来源",
+    "githubImportConflictReason": {
+      "central": "已有受管理的中央技能使用该 ID。选择覆盖会替换该中央技能的文件。",
+      "non_central": "中央技能库之外的平台技能已使用该 ID。其文件、记录和安装连接都会保留，因此无法覆盖。",
+      "unmanaged_path": "目标文件夹已存在于磁盘上且没有管理记录。无法覆盖，请改用其他安装 ID。"
+    },
+    "githubImportRenameNotice": "只会更改本地安装 ID 和文件夹名称，源 SKILL.md 的名称与内容保持不变。",
+    "githubImportRenameEmpty": "请输入安装 ID。",
+    "githubImportRenameDuplicate": "该安装 ID 已被本次导入中的「{{name}}」使用。请换一个 ID，或取消选择其中一个。",
     "githubImportTabBadgeUnresolved": "该技能有未处理的冲突",
     "githubImportNoConflictTitle": "当前无需处理冲突",
     "githubImportNoConflictBody": "这个技能可以沿用当前 id 直接导入；如果不想导入，也可以在这里取消选择。",
@@ -922,9 +941,9 @@
     "duplicateResolution": {
       "overwrite": "覆盖",
       "skip": "跳过",
-      "rename": "重命名"
+      "rename": "更改安装 ID"
     },
-    "renameSkillIdPlaceholder": "新的技能 ID",
+    "renameSkillIdPlaceholder": "新的安装 ID",
     "reviewImportSelection": "检查导入内容",
     "confirmImportTitle": "确认导入",
     "confirmImportDesc": "将 {{count}} 个选中的技能导入技能仓库。",
@@ -934,8 +953,9 @@
       "import": "已导入",
       "skip": "将跳过",
       "overwrite": "将覆盖",
-      "rename": "将重命名"
+      "rename": "将更改安装 ID"
     },
+    "githubImportResolutionNew": "新安装",
     "githubImportDecisionHintUnselected": "还有 {{count}} 个技能未勾选，不在本次导入范围。",
     "githubImportReadyListTitle": "即将导入的技能",
     "githubImportReadyListDesc": "最后确认哪些技能会写入技能仓库。",
@@ -943,7 +963,7 @@
     "githubImportDecisionNone": "这一组目前没有技能。",
     "githubImportConfirmCalmHint": "如果还想修改选择或冲突处理，先返回预览调整，再回来确认导入。",
     "githubImportCreateCollection": "创建“{{name}}”集合",
-    "githubImportCreateCollectionDesc": "只会加入本次实际成功导入的技能。",
+    "githubImportCreateCollectionDesc": "只加入本次实际导入的技能。集合只是分组标签，不会作为插件安装。",
     "githubImportCollectionDescription": "从 GitHub 仓库 {{name}} 导入的技能",
     "githubImportCollectionCreating": "正在创建“{{name}}”集合。",
     "githubImportCollectionCreated": "已创建“{{name}}”集合。",
@@ -966,7 +986,7 @@
     "githubImportResultInstalledReady": "可继续安装",
     "githubImportResultImportedTitle": "已导入技能",
     "githubImportResultNextTitle": "下一步操作",
-    "githubImportResultNextDesc": "仓库导入已经完成，现在可以继续执行下一步操作。",
+    "githubImportResultNextDesc": "查看导入结果后，选择下一步操作。",
     "githubImportResultActionInstall": "继续配置平台安装",
     "githubImportResultActionCentral": "打开技能仓库",
     "previewInstallUnavailable": "此预览中找不到技能路径，无法导入到技能库。",
@@ -974,6 +994,20 @@
     "githubImportResultActionRestart": "开始新的导入",
     "githubImportResultSkippedTitle": "已跳过项目",
     "githubImportResultSkippedNone": "没有跳过任何技能。",
+    "githubImportBlockedTitle": "写入前已阻止导入",
+    "githubImportBlockedHint": "请更改安装 ID 或取消选择该技能后重试。",
+    "githubImportFailureTitle": "导入失败",
+    "githubImportFailureSkill": "失败的技能：{{name}}",
+    "githubImportFailureExistingPathLabel": "现有路径：",
+    "githubImportPartialFailureTitle": "导入中途停止",
+    "githubImportPartialFailureDesc": "在已成功导入 {{imported}} 个后中断。跳过 {{skipped}} 个，失败 {{failed}} 个，未尝试 {{notAttempted}} 个。已导入的内容不会回滚。",
+    "githubImportPartialRetryHint": "解决错误后，开始新的导入，仅选择失败或尚未尝试的技能。请排除已经导入的项目。",
+    "githubImportResultFailedTitle": "失败",
+    "githubImportResultNotAttemptedTitle": "未尝试",
+    "githubImportResultNotAttemptedNone": "没有未尝试的技能。",
+    "githubImportPostSyncFailed": "技能已导入，但刷新应用数据失败。重试刷新不会再次执行导入。",
+    "githubImportPostSyncRetry": "重试刷新",
+    "githubImportSkippedOnlyTitle": "没有导入任何技能",
     "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
   },
   "libraryBrowser": {
