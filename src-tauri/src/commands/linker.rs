@@ -204,6 +204,7 @@ async fn ensure_centralized(
     db::upsert_skill(pool, &updated).await?;
 
     skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, skill_id, None).await?;
+    super::skill_groups::inherit_group_source(pool, source_dir, canonical_dir).await?;
 
     Ok(())
 }
@@ -1053,6 +1054,9 @@ pub async fn install_skill_to_agent_copy_impl(
     if let Err(error) = copy_dir_all(&canonical_dir, &target_path) {
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
+    if let Err(error) = super::skill_groups::inherit_group_source(pool, &canonical_dir, &target_path).await {
+        return Err(rollback_error(pool, &installation, &rollback, error).await);
+    }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
 
     if let Err(error) = skill_origin::inherit_copied_origin(
@@ -1296,7 +1300,7 @@ pub(crate) async fn batch_install_skills_to_agents_impl(
 
 /// 원본 플러그인 라벨을 서로 겹치지 않는 안전한 경로 이름으로 바꾼다.
 /// 소문자 영숫자와 `-`, `_`만 유지하고 나머지 UTF-8 바이트는 `~xx`로 인코딩한다.
-fn plugin_bundle_directory_name(source_label: &str) -> Result<String, String> {
+pub(crate) fn plugin_bundle_directory_name(source_label: &str) -> Result<String, String> {
     if source_label.trim().is_empty() {
         return Err("Plugin source label is invalid".to_string());
     }
@@ -2998,6 +3002,11 @@ mod tests {
             .unwrap();
         assert_eq!(result.succeeded, vec!["chosen:cursor"]);
         assert!(result.failed.is_empty());
+        let source_label: String = sqlx::query_scalar("SELECT source_label FROM skill_group_sources WHERE target_path = ?")
+            .bind(central.join("first/chosen").canonicalize().unwrap().to_string_lossy().as_ref())
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(source_label, "first");
+
         assert_eq!(
             fs::read_to_string(cursor.join("chosen/SKILL.md")).unwrap(),
             original

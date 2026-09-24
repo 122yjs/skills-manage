@@ -24,6 +24,7 @@ interface CollectionEditorProps {
   onOpenChange: (open: boolean) => void;
   /** Pass a collection to edit it; null for create mode. */
   collection: Collection | null;
+  onCreated?: (collection: Collection) => void;
 }
 
 // ─── CollectionEditor ─────────────────────────────────────────────────────────
@@ -32,6 +33,7 @@ export function CollectionEditor({
   open,
   onOpenChange,
   collection,
+  onCreated,
 }: CollectionEditorProps) {
   const { t } = useTranslation();
   const createCollection = useCollectionStore((s) => s.createCollection);
@@ -70,7 +72,8 @@ export function CollectionEditor({
       if (isEditMode) {
         await updateCollection(collection.id, trimmedName, description.trim());
       } else {
-        await createCollection(trimmedName, description.trim());
+        const created = await createCollection(trimmedName, description.trim());
+        onCreated?.(created);
       }
       onOpenChange(false);
     } catch (err) {

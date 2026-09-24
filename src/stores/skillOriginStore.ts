@@ -1,3 +1,4 @@
+import { useSkillGroupStore } from "./skillGroupStore";
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import type {
@@ -74,6 +75,7 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
           });
           if (token !== originLoadToken) return;
           set({ origin: discovery.origin, candidates: discovery.candidates, isDiscovering: false });
+          if (discovery.origin) void useSkillGroupStore.getState().load();
         } catch (error) {
           if (token === originLoadToken) set({ error: String(error), isDiscovering: false });
         }
@@ -96,6 +98,7 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
         },
       });
       set({ origin: status.origin, status, candidates: [], isChecking: false });
+      void useSkillGroupStore.getState().load();
       return status;
     } catch (error) {
       set({ error: String(error), isChecking: false });
@@ -109,6 +112,7 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
     try {
       await invoke("unlink_skill_origin", { target: backendTarget(target) });
       set({ origin: null, status: null, candidates: [], isChecking: false });
+      void useSkillGroupStore.getState().load();
     } catch (error) {
       set({ error: String(error), isChecking: false });
       throw error;

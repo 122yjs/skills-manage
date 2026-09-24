@@ -18,7 +18,7 @@ vi.mock("@/lib/tauri", () => ({
 let triggerRescanInMock = false;
 
 vi.mock("@/stores/platformStore", () => ({
-  usePlatformStore: vi.fn(),
+  usePlatformStore: Object.assign(vi.fn(), { setState: vi.fn() }),
 }));
 
 vi.mock("@/stores/centralSkillsStore", () => ({
@@ -213,6 +213,22 @@ describe("AppShell", () => {
 
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("check_linked_skill_origins"));
     await waitFor(() => expect(loadCentralSkills).toHaveBeenCalledTimes(2));
+    expect(mockUsePlatformStore.setState).toHaveBeenCalled();
+  });
+
+  it("수동 재스캔 뒤 원본을 확인하고 플랫폼 링크를 갱신한다", async () => {
+    mockIsTauriRuntime.mockReturnValue(true);
+    triggerRescanInMock = true;
+    render(<MemoryRouter><AppShell /></MemoryRouter>);
+    await waitFor(() => expect(mockUsePlatformStore.setState).toHaveBeenCalledTimes(1));
+    mockInvoke.mockClear();
+    vi.mocked(mockUsePlatformStore.setState).mockClear();
+
+    await act(async () => screen.getByRole("button", { name: /open-search/i }).click());
+    await act(async () => screen.getByRole("button", { name: /trigger-rescan/i }).click());
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("check_linked_skill_origins"));
+    await waitFor(() => expect(mockUsePlatformStore.setState).toHaveBeenCalledTimes(1));
   });
 
   it("resets shell scroll and keeps main non-scrollable when the route changes", async () => {
