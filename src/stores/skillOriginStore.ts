@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import type {
   SkillDetailRequest,
+  SkillOriginCandidate,
+  SkillOriginDiscovery,
   SkillOriginInfo,
   SkillOriginStatus,
   SkillUpdatePlan,
@@ -17,6 +19,8 @@ interface LinkOriginInput {
 interface SkillOriginState {
   origin: SkillOriginInfo | null;
   status: SkillOriginStatus | null;
+  candidates: SkillOriginCandidate[];
+  isDiscovering: boolean;
   isLoading: boolean;
   isChecking: boolean;
   isUpdating: boolean;
@@ -38,17 +42,22 @@ function backendTarget(target: SkillDetailRequest) {
   };
 }
 
+let originLoadToken = 0;
+
 export const useSkillOriginStore = create<SkillOriginState>((set) => ({
   origin: null,
   status: null,
+  candidates: [],
+  isDiscovering: false,
   isLoading: false,
   isChecking: false,
   isUpdating: false,
   error: null,
 
   loadOrigin: async (target) => {
+    const token = ++originLoadToken;
     if (!isTauriRuntime()) {
-      set({ origin: null, status: null, isLoading: false, error: null });
+      set({ origin: null, status: null, candidates: [], isLoading: false, error: null });
       return;
     }
     set({ isLoading: true, error: null });
@@ -56,14 +65,27 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
       const origin = await invoke<SkillOriginInfo | null>("get_skill_origin", {
         target: backendTarget(target),
       });
-      set({ origin, status: null, isLoading: false });
+      if (token !== originLoadToken) return;
+      set({ origin, status: null, candidates: [], isLoading: false, isDiscovering: !origin });
+      if (!origin) {
+        try {
+          const discovery = await invoke<SkillOriginDiscovery>("discover_skill_origin", {
+            target: backendTarget(target),
+          });
+          if (token !== originLoadToken) return;
+          set({ origin: discovery.origin, candidates: discovery.candidates, isDiscovering: false });
+        } catch (error) {
+          if (token === originLoadToken) set({ error: String(error), isDiscovering: false });
+        }
+      }
     } catch (error) {
-      set({ error: String(error), isLoading: false });
+      if (token === originLoadToken) set({ error: String(error), isLoading: false });
     }
   },
 
   linkOrigin: async (target, input) => {
-    set({ isChecking: true, error: null });
+    originLoadToken++;
+    set({ isChecking: true, isDiscovering: false, error: null });
     try {
       const status = await invoke<SkillOriginStatus>("link_skill_origin", {
         request: {
@@ -73,7 +95,7 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
           refName: input.refName || null,
         },
       });
-      set({ origin: status.origin, status, isChecking: false });
+      set({ origin: status.origin, status, candidates: [], isChecking: false });
       return status;
     } catch (error) {
       set({ error: String(error), isChecking: false });
@@ -82,10 +104,11 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
   },
 
   unlinkOrigin: async (target) => {
-    set({ isChecking: true, error: null });
+    originLoadToken++;
+    set({ isChecking: true, isDiscovering: false, error: null });
     try {
       await invoke("unlink_skill_origin", { target: backendTarget(target) });
-      set({ origin: null, status: null, isChecking: false });
+      set({ origin: null, status: null, candidates: [], isChecking: false });
     } catch (error) {
       set({ error: String(error), isChecking: false });
       throw error;
@@ -98,7 +121,9 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
       const status = await invoke<SkillOriginStatus>("check_skill_origin", {
         target: backendTarget(target),
       });
-      set({ origin: status.origin, status, isChecking: false });
+      set((current) => current.origin?.bindingId === status.origin.bindingId
+        ? { origin: status.origin, status, isChecking: false }
+        : { isChecking: false });
       return status;
     } catch (error) {
       set({ error: String(error), isChecking: false });
@@ -132,12 +157,17 @@ export const useSkillOriginStore = create<SkillOriginState>((set) => ({
     }
   },
 
-  reset: () => set({
+  reset: () => {
+    originLoadToken++;
+    set({
     origin: null,
     status: null,
+    candidates: [],
+    isDiscovering: false,
     isLoading: false,
     isChecking: false,
     isUpdating: false,
     error: null,
-  }),
+    });
+  },
 }));

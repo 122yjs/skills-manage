@@ -8,6 +8,12 @@ import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import { invoke, isTauriRuntime } from "@/lib/tauri";
+
+vi.mock("@/lib/tauri", () => ({
+  invoke: vi.fn().mockResolvedValue(0),
+  isTauriRuntime: vi.fn(() => false),
+}));
 
 let triggerRescanInMock = false;
 
@@ -71,6 +77,8 @@ const mockUseCentralSkillsStore = vi.mocked(useCentralSkillsStore);
 const mockUseDiscoverStore = vi.mocked(useDiscoverStore);
 const mockUseDevToolSetupStore = vi.mocked(useDevToolSetupStore);
 const mockUseSkillUsageStore = vi.mocked(useSkillUsageStore);
+const mockInvoke = vi.mocked(invoke);
+const mockIsTauriRuntime = vi.mocked(isTauriRuntime);
 
 let testNavigate: ReturnType<typeof useNavigate> | null = null;
 
@@ -93,6 +101,8 @@ function DummyPage({ label }: { label: string }) {
 describe("AppShell", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockIsTauriRuntime.mockReturnValue(false);
+    mockInvoke.mockResolvedValue(0);
     testNavigate = null;
     triggerRescanInMock = false;
 
@@ -190,6 +200,20 @@ describe("AppShell", () => {
       expect(rescanFromDisk).toHaveBeenCalledTimes(2);
     }
   );
+
+  it("데스크톱 시작 시 연결된 원본을 확인하고 중앙 목록을 새로 읽는다", async () => {
+    mockIsTauriRuntime.mockReturnValue(true);
+    const loadCentralSkills = vi.fn().mockResolvedValue(undefined);
+    mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => {
+      const state = { loadCentralSkills };
+      return typeof selector === "function" ? selector(state) : state;
+    });
+
+    render(<MemoryRouter><AppShell /></MemoryRouter>);
+
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("check_linked_skill_origins"));
+    await waitFor(() => expect(loadCentralSkills).toHaveBeenCalledTimes(2));
+  });
 
   it("resets shell scroll and keeps main non-scrollable when the route changes", async () => {
     render(

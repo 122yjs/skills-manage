@@ -6,6 +6,7 @@ use tauri::State;
 
 use crate::commands::agents::is_agent_detected;
 use crate::commands::recovery;
+use crate::commands::skill_origin;
 use crate::db::{self, DbPool, SkillInstallation};
 use crate::AppState;
 
@@ -201,6 +202,8 @@ async fn ensure_centralized(
         .to_string_lossy()
         .into_owned();
     db::upsert_skill(pool, &updated).await?;
+
+    skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, skill_id, None).await?;
 
     Ok(())
 }
@@ -1052,6 +1055,12 @@ pub async fn install_skill_to_agent_copy_impl(
     }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
 
+    if let Err(error) = skill_origin::inherit_copied_origin(
+        pool, &canonical_dir, &target_path, skill_id, Some(&installation.agent_id)
+    ).await {
+        eprintln!("Could not retain GitHub origin for copied installation: {error}");
+    }
+
     Ok(InstallResult {
         symlink_path: target_path.to_string_lossy().into_owned(),
     })
@@ -1184,6 +1193,11 @@ pub async fn uninstall_skill_from_agent_impl(
 
     // 4. Remove the installation record from the database.
     db::delete_skill_installation(pool, skill_id, &agent.id).await?;
+    if link_type == "copy" {
+        skill_origin::discard_origin_bindings(
+            pool, &[skill_origin::origin_target_key(&install_path)]
+        ).await?;
+    }
 
     Ok(())
 }

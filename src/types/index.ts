@@ -89,6 +89,8 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   source_root?: string | null;
   source_label?: string | null;
   is_read_only?: boolean;
+  /** 공유 원본의 GitHub 연결·업데이트 가능 여부. 플랫폼 설치 제어와 구분한다. */
+  can_manage_origin?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
   /** Agent IDs that can see this central skill through a read-only compatibility root. */
@@ -124,6 +126,7 @@ export interface GitHubSkillOriginSummary {
   repo: string;
   sourcePath: string;
   refName: string;
+  updateAvailable?: boolean;
 }
 
 export interface SkillOriginInfo {
@@ -144,6 +147,18 @@ export interface SkillOriginInfo {
   lastError?: string | null;
   bindingVersion: number;
   canUpdate: boolean;
+}
+
+export interface SkillOriginCandidate {
+  repoUrl: string;
+  sourcePath: string;
+  refName: string;
+  reason: "installation_record" | "catalog_name" | "public_search" | "content_match" | "name_description";
+}
+
+export interface SkillOriginDiscovery {
+  origin: SkillOriginInfo | null;
+  candidates: SkillOriginCandidate[];
 }
 
 export type OriginSyncState =

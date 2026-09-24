@@ -38,6 +38,11 @@ describe("UnifiedSkillCard github origin badge", () => {
     expect(link).toHaveAttribute("rel", "noreferrer");
   });
 
+  it("shows an update notice when the checked source has changed", () => {
+    renderCard({ ...origin, updateAvailable: true }, "code-review");
+    expect(screen.getByText("有可用更新")).toBeInTheDocument();
+  });
+
   it("encodes every source path and ref segment in the link", () => {
     renderCard(
       {

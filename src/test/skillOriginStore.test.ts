@@ -65,6 +65,33 @@ describe("skillOriginStore", () => {
     expect(useSkillOriginStore.getState().origin).toEqual(origin);
   });
 
+  it("shows name-only catalog matches without linking them", async () => {
+    const candidate = {
+      repoUrl: "https://github.com/acme/skills",
+      sourcePath: "skills/demo",
+      refName: "main",
+      reason: "catalog_name",
+    };
+    mockInvoke.mockResolvedValueOnce(null).mockResolvedValueOnce({ origin: null, candidates: [candidate] });
+
+    await useSkillOriginStore.getState().loadOrigin(target);
+
+    expect(mockInvoke).toHaveBeenCalledWith("discover_skill_origin", {
+      target: { skillId: "demo", agentId: "cursor", rowId: "demo" },
+    });
+    expect(useSkillOriginStore.getState().origin).toBeNull();
+    expect(useSkillOriginStore.getState().candidates).toEqual([candidate]);
+  });
+
+  it("accepts an automatically verified existing installation", async () => {
+    mockInvoke.mockResolvedValueOnce(null).mockResolvedValueOnce({ origin, candidates: [] });
+
+    await useSkillOriginStore.getState().loadOrigin(target);
+
+    expect(useSkillOriginStore.getState().origin).toEqual(origin);
+    expect(useSkillOriginStore.getState().candidates).toEqual([]);
+  });
+
   it("links a repository path without mutating the target contract", async () => {
     mockInvoke.mockResolvedValue(status);
 

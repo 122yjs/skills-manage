@@ -431,6 +431,24 @@ describe("SkillDetailView", () => {
     expect(screen.getByText("native")).toBeInTheDocument();
   });
 
+  it("exposes GitHub origin controls for a shared source viewed from Antigravity", () => {
+    applyStoreMocks({ detail: {
+      ...mockDetail,
+      source_kind: "compatibility",
+      is_read_only: true,
+      can_manage_origin: true,
+      installations: [],
+    } });
+    render(
+      <MemoryRouter>
+        <SkillDetailView skillId="frontend-design" agentId="antigravity" variant="drawer" />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole("region", { name: "GitHub origin" })).toBeInTheDocument();
+    expect(screen.queryByText(/只读观测副本仅供查看|display-only/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Install and uninstall are unavailable for read-only|只读观测副本不可安装/)).not.toBeInTheDocument();
+  });
+
   it("shows a read-only plugin source state and blocks management actions", () => {
     applyStoreMocks({
       detail: mockPluginDetail,
@@ -1680,6 +1698,19 @@ function mockOriginInvoke(originFixture: typeof importedOriginFixture | null) {
   mockTauriInvoke.mockImplementation(async (command, args) => {
     if (command === "get_skill_origin") {
       return originFixture;
+    }
+    if (command === "discover_skill_origin") {
+      return { origin: null, candidates: [] };
+    }
+    if (command === "check_skill_origin" && originFixture) {
+      return {
+        origin: originFixture,
+        state: "up_to_date",
+        localVsRemote: { added: 0, modified: 0, removed: 0 },
+        localVsBase: { added: 0, modified: 0, removed: 0 },
+        remoteVsBase: { added: 0, modified: 0, removed: 0 },
+        remoteCommitOid: "abc1234",
+      };
     }
     if (command === "list_skill_directory") {
       return mockDirectoryTree;

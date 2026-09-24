@@ -82,6 +82,9 @@
     "settingsReadOnlyNote": "The web dashboard is read-only, so scan folders and AI settings stay untouched. Only the language choice is saved in this browser; change everything else in the desktop app.",
     "settingsView": {
       "readOnlyTitle": "Desktop settings shown read-only",
+      "sharedInstallHelp": "Manage installation and removal in the shared source details.",
+      "sharedCollectionsHelp": "Manage collections in the shared source details.",
+      "sharedOriginDesc": "This platform uses a shared source. Manage its GitHub connection and updates here. Updates affect every platform using this source. Manage installation and removal through the shared installation.",
       "readOnlyDesc": "Review the current local configuration here. Use the desktop app for changes that write files or the database.",
       "configured": "Configured",
       "notConfigured": "Not configured",
@@ -218,11 +221,60 @@
     }
   },
   "skillOrigin": {
+    "updateAvailable": "Update available",
+    "searching": "Looking for the GitHub source in installation records…",
+    "candidateIntro": "Possible sources found. Check the path before linking.",
+    "choose": "Link",
+    "linked": "GitHub source linked.",
+    "reason": {
+      "installation_record": "Repository in installation record",
+      "catalog_name": "Same name in marketplace catalog",
+      "public_search": "Same name in GitHub search",
+      "content_match": "Identical SKILL.md contents",
+      "name_description": "Same name and description"
+    },
+    "openFailed": "Could not open the GitHub source. Please try again.",
     "viewSource": "Open source on GitHub",
     "installedAs": "installed as {{id}}",
     "installedAsTitle": "Installed locally as {{id}}; the SKILL.md name is shown above",
     "originalName": "SKILL.md name",
-    "localId": "Local ID"
+    "localId": "Local ID",
+    "status": {
+      "up_to_date": {
+        "title": "You have the latest version",
+        "description": "Your installed version matches the latest GitHub version."
+      },
+      "unknown_baseline": {
+        "title": "Installed version unknown",
+        "description": "The GitHub baseline was not recorded. Open the latest commit below to review it."
+      },
+      "remote_update": {
+        "title": "A new version is on GitHub",
+        "description": "The latest GitHub version is newer than your installed version. Review the version comparison before updating."
+      },
+      "local_changes": {
+        "title": "Local files have changed",
+        "description": "Your files differ from the installed version. Compare them with GitHub before updating."
+      },
+      "diverged": {
+        "title": "Both local and GitHub versions changed",
+        "description": "Compare both sets of changes before deciding whether to update."
+      },
+      "local_matches_remote": {
+        "title": "Files match the latest version",
+        "description": "The files match, but the saved installed version is different."
+      }
+    },
+    "changeSummary": "Files that will change in this update",
+    "added": "Added: {{count}}",
+    "modified": "Changed: {{count}}",
+    "removed": "Removed: {{count}}",
+    "checkedVersion": "Checked GitHub version · commit {{commit}}",
+    "installedVersion": "Installed version",
+    "latestVersion": "Latest on GitHub",
+    "unknownVersion": "Not recorded",
+    "compareVersions": "View version comparison on GitHub",
+    "lastChecked": "Last checked: {{date}}"
   },
   "skillUsage": {
     "active": "Active",
@@ -342,7 +394,12 @@
     "count": "{{count}} source locations",
     "help": "Collapsing this list does not reduce the skills loaded by an agent. Compare originals and contents, then manage each source separately.",
     "checkDuplicates": "Review duplicate sources",
-    "result": { "same_origin": "Same original", "identical": "Identical copies", "different": "Different contents", "unknown": "Needs review" },
+    "result": {
+      "same_origin": "Same original",
+      "identical": "Identical copies",
+      "different": "Different contents",
+      "unknown": "Needs review"
+    },
     "compare": "Compare originals and contents",
     "comparing": "Comparing files…",
     "same_origin": "These paths point to one original. There is one set of files; whether the skill list is deduplicated depends on the platform.",
@@ -640,6 +697,16 @@
     "noPlatforms": "No custom platforms. Click \"Add Platform\" to register one.",
     "editPlatformLabel": "Edit platform {{name}}",
     "removePlatformLabel": "Remove platform {{name}}",
+    "githubAuth": {
+      "saved_token": "Using the saved app token",
+      "github_cli": "Connected through GitHub CLI",
+      "not_signed_in": "Sign in with GitHub CLI",
+      "cli_missing": "Install GitHub CLI (gh) and sign in",
+      "checking": "Checking authentication",
+      "unavailable": "Unable to check authentication",
+      "loginHelp": "Without an app token, your gh login is used automatically. Run the command below in a terminal, then check the connection.",
+      "refresh": "Check connection"
+    },
     "githubPatTitle": "GitHub import access token",
     "githubPatDesc": "Save a GitHub Personal Access Token for the repo import flow so you do not need to re-enter it each time.",
     "githubPatLabel": "GitHub Personal Access Token",

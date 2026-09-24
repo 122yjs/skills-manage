@@ -82,6 +82,9 @@
     "settingsReadOnlyNote": "웹 대시보드는 읽기 전용이라 스캔 폴터나 AI 설정은 바꾸지 않습니다. 언어 선택만 이 브라우저에 저장되며, 나머지 설정은 데스크톱 앱에서 변경하세요.",
     "settingsView": {
       "readOnlyTitle": "데스크톱 설정을 읽기 전용으로 표시합니다",
+      "sharedInstallHelp": "설치·삭제는 공용 원본의 상세 화면에서 관리하세요.",
+      "sharedCollectionsHelp": "컬렉션은 공용 원본의 상세 화면에서 관리하세요.",
+      "sharedOriginDesc": "공용 원본을 함께 사용합니다. 여기서 GitHub 연결과 업데이트를 관리할 수 있으며, 업데이트는 같은 원본을 사용하는 모든 플랫폼에 반영됩니다. 플랫폼별 설치·삭제는 공용 설치에서 관리합니다.",
       "readOnlyDesc": "현재 로컬 설정을 확인할 수 있습니다. 파일이나 DB를 바꾸는 작업은 데스크톱 앱에서 실행하세요.",
       "configured": "설정됨",
       "notConfigured": "설정 안 됨",
@@ -218,11 +221,60 @@
     }
   },
   "skillOrigin": {
+    "updateAvailable": "업데이트 있음",
+    "searching": "설치 기록에서 GitHub 원본을 찾는 중…",
+    "candidateIntro": "가능한 원본을 찾았습니다. 경로를 확인한 뒤 연결하세요.",
+    "choose": "연결",
+    "linked": "GitHub 원본을 연결했습니다.",
+    "reason": {
+      "installation_record": "설치 기록에 있는 저장소",
+      "catalog_name": "마켓플레이스에서 이름이 같은 스킬",
+      "public_search": "GitHub 검색에서 이름이 같은 스킬",
+      "content_match": "SKILL.md 파일 내용이 같음",
+      "name_description": "이름과 설명이 같음"
+    },
+    "openFailed": "GitHub 원본을 열지 못했습니다. 잠시 후 다시 시도해 주세요.",
     "viewSource": "GitHub에서 원본 열기",
     "installedAs": "설치 ID {{id}}",
     "installedAsTitle": "로컬 설치 ID는 {{id}}이며, SKILL.md 이름은 위에 표시됩니다",
     "originalName": "SKILL.md 이름",
-    "localId": "설치 ID"
+    "localId": "설치 ID",
+    "status": {
+      "up_to_date": {
+        "title": "최신 버전 사용 중",
+        "description": "설치한 버전과 GitHub 최신 버전이 같습니다."
+      },
+      "unknown_baseline": {
+        "title": "설치 버전을 확인할 수 없음",
+        "description": "GitHub 기준 버전을 기록하지 않았습니다. 아래 최신 커밋을 열어 확인하세요."
+      },
+      "remote_update": {
+        "title": "GitHub에 새 버전 있음",
+        "description": "GitHub 최신 버전이 설치한 버전보다 앞서 있습니다. 버전 차이를 확인한 뒤 업데이트하세요."
+      },
+      "local_changes": {
+        "title": "로컬 파일이 수정됨",
+        "description": "설치한 버전과 현재 파일이 다릅니다. GitHub 버전과 비교한 뒤 업데이트하세요."
+      },
+      "diverged": {
+        "title": "로컬과 GitHub 모두 변경됨",
+        "description": "두 버전의 변경 내용을 비교한 뒤 업데이트 여부를 결정하세요."
+      },
+      "local_matches_remote": {
+        "title": "최신 버전과 파일이 같음",
+        "description": "파일은 같지만 저장된 설치 기준 버전이 다릅니다."
+      }
+    },
+    "changeSummary": "업데이트하면 바뀌는 파일",
+    "added": "추가 {{count}}개",
+    "modified": "수정 {{count}}개",
+    "removed": "삭제 {{count}}개",
+    "checkedVersion": "확인한 GitHub 버전 · 커밋 {{commit}}",
+    "installedVersion": "설치 기준 버전",
+    "latestVersion": "GitHub 최신 버전",
+    "unknownVersion": "기록 없음",
+    "compareVersions": "GitHub에서 버전 차이 보기",
+    "lastChecked": "마지막 확인: {{date}}"
   },
   "skillUsage": {
     "active": "활성",
@@ -342,7 +394,12 @@
     "count": "출처 위치 {{count}}곳",
     "help": "이 목록을 접어도 에이전트가 읽는 스킬 수는 줄지 않습니다. 원본과 내용을 비교한 뒤 각 출처의 관리 버튼으로 정리하세요.",
     "checkDuplicates": "중복 출처 확인 필요",
-    "result": { "same_origin": "같은 원본", "identical": "동일한 복사본", "different": "내용 다름", "unknown": "확인 필요" },
+    "result": {
+      "same_origin": "같은 원본",
+      "identical": "동일한 복사본",
+      "different": "내용 다름",
+      "unknown": "확인 필요"
+    },
     "compare": "원본·내용 비교",
     "comparing": "파일 비교 중…",
     "same_origin": "같은 원본을 가리키는 경로입니다. 파일은 한 벌이며, 목록 중복 제거 여부는 플랫폼마다 다릅니다.",
@@ -640,6 +697,16 @@
     "noPlatforms": "사용자 지정 플랫폼이 없습니다. \"플랫폼 추가\"를 눌러 등록하세요.",
     "editPlatformLabel": "{{name}} 플랫폼 편집",
     "removePlatformLabel": "{{name}} 플랫폼 제거",
+    "githubAuth": {
+      "saved_token": "저장한 앱 토큰 사용 중",
+      "github_cli": "GitHub CLI 로그인 연동됨",
+      "not_signed_in": "GitHub CLI 로그인이 필요합니다",
+      "cli_missing": "GitHub CLI(gh)를 설치하고 로그인하세요",
+      "checking": "인증 상태 확인 중",
+      "unavailable": "인증 상태를 확인할 수 없습니다",
+      "loginHelp": "앱 토큰이 없으면 gh 로그인을 자동으로 사용합니다. 터미널에서 아래 명령으로 로그인한 뒤 연결을 확인하세요.",
+      "refresh": "연결 확인"
+    },
     "githubPatTitle": "GitHub 가져오기 액세스 토큰",
     "githubPatDesc": "저장소 가져오기 과정에서 매번 다시 입력하지 않도록 GitHub 개인용 액세스 토큰을 저장합니다.",
     "githubPatLabel": "GitHub 개인용 액세스 토큰",

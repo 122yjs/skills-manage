@@ -1,3 +1,4 @@
+import { GitHubSourceLink } from "@/components/skill/GitHubSourceLink";
 import {
   PackagePlus,
   Check,
@@ -901,18 +902,23 @@ function GitHubOriginBadge({
   const url = githubSkillSourceUrl(origin);
   return (
     <>
-      <a
+      <GitHubSourceLink
         href={url}
         target="_blank"
         rel="noreferrer"
         title={url}
         aria-label={t("skillOrigin.viewSource", { repo: `${origin.owner}/${origin.repo}` })}
         className="inline-flex max-w-full items-center gap-1 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 ring-1 ring-sky-500/20 dark:text-sky-300 hover:underline"
-        onClick={(event) => event.stopPropagation()}
       >
         <Link2 className="size-3 shrink-0" />
         <span className="min-w-0 truncate">{origin.owner}/{origin.repo}</span>
-      </a>
+      </GitHubSourceLink>
+      {origin.updateAvailable && (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/20 dark:text-amber-300">
+          <RotateCcw className="size-3" />
+          {t("skillOrigin.updateAvailable")}
+        </span>
+      )}
       {installId !== undefined && installId !== originalName && (
         <span
           className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground ring-1 ring-border/70"

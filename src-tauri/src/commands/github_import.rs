@@ -1170,7 +1170,7 @@ pub(crate) async fn resolve_repo_ref(
 }
 
 /// 브랜치 끝을 불변 커밋으로 확정한다. 내려받기와 출처 기록에 함께 쓴다.
-async fn resolve_repo_commit_oid(
+pub(crate) async fn resolve_repo_commit_oid(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
 ) -> Result<String, String> {
@@ -1206,13 +1206,77 @@ async fn resolve_repo_commit_oid(
         .ok_or_else(|| "GitHub did not return a commit SHA".to_string())
 }
 
+// 토큰은 요청에만 사용하며 CLI에서 읽은 값은 저장하거나 프런트엔드로 보내지 않습니다.
+struct GitHubAuth {
+    token: Option<String>,
+    source: &'static str,
+}
+
+fn github_cli_path() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "gh.exe" } else { "gh" };
+    super::agents::executable_search_paths()
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .map(|path| path.join(name))
+        .find(|path| path.is_file())
+}
+
+async fn resolve_github_auth(pool: &DbPool, cli: Option<&Path>) -> Result<GitHubAuth, String> {
+    let saved = db::get_setting(pool, GITHUB_PAT_SETTING_KEY)
+        .await?
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+    if saved.is_some() {
+        return Ok(GitHubAuth {
+            token: saved,
+            source: "saved_token",
+        });
+    }
+    let Some(cli) = cli else {
+        return Ok(GitHubAuth {
+            token: None,
+            source: "cli_missing",
+        });
+    };
+    let mut command = tokio::process::Command::new(cli);
+    command
+        .args(["auth", "token", "--hostname", "github.com"])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let token =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await {
+            Ok(Ok(output)) if output.status.success() => String::from_utf8(output.stdout)
+                .ok()
+                .map(|token| token.trim().to_string())
+                .filter(|token| !token.is_empty() && !token.contains(['\r', '\n'])),
+            _ => None,
+        };
+    let source = if token.is_some() {
+        "github_cli"
+    } else {
+        "not_signed_in"
+    };
+    Ok(GitHubAuth { token, source })
+}
+
 pub(crate) async fn github_direct_auth_from_settings(
     pool: &DbPool,
 ) -> Result<Option<String>, String> {
-    Ok(db::get_setting(pool, GITHUB_PAT_SETTING_KEY)
+    Ok(resolve_github_auth(pool, github_cli_path().as_deref())
         .await?
-        .map(|token| token.trim().to_string())
-        .filter(|token| !token.is_empty()))
+        .token)
+}
+
+#[tauri::command]
+pub async fn get_github_auth_status(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(resolve_github_auth(&state.db, github_cli_path().as_deref())
+        .await?
+        .source
+        .to_string())
 }
 
 fn github_client() -> Result<reqwest::Client, String> {
@@ -1263,7 +1327,7 @@ pub(crate) async fn fetch_repo_skill_candidates(
     build_repo_skill_candidates_from_snapshot(repo, &snapshot)
 }
 
-fn build_repo_skill_candidates_from_snapshot(
+pub(crate) fn build_repo_skill_candidates_from_snapshot(
     repo: &GitHubRepoRef,
     snapshot: &GitHubRepoSnapshot,
 ) -> Result<Vec<RemoteSkillCandidate>, String> {
@@ -3228,6 +3292,41 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn github_cli_auth_respects_saved_token_and_handles_logged_out_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let pool = setup_test_db().await;
+        let temp = tempfile::TempDir::new().unwrap();
+        let cli = temp.path().join("gh");
+        std::fs::write(&cli, "#!/bin/sh\n[ \"$*\" = \"auth token --hostname github.com\" ] || exit 2\nprintf 'fixture-token\\n'\n").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        assert_eq!(auth.source, "github_cli");
+        assert_eq!(auth.token.as_deref(), Some("fixture-token"));
+        assert!(db::get_setting(&pool, GITHUB_PAT_SETTING_KEY)
+            .await
+            .unwrap()
+            .is_none());
+        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, " app-token ")
+            .await
+            .unwrap();
+        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        assert_eq!(auth.source, "saved_token");
+        assert_eq!(auth.token.as_deref(), Some("app-token"));
+        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, " ")
+            .await
+            .unwrap();
+        std::fs::write(&cli, "#!/bin/sh\nprintf 'must-not-use'\nexit 1\n").unwrap();
+        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        assert_eq!(auth.source, "not_signed_in");
+        assert!(auth.token.is_none());
+        assert_eq!(
+            resolve_github_auth(&pool, None).await.unwrap().source,
+            "cli_missing"
+        );
+    }
+
+    #[tokio::test]
     async fn github_pat_setting_is_trimmed_and_empty_values_are_ignored() {
         let pool = setup_test_db().await;
 
@@ -3235,9 +3334,10 @@ mod tests {
             .await
             .expect("set token");
         assert_eq!(
-            github_direct_auth_from_settings(&pool)
+            resolve_github_auth(&pool, None)
                 .await
-                .expect("read token"),
+                .expect("read token")
+                .token,
             Some("test-token".to_string())
         );
 
@@ -3245,9 +3345,10 @@ mod tests {
             .await
             .expect("clear token");
         assert_eq!(
-            github_direct_auth_from_settings(&pool)
+            resolve_github_auth(&pool, None)
                 .await
-                .expect("read empty"),
+                .expect("read empty")
+                .token,
             None
         );
     }

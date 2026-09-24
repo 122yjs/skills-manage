@@ -15,6 +15,10 @@ vi.mock("../stores/platformStore", () => ({
   usePlatformStore: vi.fn(),
 }));
 
+vi.mock("../stores/skillOriginStore", () => ({
+  useSkillOriginStore: vi.fn(),
+}));
+
 // ─── Mock CollectionPickerDialog (same as the view test) ──────────────────────
 
 vi.mock("../components/collection/CollectionPickerDialog", () => ({
@@ -24,6 +28,7 @@ vi.mock("../components/collection/CollectionPickerDialog", () => ({
 
 import { useSkillDetailStore } from "../stores/skillDetailStore";
 import { usePlatformStore } from "../stores/platformStore";
+import { useSkillOriginStore } from "../stores/skillOriginStore";
 
 vi.mock("react-markdown", () => ({
   default: ({ children }: { children: string }) => (
@@ -58,6 +63,15 @@ const mockDetail: SkillDetailType = {
 };
 
 const loadDetail = vi.fn();
+const originStoreActions = {
+  loadOrigin: vi.fn(),
+  linkOrigin: vi.fn(),
+  unlinkOrigin: vi.fn(),
+  checkOrigin: vi.fn(),
+  prepareUpdate: vi.fn(),
+  applyUpdate: vi.fn(),
+  reset: vi.fn(),
+};
 
 function applyStoreMocks(detail: SkillDetailType | null = mockDetail) {
   vi.mocked(useSkillDetailStore).mockImplementation((selector?: unknown) => {
@@ -92,6 +106,21 @@ function applyStoreMocks(detail: SkillDetailType | null = mockDetail) {
       error: null,
       initialize: vi.fn(),
       rescan: vi.fn(),
+    };
+    if (typeof selector === "function") return selector(state);
+    return state;
+  });
+  vi.mocked(useSkillOriginStore).mockImplementation((selector?: unknown) => {
+    const state = {
+      origin: null,
+      status: null,
+      candidates: [],
+      isDiscovering: false,
+      isLoading: false,
+      isChecking: false,
+      isUpdating: false,
+      error: null,
+      ...originStoreActions,
     };
     if (typeof selector === "function") return selector(state);
     return state;

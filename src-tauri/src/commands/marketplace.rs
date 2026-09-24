@@ -5,7 +5,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
-use super::github_import;
+use super::{github_import, skill_origin};
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -491,6 +491,40 @@ struct MarketplaceSkillRow {
     download_url: String,
 }
 
+/// GitHub raw 주소에서 저장소와 스킬 폴더를 복원한다. 다른 호스트의 URL은
+/// 출처로 기록하지 않는다.
+pub(crate) fn github_origin_from_raw_url(url: &str) -> Option<(github_import::GitHubRepoRef, String)> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    if parsed.host_str()? != "raw.githubusercontent.com" { return None; }
+    let parts: Vec<_> = parsed.path_segments()?.collect();
+    if parts.len() < 4 || parts.last() != Some(&"SKILL.md") { return None; }
+    let source_path = if parts.len() == 4 { ".".to_string() } else { parts[3..parts.len()-1].join("/") };
+    Some((github_import::GitHubRepoRef {
+        owner: parts[0].to_string(), repo: parts[1].to_string(), branch: parts[2].to_string(),
+        normalized_url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+    }, source_path))
+}
+
+fn safe_install_directory_name(name: &str) -> bool {
+    let mut components = std::path::Path::new(name).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+}
+
+async fn ensure_new_install_target(
+    pool: &crate::db::DbPool,
+    name: &str,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    if !safe_install_directory_name(name) {
+        return Err("Skill name must be a single directory name".to_string());
+    }
+    if target.exists() || std::fs::symlink_metadata(target).is_ok()
+        || crate::db::get_skill_by_id(pool, name).await?.is_some() {
+        return Err(format!("Skill '{}' already exists; use the GitHub import conflict flow", name));
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn install_marketplace_skill(
     state: State<'_, AppState>,
@@ -532,12 +566,27 @@ pub async fn install_marketplace_skill(
     let skill_dir = crate::db::get_central_skills_dir(&state.db)
         .await?
         .join(&skill.name);
+    ensure_new_install_target(&state.db, &skill.name, &skill_dir).await?;
     std::fs::create_dir_all(&skill_dir)
         .map_err(|e| format!("Failed to create directory: {}", e))?;
 
     let skill_md_path = skill_dir.join("SKILL.md");
     std::fs::write(&skill_md_path, &content)
         .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
+
+    if let Some((repo, source_path)) = github_origin_from_raw_url(&skill.download_url) {
+        let db_skill = crate::db::Skill {
+            id: skill.name.clone(), name: skill.name.clone(), description: None,
+            file_path: skill_md_path.to_string_lossy().into_owned(),
+            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
+            is_central: true, source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
+            content: None, scanned_at: chrono::Utc::now().to_rfc3339(),
+        };
+        if let Err(error) = skill_origin::persist_imported_skill(&state.db, &db_skill, &repo, &source_path, None).await {
+            let _ = std::fs::remove_dir_all(&skill_dir);
+            return Err(error);
+        }
+    }
 
     // Mark as installed in DB
     sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")
@@ -977,7 +1026,11 @@ pub async fn install_from_skills_sh(
         .map_err(|e| e.to_string())?;
 
     // Download full repo snapshot (tarball) and find the skill directory
-    let snapshot = github_import::download_repo_snapshot(&client, &repo, auth).await?;
+    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth).await.ok();
+    let download_ref = commit_oid.as_ref().map(|commit| github_import::GitHubRepoRef {
+        branch: commit.clone(), ..repo.clone()
+    }).unwrap_or_else(|| repo.clone());
+    let snapshot = github_import::download_repo_snapshot(&client, &download_ref, auth).await?;
 
     // Find the skill directory by matching the last directory component against skill_id
     let source_path = find_skill_path_in_snapshot(&snapshot, &skill_id).ok_or_else(|| {
@@ -1007,6 +1060,7 @@ pub async fn install_from_skills_sh(
     let skill_dir = crate::db::get_central_skills_dir(&state.db)
         .await?
         .join(&skill_name);
+    ensure_new_install_target(&state.db, &skill_name, &skill_dir).await?;
     let mut progress_state = github_import::GitHubImportProgressState::default();
     github_import::write_snapshot_source_to_target(
         &snapshot,
@@ -1031,7 +1085,12 @@ pub async fn install_from_skills_sh(
         content: None,
         scanned_at: chrono::Utc::now().to_rfc3339(),
     };
-    crate::db::upsert_skill(&state.db, &db_skill).await?;
+    if let Err(error) = skill_origin::persist_imported_skill(
+        &state.db, &db_skill, &repo, &source_path, commit_oid.as_deref()
+    ).await {
+        let _ = std::fs::remove_dir_all(&skill_dir);
+        return Err(error);
+    }
 
     Ok(skill_name)
 }
@@ -2530,6 +2589,25 @@ pub async fn refresh_skill_explanation(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn raw_github_install_url_keeps_the_installed_source_directory() {
+        let (repo, path) = super::github_origin_from_raw_url(
+            "https://raw.githubusercontent.com/acme/skills/main/skills/demo/SKILL.md"
+        ).unwrap();
+        assert_eq!(repo.normalized_url, "https://github.com/acme/skills");
+        assert_eq!(repo.branch, "main");
+        assert_eq!(path, "skills/demo");
+        assert!(super::github_origin_from_raw_url("https://example.com/demo/SKILL.md").is_none());
+    }
+
+    #[test]
+    fn install_name_cannot_escape_the_skill_directory() {
+        assert!(super::safe_install_directory_name("demo-skill"));
+        for name in ["", ".", "..", "../other", "nested/skill", "/tmp/skill"] {
+            assert!(!super::safe_install_directory_name(name), "{name}");
+        }
+    }
+
     #[tokio::test]
     async fn token_settings_validate_and_preserve_empty_override() {
         let (pool, _dir) = setup_test_db().await;
