@@ -5,6 +5,8 @@
 //! 공식 설정으로 제어할 때만 사용한다. 공식 설정을 확인하지 못한 플랫폼은
 //! 파일을 옮기거나 DB에만 성공을 기록하지 않고 제한 사유를 반환한다.
 
+use glob::Pattern;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{HashMap, HashSet};
@@ -15,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
-use toml_edit::{value, ArrayOfTables, DocumentMut, Item, Table};
+use toml_edit::{value, Array, ArrayOfTables, DocumentMut, Item, Table};
 use uuid::Uuid;
 
 use crate::commands::{skills, usage};
@@ -65,10 +67,18 @@ pub struct PlatformSkillControlStatus {
     pub excluded_here: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Adapter {
     ClaudeSkillOverrides,
+    CodeBuddySkillOverrides,
     CodexSkillsConfig,
+    FactoryDisabledSkills,
+    CommandCodeDisabledSkills,
+    MistralDisabledSkills,
+    OpenCodeSkillPermissions,
+    OmpIgnoredSkills,
+    HermesDisabledSkills,
+    OpenClawEntries,
     ManagedInstallation,
     Unsupported,
 }
@@ -77,7 +87,15 @@ impl Adapter {
     fn name(self) -> &'static str {
         match self {
             Self::ClaudeSkillOverrides => "claude-skill-overrides",
+            Self::CodeBuddySkillOverrides => "codebuddy-skill-overrides",
             Self::CodexSkillsConfig => "codex-skills-config",
+            Self::FactoryDisabledSkills => "factory-disabled-skills",
+            Self::CommandCodeDisabledSkills => "command-code-disabled-skills",
+            Self::MistralDisabledSkills => "mistral-disabled-skills",
+            Self::OpenCodeSkillPermissions => "opencode-skill-permissions",
+            Self::OmpIgnoredSkills => "omp-ignored-skills",
+            Self::HermesDisabledSkills => "hermes-disabled-skills",
+            Self::OpenClawEntries => "openclaw-skill-entries",
             Self::ManagedInstallation => "managed-installation",
             Self::Unsupported => "unsupported",
         }
@@ -134,8 +152,11 @@ fn is_managed_installation(
 }
 
 fn unsupported_reason(agent: &Agent, source_kind: Option<&str>) -> String {
-    if agent.id == "claude-code" && source_kind == Some("plugin") {
-        return "Claude Code의 skillOverrides는 플러그인 스킬에 적용되지 않습니다. 플러그인 관리에서 끄거나 삭제해야 합니다.".to_string();
+    if matches!(agent.id.as_str(), "claude-code" | "codebuddy") && source_kind == Some("plugin") {
+        return format!(
+            "{}의 skillOverrides는 플러그인 스킬에 적용되지 않습니다. 플러그인 관리에서 끄거나 삭제해야 합니다.",
+            agent.display_name
+        );
     }
     format!(
         "{}에 이 출처를 독립적으로 끄는 공식 설정을 확인하지 못했습니다. 공용 파일이나 링크를 옮겨 대신 처리하지 않습니다.",
@@ -151,9 +172,34 @@ fn adapter_for(agent: &Agent, skill: &db::SkillForAgent, managed: bool) -> Adapt
         "claude-code" if skill.source_kind.as_deref() != Some("plugin") => {
             Adapter::ClaudeSkillOverrides
         }
+        "codebuddy" if skill.source_kind.as_deref() != Some("plugin") => {
+            Adapter::CodeBuddySkillOverrides
+        }
         "codex" => Adapter::CodexSkillsConfig,
+        "factory-droid" => Adapter::FactoryDisabledSkills,
+        "command-code" => Adapter::CommandCodeDisabledSkills,
+        "mistral-vibe" => Adapter::MistralDisabledSkills,
+        "opencode" => Adapter::OpenCodeSkillPermissions,
+        "omp" => Adapter::OmpIgnoredSkills,
+        "hermes" => Adapter::HermesDisabledSkills,
+        "openclaw" => Adapter::OpenClawEntries,
         _ => Adapter::Unsupported,
     }
+}
+
+fn is_name_scoped_adapter(adapter: Adapter) -> bool {
+    matches!(
+        adapter,
+        Adapter::ClaudeSkillOverrides
+            | Adapter::CodeBuddySkillOverrides
+            | Adapter::FactoryDisabledSkills
+            | Adapter::CommandCodeDisabledSkills
+            | Adapter::MistralDisabledSkills
+            | Adapter::OpenCodeSkillPermissions
+            | Adapter::OmpIgnoredSkills
+            | Adapter::HermesDisabledSkills
+            | Adapter::OpenClawEntries
+    )
 }
 
 fn config_path_for_claude(agent: &Agent) -> Result<PathBuf, String> {
@@ -163,6 +209,113 @@ fn config_path_for_claude(agent: &Agent) -> Result<PathBuf, String> {
     // settings.local.json은 프로젝트·로컬 우선순위 설정이라 전역 스킬 제어
     // 대상이라고 확인하지 않았다. 공식 사용자 설정 파일만 사용한다.
     Ok(root.join("settings.json"))
+}
+
+fn config_path_for_codebuddy(agent: &Agent) -> Result<PathBuf, String> {
+    let root = Path::new(&agent.global_skills_dir)
+        .parent()
+        .ok_or_else(|| "CodeBuddy 스킬 설정 폴더를 확인할 수 없습니다".to_string())?;
+    Ok(root.join("settings.json"))
+}
+
+fn config_path_in_skills_parent(
+    agent: &Agent,
+    platform_name: &str,
+    file_name: &str,
+) -> Result<PathBuf, String> {
+    Path::new(&agent.global_skills_dir)
+        .parent()
+        .map(|root| root.join(file_name))
+        .ok_or_else(|| format!("{platform_name} 스킬 설정 폴더를 확인할 수 없습니다"))
+}
+
+fn config_path_for_disabled_skills_json(
+    agent: &Agent,
+    adapter: Adapter,
+) -> Result<PathBuf, String> {
+    match adapter {
+        Adapter::FactoryDisabledSkills => {
+            config_path_in_skills_parent(agent, "Factory Droid", "settings.json")
+        }
+        Adapter::CommandCodeDisabledSkills => {
+            config_path_in_skills_parent(agent, "Command Code", "settings.json")
+        }
+        _ => Err("이 Adapter는 disabledSkills JSON 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn config_path_for_omp(agent: &Agent) -> Result<PathBuf, String> {
+    let root = Path::new(&agent.global_skills_dir)
+        .parent()
+        .ok_or_else(|| "OMP 스킬 설정 폴더를 확인할 수 없습니다".to_string())?;
+    let yml = root.join("config.yml");
+    let yaml = root.join("config.yaml");
+    match (yml.exists(), yaml.exists()) {
+        (true, true) => Err(
+            "OMP config.yml과 config.yaml이 모두 있어 적용 대상을 결정할 수 없습니다".to_string(),
+        ),
+        (false, true) => Ok(yaml),
+        _ => Ok(yml),
+    }
+}
+
+fn config_path_for_hermes(agent: &Agent) -> Result<PathBuf, String> {
+    config_path_in_skills_parent(agent, "Hermes", "config.yaml")
+}
+
+fn config_path_for_mistral(agent: &Agent) -> Result<PathBuf, String> {
+    if Path::new(&agent.global_skills_dir).starts_with(resolve_home_dir()) {
+        if let Some(vibe_home) = std::env::var_os("VIBE_HOME") {
+            if !vibe_home.is_empty() {
+                return Ok(PathBuf::from(vibe_home).join("config.toml"));
+            }
+        }
+    }
+    config_path_in_skills_parent(agent, "Mistral Vibe", "config.toml")
+}
+
+fn config_path_for_opencode(agent: &Agent) -> Result<PathBuf, String> {
+    if Path::new(&agent.global_skills_dir).starts_with(resolve_home_dir()) {
+        if let Some(config) = std::env::var_os("OPENCODE_CONFIG") {
+            if !config.is_empty() {
+                return Ok(PathBuf::from(config));
+            }
+        }
+    }
+    let skills_parent = Path::new(&agent.global_skills_dir)
+        .parent()
+        .ok_or_else(|| "OpenCode 스킬 설정 폴더를 확인할 수 없습니다".to_string())?;
+    let root = if skills_parent.file_name().and_then(|name| name.to_str()) == Some("opencode")
+        && skills_parent
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some(".config")
+    {
+        skills_parent.to_path_buf()
+    } else {
+        skills_parent
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".config/opencode")
+    };
+    let json = root.join("opencode.json");
+    let jsonc = root.join("opencode.jsonc");
+    match (json.exists(), jsonc.exists()) {
+        (true, true) => Err(
+            "OpenCode opencode.json과 opencode.jsonc가 모두 있어 적용 대상을 결정할 수 없습니다"
+                .to_string(),
+        ),
+        (false, true) => Ok(jsonc),
+        _ => Ok(json),
+    }
+}
+
+fn config_path_for_openclaw(agent: &Agent) -> Result<PathBuf, String> {
+    let root = Path::new(&agent.global_skills_dir)
+        .parent()
+        .ok_or_else(|| "OpenClaw 스킬 설정 폴더를 확인할 수 없습니다".to_string())?;
+    Ok(root.join("openclaw.json"))
 }
 
 fn config_path_for_codex(agent: &Agent) -> Result<PathBuf, String> {
@@ -290,12 +443,16 @@ fn restore_file(path: &Path, original: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn json_document(text: Option<&str>) -> Result<JsonValue, String> {
+fn strict_json_document(text: Option<&str>, label: &str) -> Result<JsonValue, String> {
     match text {
         None => Ok(JsonValue::Object(JsonMap::new())),
         Some(text) => serde_json::from_str(text)
-            .map_err(|error| format!("Claude 설정 JSON을 읽을 수 없습니다: {error}")),
+            .map_err(|error| format!("{label} 설정 JSON을 읽을 수 없습니다: {error}")),
     }
+}
+
+fn json_document(text: Option<&str>) -> Result<JsonValue, String> {
+    strict_json_document(text, "skillOverrides")
 }
 
 fn json_override(document: &JsonValue, skill_name: &str) -> Result<Option<String>, String> {
@@ -303,7 +460,7 @@ fn json_override(document: &JsonValue, skill_name: &str) -> Result<Option<String
         return Ok(None);
     };
     let Some(overrides) = overrides.as_object() else {
-        return Err("Claude 설정의 skillOverrides가 객체가 아닙니다".to_string());
+        return Err("skillOverrides 설정이 객체가 아닙니다".to_string());
     };
     let Some(value) = overrides.get(skill_name) else {
         return Ok(None);
@@ -311,9 +468,7 @@ fn json_override(document: &JsonValue, skill_name: &str) -> Result<Option<String
     value
         .as_str()
         .map(|value| Some(value.to_string()))
-        .ok_or_else(|| {
-            format!("Claude 설정의 skillOverrides['{skill_name}'] 값이 문자열이 아닙니다")
-        })
+        .ok_or_else(|| format!("skillOverrides['{skill_name}'] 값이 문자열이 아닙니다"))
 }
 
 fn set_json_override(
@@ -323,20 +478,67 @@ fn set_json_override(
 ) -> Result<(), String> {
     let object = document
         .as_object_mut()
-        .ok_or_else(|| "Claude 설정의 최상위 값이 객체가 아닙니다".to_string())?;
+        .ok_or_else(|| "skillOverrides 설정의 최상위 값이 객체가 아닙니다".to_string())?;
     if let Some(value) = value {
         let overrides = object
             .entry("skillOverrides".to_string())
             .or_insert_with(|| JsonValue::Object(JsonMap::new()));
         let overrides = overrides
             .as_object_mut()
-            .ok_or_else(|| "Claude 설정의 skillOverrides가 객체가 아닙니다".to_string())?;
+            .ok_or_else(|| "skillOverrides 설정이 객체가 아닙니다".to_string())?;
         overrides.insert(skill_name.to_string(), JsonValue::String(value.to_string()));
     } else if let Some(overrides) = object.get_mut("skillOverrides") {
         let overrides = overrides
             .as_object_mut()
-            .ok_or_else(|| "Claude 설정의 skillOverrides가 객체가 아닙니다".to_string())?;
+            .ok_or_else(|| "skillOverrides 설정이 객체가 아닙니다".to_string())?;
         overrides.remove(skill_name);
+    }
+    Ok(())
+}
+
+fn json_string_list(document: &JsonValue, key: &str, label: &str) -> Result<Vec<String>, String> {
+    let Some(values) = document.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = values.as_array() else {
+        return Err(format!("{label} 설정이 문자열 목록이 아닙니다"));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{label} 설정에 문자열이 아닌 값이 있습니다"))
+        })
+        .collect()
+}
+
+fn set_json_string_list_item(
+    document: &mut JsonValue,
+    key: &str,
+    skill_name: &str,
+    present: bool,
+    label: &str,
+) -> Result<(), String> {
+    let object = document
+        .as_object_mut()
+        .ok_or_else(|| format!("{label} 설정의 최상위 값이 객체가 아닙니다"))?;
+    let values = object
+        .entry(key.to_string())
+        .or_insert_with(|| JsonValue::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| format!("{label} 설정이 문자열 목록이 아닙니다"))?;
+    if values.iter().any(|value| !value.is_string()) {
+        return Err(format!("{label} 설정에 문자열이 아닌 값이 있습니다"));
+    }
+    let has_exact = values
+        .iter()
+        .any(|value| value.as_str() == Some(skill_name));
+    if present && !has_exact {
+        values.push(JsonValue::String(skill_name.to_string()));
+    } else if !present && has_exact {
+        values.retain(|value| value.as_str() != Some(skill_name));
     }
     Ok(())
 }
@@ -349,6 +551,843 @@ fn json_state(value: Option<&str>) -> Result<&'static str, String> {
             "Claude skillOverrides의 확인되지 않은 값입니다: {value}"
         )),
     }
+}
+
+fn name_override_config_path(agent: &Agent, adapter: Adapter) -> Result<PathBuf, String> {
+    match adapter {
+        Adapter::ClaudeSkillOverrides => config_path_for_claude(agent),
+        Adapter::CodeBuddySkillOverrides => config_path_for_codebuddy(agent),
+        _ => Err("이 Adapter는 skillOverrides 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn name_override_state(adapter: Adapter, value: Option<&str>) -> Result<&'static str, String> {
+    match adapter {
+        Adapter::ClaudeSkillOverrides => json_state(value),
+        Adapter::CodeBuddySkillOverrides => match value {
+            None | Some("on") => Ok(STATE_ACTIVE),
+            Some(CLAUDE_DISABLED_VALUE) => Ok(STATE_INACTIVE),
+            Some(value) => Err(format!(
+                "CodeBuddy skillOverrides의 확인되지 않은 값입니다: {value}"
+            )),
+        },
+        _ => Err("이 Adapter는 skillOverrides 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn yaml_string_list(
+    text: Option<&str>,
+    section_key: &str,
+    list_key: &str,
+    label: &str,
+) -> Result<Vec<String>, String> {
+    let Some(text) = text else {
+        return Ok(Vec::new());
+    };
+    let document: serde_yaml::Value = serde_yaml::from_str(text)
+        .map_err(|error| format!("{label} 설정 YAML을 읽을 수 없습니다: {error}"))?;
+    let Some(section) = document.get(section_key) else {
+        return Ok(Vec::new());
+    };
+    let Some(section) = section.as_mapping() else {
+        return Err(format!("{label} 설정의 {section_key}가 객체가 아닙니다"));
+    };
+    let Some(values) = section.get(serde_yaml::Value::String(list_key.to_string())) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = values.as_sequence() else {
+        return Err(format!(
+            "{label} 설정의 {section_key}.{list_key}가 문자열 목록이 아닙니다"
+        ));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                format!("{label} 설정의 {section_key}.{list_key}에 문자열이 아닌 값이 있습니다")
+            })
+        })
+        .collect()
+}
+
+fn omp_ignored_skills(text: Option<&str>) -> Result<Vec<String>, String> {
+    yaml_string_list(text, "skills", "ignoredSkills", "OMP")
+}
+
+fn hermes_disabled_skills(text: Option<&str>) -> Result<Vec<String>, String> {
+    yaml_string_list(text, "skills", "disabled", "Hermes")
+}
+
+fn omp_ignore_state(patterns: &[String], skill_name: &str) -> Result<&'static str, String> {
+    pattern_disabled_state(patterns, skill_name, "OMP ignoredSkills")
+}
+
+fn yaml_indent(line: &str) -> usize {
+    line.len() - line.trim_start_matches(' ').len()
+}
+
+fn yaml_key_line(line: &str, key: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    trimmed
+        .strip_prefix(key)
+        .is_some_and(|rest| rest.starts_with(':'))
+}
+
+fn yaml_list_item_value(line: &str, label: &str) -> Option<Result<String, String>> {
+    let trimmed = line.trim_start_matches(' ');
+    let value = trimmed.strip_prefix("- ")?;
+    Some(
+        serde_yaml::from_str::<String>(value)
+            .map_err(|error| format!("{label} 목록 항목을 읽을 수 없습니다: {error}")),
+    )
+}
+
+/// YAML 설정 전체를 다시 직렬화하지 않고 중첩 문자열 목록의 정확한 이름 한
+/// 항목만 추가하거나 제거한다. 다른 키, 순서, 빈 줄과 주석은 그대로 보존한다.
+fn mutate_yaml_string_list_item(
+    text: Option<&str>,
+    section_key: &str,
+    list_key: &str,
+    skill_name: &str,
+    present: bool,
+    label: &str,
+) -> Result<String, String> {
+    let original = text.unwrap_or("");
+    if original.contains('\r') {
+        return Err(format!(
+            "{label} 설정의 줄바꿈 형식을 안전하게 보존할 수 없습니다"
+        ));
+    }
+    let current = yaml_string_list(text, section_key, list_key, label)?;
+    let has_exact = current.iter().any(|value| value == skill_name);
+    if has_exact == present {
+        return Ok(original.to_string());
+    }
+
+    let had_final_newline = original.ends_with('\n');
+    let mut lines: Vec<String> = original.lines().map(str::to_string).collect();
+    let section_index = lines
+        .iter()
+        .position(|line| yaml_indent(line) == 0 && yaml_key_line(line, section_key));
+    let quoted = serde_json::to_string(skill_name)
+        .map_err(|error| format!("{label} 스킬 이름을 저장할 수 없습니다: {error}"))?;
+
+    let Some(section_index) = section_index else {
+        if !present {
+            return Ok(original.to_string());
+        }
+        if !lines.is_empty() && !lines.last().is_some_and(|line| line.is_empty()) {
+            lines.push(String::new());
+        }
+        lines.extend([
+            format!("{section_key}:"),
+            format!("  {list_key}:"),
+            format!("    - {quoted}"),
+        ]);
+        let mut result = lines.join("\n");
+        result.push('\n');
+        return Ok(result);
+    };
+
+    let section_indent = yaml_indent(&lines[section_index]);
+    let section_value = lines[section_index]
+        .trim_start_matches(' ')
+        .strip_prefix(&format!("{section_key}:"))
+        .expect("matched key")
+        .trim();
+    if !section_value.is_empty() && !section_value.starts_with('#') {
+        return Err(format!(
+            "{label}의 {section_key}가 한 줄 객체라 주석과 형식을 안전하게 보존할 수 없습니다"
+        ));
+    }
+    let section_end = ((section_index + 1)..lines.len())
+        .find(|index| {
+            let line = &lines[*index];
+            !line.trim().is_empty()
+                && !line.trim_start().starts_with('#')
+                && yaml_indent(line) <= section_indent
+        })
+        .unwrap_or(lines.len());
+    let list_index =
+        ((section_index + 1)..section_end).find(|index| yaml_key_line(&lines[*index], list_key));
+
+    let Some(list_index) = list_index else {
+        if !present {
+            return Ok(original.to_string());
+        }
+        lines.splice(
+            section_end..section_end,
+            [
+                format!("{}{list_key}:", " ".repeat(section_indent + 2)),
+                format!("{}- {quoted}", " ".repeat(section_indent + 4)),
+            ],
+        );
+        let mut result = lines.join("\n");
+        if had_final_newline {
+            result.push('\n');
+        }
+        return Ok(result);
+    };
+
+    let key_indent = yaml_indent(&lines[list_index]);
+    let key_line = lines[list_index].clone();
+    let value_text = key_line
+        .trim_start_matches(' ')
+        .strip_prefix(&format!("{list_key}:"))
+        .expect("matched key")
+        .trim();
+    if !value_text.is_empty() && !value_text.starts_with('#') {
+        if value_text.contains('#') {
+            return Err(format!(
+                "{label} {list_key}의 같은 줄 주석을 안전하게 보존할 수 없습니다"
+            ));
+        }
+        let mut values: Vec<String> = serde_yaml::from_str(value_text)
+            .map_err(|error| format!("{label} {list_key} 목록을 읽을 수 없습니다: {error}"))?;
+        if present {
+            values.push(skill_name.to_string());
+        } else {
+            values.retain(|value| value != skill_name);
+        }
+        let serialized = serde_json::to_string(&values)
+            .map_err(|error| format!("{label} {list_key} 목록을 저장할 수 없습니다: {error}"))?;
+        lines[list_index] = format!("{}{list_key}: {serialized}", " ".repeat(key_indent));
+    } else {
+        let list_end = ((list_index + 1)..section_end)
+            .find(|index| {
+                let line = &lines[*index];
+                !line.trim().is_empty()
+                    && !line.trim_start().starts_with('#')
+                    && yaml_indent(line) <= key_indent
+            })
+            .unwrap_or(section_end);
+        if present {
+            lines.insert(
+                list_end,
+                format!("{}- {quoted}", " ".repeat(key_indent + 2)),
+            );
+        } else {
+            let mut remove_index = None;
+            for (index, line) in lines.iter().enumerate().take(list_end).skip(list_index + 1) {
+                if yaml_indent(line) <= key_indent {
+                    continue;
+                }
+                if let Some(value) = yaml_list_item_value(line, label) {
+                    if value? == skill_name {
+                        remove_index = Some(index);
+                        break;
+                    }
+                }
+            }
+            if let Some(index) = remove_index {
+                lines.remove(index);
+            }
+        }
+    }
+
+    let mut result = lines.join("\n");
+    if had_final_newline {
+        result.push('\n');
+    }
+    yaml_string_list(Some(&result), section_key, list_key, label)?;
+    Ok(result)
+}
+
+fn mutate_omp_ignored_skill(
+    text: Option<&str>,
+    skill_name: &str,
+    ignored: bool,
+) -> Result<String, String> {
+    mutate_yaml_string_list_item(text, "skills", "ignoredSkills", skill_name, ignored, "OMP")
+}
+
+fn mutate_hermes_disabled_skill(
+    text: Option<&str>,
+    skill_name: &str,
+    disabled: bool,
+) -> Result<String, String> {
+    mutate_yaml_string_list_item(text, "skills", "disabled", skill_name, disabled, "Hermes")
+}
+
+fn toml_string_array(
+    document: &DocumentMut,
+    key: &str,
+    label: &str,
+) -> Result<Vec<String>, String> {
+    let Some(item) = document.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = item.as_array() else {
+        return Err(format!("{label} 설정이 문자열 목록이 아닙니다"));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{label} 설정에 문자열이 아닌 값이 있습니다"))
+        })
+        .collect()
+}
+
+fn set_toml_string_array_item(
+    document: &mut DocumentMut,
+    key: &str,
+    skill_name: &str,
+    present: bool,
+    label: &str,
+) -> Result<(), String> {
+    if document.get(key).is_none() {
+        document[key] = Item::Value(toml_edit::Value::Array(Array::new()));
+    }
+    let values = document[key]
+        .as_array_mut()
+        .ok_or_else(|| format!("{label} 설정이 문자열 목록이 아닙니다"))?;
+    if values.iter().any(|value| !value.is_str()) {
+        return Err(format!("{label} 설정에 문자열이 아닌 값이 있습니다"));
+    }
+    let has_exact = values
+        .iter()
+        .any(|value| value.as_str() == Some(skill_name));
+    if present && !has_exact {
+        values.push(skill_name);
+    } else if !present && has_exact {
+        values.retain(|value| value.as_str() != Some(skill_name));
+    }
+    Ok(())
+}
+
+fn mistral_disabled_skills(text: Option<&str>) -> Result<Vec<String>, String> {
+    let document = text
+        .unwrap_or("")
+        .parse::<DocumentMut>()
+        .map_err(|error| format!("Mistral Vibe config.toml을 읽을 수 없습니다: {error}"))?;
+    let enabled = toml_string_array(&document, "enabled_skills", "Mistral enabled_skills")?;
+    if !enabled.is_empty() {
+        return Err(
+            "Mistral enabled_skills allowlist가 있어 disabled_skills만 바꾸면 실제 상태를 보장할 수 없습니다. allowlist를 직접 확인하세요."
+                .to_string(),
+        );
+    }
+    toml_string_array(&document, "disabled_skills", "Mistral disabled_skills")
+}
+
+fn mutate_mistral_disabled_skill(
+    text: Option<&str>,
+    skill_name: &str,
+    disabled: bool,
+) -> Result<String, String> {
+    let mut document = text
+        .unwrap_or("")
+        .parse::<DocumentMut>()
+        .map_err(|error| format!("Mistral Vibe config.toml을 읽을 수 없습니다: {error}"))?;
+    let enabled = toml_string_array(&document, "enabled_skills", "Mistral enabled_skills")?;
+    if !enabled.is_empty() {
+        return Err(
+            "Mistral enabled_skills allowlist가 있어 자동으로 변경하지 않습니다".to_string(),
+        );
+    }
+    set_toml_string_array_item(
+        &mut document,
+        "disabled_skills",
+        skill_name,
+        disabled,
+        "Mistral disabled_skills",
+    )?;
+    Ok(document.to_string())
+}
+
+fn pattern_matches(pattern: &str, skill_name: &str, label: &str) -> Result<bool, String> {
+    if let Some(expression) = pattern.strip_prefix("re:") {
+        return Regex::new(expression)
+            .map(|regex| regex.is_match(skill_name))
+            .map_err(|error| format!("{label} 정규식 '{pattern}'을 읽을 수 없습니다: {error}"));
+    }
+    Pattern::new(pattern)
+        .map(|pattern| pattern.matches(skill_name))
+        .map_err(|error| format!("{label} 패턴을 읽을 수 없습니다: {error}"))
+}
+
+fn pattern_disabled_state(
+    patterns: &[String],
+    skill_name: &str,
+    label: &str,
+) -> Result<&'static str, String> {
+    let mut exact = false;
+    for pattern in patterns {
+        if pattern == skill_name {
+            exact = true;
+        } else if pattern_matches(pattern, skill_name, label)? {
+            return Err(format!(
+                "{label} 패턴 '{pattern}'이 이 스킬에도 적용됩니다. 다른 스킬에 영향을 줄 수 있어 자동으로 바꾸지 않습니다."
+            ));
+        }
+    }
+    Ok(if exact { STATE_INACTIVE } else { STATE_ACTIVE })
+}
+
+fn list_adapter_label(adapter: Adapter) -> Result<&'static str, String> {
+    match adapter {
+        Adapter::FactoryDisabledSkills => Ok("Factory Droid disabledSkills"),
+        Adapter::CommandCodeDisabledSkills => Ok("Command Code disabledSkills"),
+        Adapter::MistralDisabledSkills => Ok("Mistral disabled_skills"),
+        Adapter::OmpIgnoredSkills => Ok("OMP ignoredSkills"),
+        Adapter::HermesDisabledSkills => Ok("Hermes skills.disabled"),
+        _ => Err("이 Adapter는 이름 목록 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn list_adapter_config_path(agent: &Agent, adapter: Adapter) -> Result<PathBuf, String> {
+    match adapter {
+        Adapter::FactoryDisabledSkills | Adapter::CommandCodeDisabledSkills => {
+            config_path_for_disabled_skills_json(agent, adapter)
+        }
+        Adapter::OmpIgnoredSkills => config_path_for_omp(agent),
+        Adapter::MistralDisabledSkills => config_path_for_mistral(agent),
+        Adapter::HermesDisabledSkills => config_path_for_hermes(agent),
+        _ => Err("이 Adapter는 이름 목록 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn list_adapter_values(adapter: Adapter, text: Option<&str>) -> Result<Vec<String>, String> {
+    match adapter {
+        Adapter::FactoryDisabledSkills | Adapter::CommandCodeDisabledSkills => {
+            let label = list_adapter_label(adapter)?;
+            let document = strict_json_document(text, label)?;
+            json_string_list(&document, "disabledSkills", label)
+        }
+        Adapter::OmpIgnoredSkills => omp_ignored_skills(text),
+        Adapter::MistralDisabledSkills => mistral_disabled_skills(text),
+        Adapter::HermesDisabledSkills => hermes_disabled_skills(text),
+        _ => Err("이 Adapter는 이름 목록 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn mutate_list_adapter_item(
+    adapter: Adapter,
+    text: Option<&str>,
+    skill_name: &str,
+    present: bool,
+) -> Result<String, String> {
+    match adapter {
+        Adapter::FactoryDisabledSkills | Adapter::CommandCodeDisabledSkills => {
+            let label = list_adapter_label(adapter)?;
+            let mut document = strict_json_document(text, label)?;
+            set_json_string_list_item(&mut document, "disabledSkills", skill_name, present, label)?;
+            serde_json::to_string_pretty(&document)
+                .map_err(|error| format!("{label} 설정을 저장할 수 없습니다: {error}"))
+        }
+        Adapter::OmpIgnoredSkills => mutate_omp_ignored_skill(text, skill_name, present),
+        Adapter::MistralDisabledSkills => mutate_mistral_disabled_skill(text, skill_name, present),
+        Adapter::HermesDisabledSkills => mutate_hermes_disabled_skill(text, skill_name, present),
+        _ => Err("이 Adapter는 이름 목록 설정을 사용하지 않습니다".to_string()),
+    }
+}
+
+fn list_adapter_state(
+    adapter: Adapter,
+    values: &[String],
+    skill_name: &str,
+) -> Result<&'static str, String> {
+    if adapter == Adapter::OmpIgnoredSkills {
+        omp_ignore_state(values, skill_name)
+    } else if adapter == Adapter::MistralDisabledSkills {
+        pattern_disabled_state(values, skill_name, "Mistral disabled_skills")
+    } else if values.iter().any(|value| value == skill_name) {
+        Ok(STATE_INACTIVE)
+    } else {
+        Ok(STATE_ACTIVE)
+    }
+}
+
+fn has_json_comments(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    let mut quote = None;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if let Some(active_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch == '/' && matches!(chars.peek().copied(), Some('/') | Some('*')) {
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenCodePermissionShape {
+    V1,
+    V2,
+}
+
+fn opencode_document(text: Option<&str>) -> Result<(JsonValue, OpenCodePermissionShape), String> {
+    let Some(text) = text else {
+        return Err(
+            "OpenCode 설정이 없어 v1 permission.skill과 v2 permissions 형식 중 어느 것을 쓸지 확인할 수 없습니다"
+                .to_string(),
+        );
+    };
+    if has_json_comments(text) {
+        return Err(
+            "OpenCode JSONC 설정에 주석이 있어 자동 저장하면 주석이 사라집니다. 주석을 보존하기 위해 변경하지 않습니다."
+                .to_string(),
+        );
+    }
+    let document: JsonValue = json5::from_str(text)
+        .map_err(|error| format!("OpenCode 설정 JSON/JSONC를 읽을 수 없습니다: {error}"))?;
+    let has_v1 = document.get("permission").is_some();
+    let has_v2 = document.get("permissions").is_some();
+    match (has_v1, has_v2) {
+        (true, false) => Ok((document, OpenCodePermissionShape::V1)),
+        (false, true) => Ok((document, OpenCodePermissionShape::V2)),
+        (true, true) => Err(
+            "OpenCode v1 permission과 v2 permissions가 함께 있어 자동으로 변경하지 않습니다"
+                .to_string(),
+        ),
+        (false, false) => Err(
+            "OpenCode 설정에서 v1 permission.skill 또는 v2 permissions 형식을 확인할 수 없습니다"
+                .to_string(),
+        ),
+    }
+}
+
+fn opencode_skill_key(skill: &db::SkillForAgent) -> Result<String, String> {
+    Path::new(&skill.dir_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| "OpenCode 스킬의 경로 기반 ID를 확인할 수 없습니다".to_string())
+}
+
+fn opencode_action_state(action: Option<&str>) -> Result<&'static str, String> {
+    match action {
+        Some("deny") => Ok(STATE_INACTIVE),
+        None | Some("allow") | Some("ask") => Ok(STATE_ACTIVE),
+        Some(action) => Err(format!(
+            "OpenCode skill permission 값 '{action}'을 알 수 없습니다"
+        )),
+    }
+}
+
+fn opencode_v1_skill_permissions(
+    document: &JsonValue,
+) -> Result<Option<&JsonMap<String, JsonValue>>, String> {
+    let permission = document
+        .get("permission")
+        .and_then(JsonValue::as_object)
+        .ok_or_else(|| "OpenCode v1 permission이 객체가 아닙니다".to_string())?;
+    match permission.get("skill") {
+        None => Ok(None),
+        Some(skill) => skill
+            .as_object()
+            .map(Some)
+            .ok_or_else(|| "OpenCode v1 permission.skill이 객체가 아닙니다".to_string()),
+    }
+}
+
+fn opencode_v1_skill_permissions_mut(
+    document: &mut JsonValue,
+) -> Result<&mut JsonMap<String, JsonValue>, String> {
+    let permission = document
+        .get_mut("permission")
+        .and_then(JsonValue::as_object_mut)
+        .ok_or_else(|| "OpenCode v1 permission이 객체가 아닙니다".to_string())?;
+    permission
+        .entry("skill".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .ok_or_else(|| "OpenCode v1 permission.skill이 객체가 아닙니다".to_string())
+}
+
+fn opencode_v1_effect(document: &JsonValue, skill_key: &str) -> Result<Option<String>, String> {
+    let mut effect = None;
+    let Some(permissions) = opencode_v1_skill_permissions(document)? else {
+        return Ok(None);
+    };
+    for (pattern, value) in permissions {
+        let action = value.as_str().ok_or_else(|| {
+            format!("OpenCode v1 permission.skill['{pattern}']이 문자열이 아닙니다")
+        })?;
+        if pattern_matches(pattern, skill_key, "OpenCode skill permission")? {
+            effect = Some(action.to_string());
+        }
+    }
+    Ok(effect)
+}
+
+fn opencode_v2_rules(document: &JsonValue) -> Result<&Vec<JsonValue>, String> {
+    document
+        .get("permissions")
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "OpenCode v2 permissions가 배열이 아닙니다".to_string())
+}
+
+fn opencode_v2_rules_mut(document: &mut JsonValue) -> Result<&mut Vec<JsonValue>, String> {
+    document
+        .get_mut("permissions")
+        .and_then(JsonValue::as_array_mut)
+        .ok_or_else(|| "OpenCode v2 permissions가 배열이 아닙니다".to_string())
+}
+
+fn opencode_v2_effect(document: &JsonValue, skill_key: &str) -> Result<Option<String>, String> {
+    let mut effect = None;
+    for rule in opencode_v2_rules(document)? {
+        let Some(rule) = rule.as_object() else {
+            return Err("OpenCode v2 permissions 항목이 객체가 아닙니다".to_string());
+        };
+        if rule.get("action").and_then(JsonValue::as_str) != Some("skill") {
+            continue;
+        }
+        let resource = rule
+            .get("resource")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "OpenCode v2 skill permission에 resource가 없습니다".to_string())?;
+        let action = rule
+            .get("effect")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "OpenCode v2 skill permission에 effect가 없습니다".to_string())?;
+        if pattern_matches(resource, skill_key, "OpenCode v2 skill permission")? {
+            effect = Some(action.to_string());
+        }
+    }
+    Ok(effect)
+}
+
+fn opencode_effect(
+    document: &JsonValue,
+    shape: OpenCodePermissionShape,
+    skill_key: &str,
+) -> Result<Option<String>, String> {
+    match shape {
+        OpenCodePermissionShape::V1 => opencode_v1_effect(document, skill_key),
+        OpenCodePermissionShape::V2 => opencode_v2_effect(document, skill_key),
+    }
+}
+
+fn opencode_set_v1_exact(
+    document: &mut JsonValue,
+    skill_key: &str,
+    effect: Option<&str>,
+) -> Result<(), String> {
+    let permissions = opencode_v1_skill_permissions_mut(document)?;
+    permissions.remove(skill_key);
+    if let Some(effect) = effect {
+        permissions.insert(skill_key.to_string(), JsonValue::String(effect.to_string()));
+    }
+    Ok(())
+}
+
+fn opencode_append_v2_rule(
+    document: &mut JsonValue,
+    skill_key: &str,
+    effect: &str,
+) -> Result<(), String> {
+    let mut rule = JsonMap::new();
+    rule.insert("action".to_string(), JsonValue::String("skill".to_string()));
+    rule.insert(
+        "resource".to_string(),
+        JsonValue::String(skill_key.to_string()),
+    );
+    rule.insert("effect".to_string(), JsonValue::String(effect.to_string()));
+    opencode_v2_rules_mut(document)?.push(JsonValue::Object(rule));
+    Ok(())
+}
+
+fn opencode_remove_last_v2_rule(
+    document: &mut JsonValue,
+    skill_key: &str,
+    effect: &str,
+) -> Result<(), String> {
+    let rules = opencode_v2_rules_mut(document)?;
+    let index = rules.iter().rposition(|rule| {
+        rule.as_object().is_some_and(|rule| {
+            rule.get("action").and_then(JsonValue::as_str) == Some("skill")
+                && rule.get("resource").and_then(JsonValue::as_str) == Some(skill_key)
+                && rule.get("effect").and_then(JsonValue::as_str) == Some(effect)
+        })
+    });
+    let Some(index) = index else {
+        return Err("OpenCode에 앱이 추가한 skill permission을 찾을 수 없습니다".to_string());
+    };
+    rules.remove(index);
+    Ok(())
+}
+
+fn openclaw_document(text: Option<&str>) -> Result<JsonValue, String> {
+    let Some(text) = text else {
+        return Ok(JsonValue::Object(JsonMap::new()));
+    };
+    // OpenClaw 자체 writer도 JSON5 주석을 제거한다. 앱에서는 그 손실을
+    // 허용하지 않고 사용자가 주석을 정리하거나 직접 설정하도록 안내한다.
+    if has_json_comments(text) {
+        return Err(
+            "OpenClaw 설정에 JSON5 주석이 있어 자동 저장하면 주석이 사라집니다. 주석을 보존하기 위해 변경하지 않습니다."
+                .to_string(),
+        );
+    }
+    json5::from_str(text)
+        .map_err(|error| format!("OpenClaw 설정 JSON5를 읽을 수 없습니다: {error}"))
+}
+
+fn openclaw_skill_key(skill: &db::SkillForAgent) -> Result<String, String> {
+    let text = fs::read_to_string(&skill.file_path).map_err(|error| {
+        format!(
+            "OpenClaw 스킬 설정 키를 확인할 수 없습니다 '{}': {error}",
+            skill.file_path
+        )
+    })?;
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return Ok(skill.name.clone());
+    }
+    let mut frontmatter = String::new();
+    for line in lines {
+        if line == "---" {
+            break;
+        }
+        frontmatter.push_str(line);
+        frontmatter.push('\n');
+    }
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&frontmatter)
+        .map_err(|error| format!("OpenClaw 스킬 frontmatter를 읽을 수 없습니다: {error}"))?;
+    let Some(metadata) = yaml.get("metadata") else {
+        return Ok(skill.name.clone());
+    };
+    let metadata = if let Some(text) = metadata.as_str() {
+        json5::from_str::<JsonValue>(text)
+            .map_err(|error| format!("OpenClaw 스킬 metadata를 읽을 수 없습니다: {error}"))?
+    } else {
+        serde_json::to_value(metadata)
+            .map_err(|error| format!("OpenClaw 스킬 metadata를 읽을 수 없습니다: {error}"))?
+    };
+    Ok(metadata
+        .pointer("/openclaw/skillKey")
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&skill.name)
+        .to_string())
+}
+
+fn name_scope_key(adapter: Adapter, skill: &db::SkillForAgent) -> Result<String, String> {
+    match adapter {
+        Adapter::OpenClawEntries => openclaw_skill_key(skill),
+        Adapter::OpenCodeSkillPermissions => opencode_skill_key(skill),
+        _ if is_name_scoped_adapter(adapter) => Ok(skill.name.clone()),
+        _ => Err("이 Adapter는 이름 단위 제어가 아닙니다".to_string()),
+    }
+}
+
+fn openclaw_enabled(document: &JsonValue, skill_key: &str) -> Result<Option<bool>, String> {
+    let Some(skills) = document.get("skills") else {
+        return Ok(None);
+    };
+    let Some(skills) = skills.as_object() else {
+        return Err("OpenClaw 설정의 skills가 객체가 아닙니다".to_string());
+    };
+    let Some(entries) = skills.get("entries") else {
+        return Ok(None);
+    };
+    let Some(entries) = entries.as_object() else {
+        return Err("OpenClaw 설정의 skills.entries가 객체가 아닙니다".to_string());
+    };
+    let Some(entry) = entries.get(skill_key) else {
+        return Ok(None);
+    };
+    let Some(entry) = entry.as_object() else {
+        return Err(format!(
+            "OpenClaw 설정의 skills.entries['{skill_key}']가 객체가 아닙니다"
+        ));
+    };
+    match entry.get("enabled") {
+        None => Ok(None),
+        Some(value) => value.as_bool().map(Some).ok_or_else(|| {
+            format!("OpenClaw 설정의 skills.entries['{skill_key}'].enabled가 boolean이 아닙니다")
+        }),
+    }
+}
+
+fn set_openclaw_enabled(
+    document: &mut JsonValue,
+    skill_key: &str,
+    enabled: Option<bool>,
+) -> Result<(), String> {
+    let root = document
+        .as_object_mut()
+        .ok_or_else(|| "OpenClaw 설정의 최상위 값이 객체가 아닙니다".to_string())?;
+    if enabled.is_none() {
+        let Some(skills) = root.get_mut("skills") else {
+            return Ok(());
+        };
+        let Some(skills) = skills.as_object_mut() else {
+            return Err("OpenClaw 설정의 skills가 객체가 아닙니다".to_string());
+        };
+        let Some(entries) = skills.get_mut("entries") else {
+            return Ok(());
+        };
+        let Some(entries) = entries.as_object_mut() else {
+            return Err("OpenClaw 설정의 skills.entries가 객체가 아닙니다".to_string());
+        };
+        if let Some(entry) = entries.get_mut(skill_key) {
+            let Some(entry) = entry.as_object_mut() else {
+                return Err(format!(
+                    "OpenClaw 설정의 skills.entries['{skill_key}']가 객체가 아닙니다"
+                ));
+            };
+            entry.remove("enabled");
+            if entry.is_empty() {
+                entries.remove(skill_key);
+            }
+        }
+        if entries.is_empty() {
+            skills.remove("entries");
+        }
+        if skills.is_empty() {
+            root.remove("skills");
+        }
+        return Ok(());
+    }
+    let skills = root
+        .entry("skills".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .ok_or_else(|| "OpenClaw 설정의 skills가 객체가 아닙니다".to_string())?;
+    let entries = skills
+        .entry("entries".to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .ok_or_else(|| "OpenClaw 설정의 skills.entries가 객체가 아닙니다".to_string())?;
+    let entry = entries
+        .entry(skill_key.to_string())
+        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            format!("OpenClaw 설정의 skills.entries['{skill_key}']가 객체가 아닙니다")
+        })?;
+    entry.insert(
+        "enabled".to_string(),
+        JsonValue::Bool(enabled.expect("none handled above")),
+    );
+    Ok(())
+}
+
+fn bool_setting_text(value: Option<bool>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "default".to_string())
 }
 
 fn canonical_codex_skill_path(path: &Path) -> PathBuf {
@@ -623,7 +1662,16 @@ fn make_status(
         },
         requires_reload: matches!(
             adapter,
-            Adapter::ClaudeSkillOverrides | Adapter::CodexSkillsConfig
+            Adapter::ClaudeSkillOverrides
+                | Adapter::CodeBuddySkillOverrides
+                | Adapter::CodexSkillsConfig
+                | Adapter::FactoryDisabledSkills
+                | Adapter::CommandCodeDisabledSkills
+                | Adapter::MistralDisabledSkills
+                | Adapter::OpenCodeSkillPermissions
+                | Adapter::OmpIgnoredSkills
+                | Adapter::HermesDisabledSkills
+                | Adapter::OpenClawEntries
         ),
         scope: scope.to_string(),
         affected_source_count,
@@ -643,19 +1691,100 @@ async fn actual_external_status_at_path(
 ) -> PlatformSkillControlStatus {
     let adapter = adapter_for(agent, skill, false);
     match adapter {
-        Adapter::ClaudeSkillOverrides => {
-            let config_path = config_path_for_claude(agent);
+        Adapter::ClaudeSkillOverrides | Adapter::CodeBuddySkillOverrides => {
+            let config_path = name_override_config_path(agent, adapter);
             let actual_result = match config_path.as_ref() {
                 Ok(path) => match read_file_if_exists(path)
                     .and_then(|text| json_document(text.as_deref()))
                     .and_then(|document| json_override(&document, &skill.name))
                     .and_then(|value| {
                         let raw = value.clone().unwrap_or_else(|| "on".to_string());
-                        json_state(value.as_deref()).map(|state| (state, raw))
+                        name_override_state(adapter, value.as_deref()).map(|state| (state, raw))
                     }) {
                     Ok(state) => Ok(state),
                     Err(error) => Err(error),
                 },
+                Err(error) => Err(error.clone()),
+            };
+            make_status(
+                agent,
+                skill.clone(),
+                adapter,
+                stored,
+                actual_result,
+                config_path.as_ref().ok().cloned(),
+                affected_source_count,
+                "name",
+            )
+        }
+        Adapter::FactoryDisabledSkills
+        | Adapter::CommandCodeDisabledSkills
+        | Adapter::MistralDisabledSkills
+        | Adapter::OmpIgnoredSkills
+        | Adapter::HermesDisabledSkills => {
+            let config_path = list_adapter_config_path(agent, adapter);
+            let actual_result = match config_path.as_ref() {
+                Ok(path) => read_file_if_exists(path)
+                    .and_then(|text| list_adapter_values(adapter, text.as_deref()))
+                    .and_then(|values| {
+                        let present = values.iter().any(|value| value == &skill.name);
+                        list_adapter_state(adapter, &values, &skill.name)
+                            .map(|state| (state, present.to_string()))
+                    }),
+                Err(error) => Err(error.clone()),
+            };
+            make_status(
+                agent,
+                skill.clone(),
+                adapter,
+                stored,
+                actual_result,
+                config_path.as_ref().ok().cloned(),
+                affected_source_count,
+                "name",
+            )
+        }
+        Adapter::OpenCodeSkillPermissions => {
+            let config_path = config_path_for_opencode(agent);
+            let actual_result = match config_path.as_ref() {
+                Ok(path) => read_file_if_exists(path)
+                    .and_then(|text| opencode_document(text.as_deref()))
+                    .and_then(|(document, shape)| {
+                        let skill_key = opencode_skill_key(skill)?;
+                        let effect = opencode_effect(&document, shape, &skill_key)?;
+                        let state = opencode_action_state(effect.as_deref())?;
+                        Ok((state, state.to_string()))
+                    }),
+                Err(error) => Err(error.clone()),
+            };
+            make_status(
+                agent,
+                skill.clone(),
+                adapter,
+                stored,
+                actual_result,
+                config_path.as_ref().ok().cloned(),
+                affected_source_count,
+                "name",
+            )
+        }
+        Adapter::OpenClawEntries => {
+            let config_path = config_path_for_openclaw(agent);
+            let actual_result = match config_path.as_ref() {
+                Ok(path) => read_file_if_exists(path)
+                    .and_then(|text| openclaw_document(text.as_deref()))
+                    .and_then(|document| {
+                        let skill_key = openclaw_skill_key(skill)?;
+                        let enabled = openclaw_enabled(&document, &skill_key)?;
+                        Ok((
+                            if enabled == Some(false) {
+                                STATE_INACTIVE
+                            } else {
+                                STATE_ACTIVE
+                            },
+                            bool_setting_text(enabled),
+                        ))
+                    }),
                 Err(error) => Err(error.clone()),
             };
             make_status(
@@ -781,6 +1910,19 @@ async fn get_platform_skill_controls_impl_at_path(
         }
     }
     let stored = db::get_platform_skill_controls(pool, agent_id).await?;
+    let mut name_scope_counts: HashMap<(Adapter, String), usize> = HashMap::new();
+    for skill in &skills {
+        if is_managed_installation(&installations, &paused, skill).is_some() {
+            continue;
+        }
+        let adapter = adapter_for(&agent, skill, false);
+        if !is_name_scoped_adapter(adapter) {
+            continue;
+        }
+        if let Ok(scope_key) = name_scope_key(adapter, skill) {
+            *name_scope_counts.entry((adapter, scope_key)).or_default() += 1;
+        }
+    }
     let mut result = Vec::with_capacity(skills.len());
 
     for skill in skills {
@@ -815,16 +1957,12 @@ async fn get_platform_skill_controls_impl_at_path(
             continue;
         }
 
-        let matching_count =
-            if agent.id == "claude-code" && skill.source_kind.as_deref() != Some("plugin") {
-                skills::get_skills_by_agent_impl(pool, agent_id)
-                    .await?
-                    .into_iter()
-                    .filter(|candidate| candidate.name == skill.name)
-                    .count()
-            } else {
-                1
-            };
+        let adapter = adapter_for(&agent, &skill, false);
+        let scope_key = name_scope_key(adapter, &skill).ok();
+        let matching_count = scope_key
+            .as_ref()
+            .and_then(|key| name_scope_counts.get(&(adapter, key.clone())).copied())
+            .unwrap_or(1);
         let stored_control = stored
             .iter()
             .find(|control| {
@@ -836,11 +1974,13 @@ async fn get_platform_skill_controls_impl_at_path(
                         ))
             })
             .or_else(|| {
-                (agent.id == "claude-code" && skill.source_kind.as_deref() != Some("plugin"))
+                is_name_scoped_adapter(adapter)
                     .then(|| {
-                        stored
-                            .iter()
-                            .find(|control| control.skill_name == skill.name)
+                        scope_key.as_ref().and_then(|key| {
+                            stored
+                                .iter()
+                                .find(|control| control.skill_name == key.as_str())
+                        })
                     })
                     .flatten()
             });
@@ -956,16 +2096,23 @@ async fn execute_external_action(
         source_path_for_skill(skill)
     };
     let previous_controls = db::get_platform_skill_controls(pool, &agent.id).await?;
+    let scope_key = name_scope_key(adapter, skill).ok();
     let existing = match previous_controls
         .iter()
         .find(|control| source_path_matches(&control.source_path, &source_path))
         .cloned()
     {
         Some(control) => Some(control),
-        None if adapter == Adapter::ClaudeSkillOverrides => {
+        None if is_name_scoped_adapter(adapter) => {
             let sibling_path = scope_skills.iter().find_map(|candidate| {
-                (candidate.name == skill.name && candidate.dir_path != source_path)
-                    .then(|| candidate.dir_path.clone())
+                (candidate.dir_path != source_path
+                    && scope_key.as_ref().is_some_and(|key| {
+                        name_scope_key(adapter, candidate)
+                            .ok()
+                            .as_ref()
+                            .is_some_and(|candidate_key| candidate_key == key)
+                    }))
+                .then(|| candidate.dir_path.clone())
             });
             sibling_path.and_then(|path| {
                 previous_controls
@@ -977,8 +2124,43 @@ async fn execute_external_action(
         None => None,
     };
     match adapter {
-        Adapter::ClaudeSkillOverrides => {
-            execute_claude_action(
+        Adapter::ClaudeSkillOverrides | Adapter::CodeBuddySkillOverrides => {
+            execute_name_override_action(
+                pool,
+                agent,
+                skill,
+                scope_skills,
+                &previous_controls,
+                source_path,
+                existing,
+                action,
+                adapter,
+            )
+            .await
+        }
+        Adapter::CodexSkillsConfig => {
+            execute_codex_action(pool, agent, skill, source_path, existing, action).await
+        }
+        Adapter::FactoryDisabledSkills
+        | Adapter::CommandCodeDisabledSkills
+        | Adapter::MistralDisabledSkills
+        | Adapter::OmpIgnoredSkills
+        | Adapter::HermesDisabledSkills => {
+            execute_list_adapter_action(
+                pool,
+                agent,
+                skill,
+                scope_skills,
+                &previous_controls,
+                source_path,
+                existing,
+                action,
+                adapter,
+            )
+            .await
+        }
+        Adapter::OpenCodeSkillPermissions => {
+            execute_opencode_action(
                 pool,
                 agent,
                 skill,
@@ -990,8 +2172,18 @@ async fn execute_external_action(
             )
             .await
         }
-        Adapter::CodexSkillsConfig => {
-            execute_codex_action(pool, agent, skill, source_path, existing, action).await
+        Adapter::OpenClawEntries => {
+            execute_openclaw_action(
+                pool,
+                agent,
+                skill,
+                scope_skills,
+                &previous_controls,
+                source_path,
+                existing,
+                action,
+            )
+            .await
         }
         Adapter::ManagedInstallation | Adapter::Unsupported => {
             Err("외부 스킬 Adapter 대상이 아닙니다".to_string())
@@ -1000,7 +2192,7 @@ async fn execute_external_action(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_claude_action(
+async fn execute_name_override_action(
     pool: &DbPool,
     agent: &Agent,
     skill: &db::SkillForAgent,
@@ -1009,8 +2201,9 @@ async fn execute_claude_action(
     source_path: String,
     existing: Option<StoredControl>,
     action: ExternalAction,
+    adapter: Adapter,
 ) -> Result<(), String> {
-    let config_path = config_path_for_claude(agent)?;
+    let config_path = name_override_config_path(agent, adapter)?;
     let before = read_file_if_exists(&config_path)?;
     let mut document = json_document(before.as_deref())?;
     let current = json_override(&document, &skill.name)?;
@@ -1054,7 +2247,7 @@ async fn execute_claude_action(
         set_json_override(&mut document, &skill.name, Some(applied))?;
     }
     let text = serde_json::to_string_pretty(&document)
-        .map_err(|error| format!("Claude 설정을 저장할 수 없습니다: {error}"))?;
+        .map_err(|error| format!("{} 설정을 저장할 수 없습니다: {error}", agent.display_name))?;
     write_atomic(&config_path, &text)?;
 
     let verification = (|| -> Result<(), String> {
@@ -1067,16 +2260,23 @@ async fn execute_claude_action(
             Some(applied.to_string())
         };
         if verify_value != expected_value {
-            return Err("Claude 설정을 다시 읽었을 때 요청한 상태가 아닙니다".to_string());
+            return Err(format!(
+                "{} 설정을 다시 읽었을 때 요청한 상태가 아닙니다",
+                agent.display_name
+            ));
         }
         Ok(())
     })();
     if let Err(error) = verification {
         let rollback = restore_file(&config_path, before.as_deref());
         return Err(match rollback {
-            Ok(()) => format!("Claude 설정 검증에 실패해 변경을 되돌렸습니다: {error}"),
+            Ok(()) => format!(
+                "{} 설정 검증에 실패해 변경을 되돌렸습니다: {error}",
+                agent.display_name
+            ),
             Err(rollback_error) => format!(
-                "Claude 설정 검증에 실패했고 되돌리기도 실패했습니다: {error}; {rollback_error}"
+                "{} 설정 검증에 실패했고 되돌리기도 실패했습니다: {error}; {rollback_error}",
+                agent.display_name
             ),
         });
     }
@@ -1141,6 +2341,574 @@ async fn execute_claude_action(
             (Err(file_error), Ok(())) => format!("제어 기록은 되돌렸지만 플랫폼 설정 복원에 실패했습니다: {error}; {file_error}"),
             (Ok(()), Err(records_error)) => format!("플랫폼 설정은 되돌렸지만 제어 기록 복원에 실패했습니다: {error}; {records_error}"),
             (Err(file_error), Err(records_error)) => format!("플랫폼 설정과 제어 기록 복원이 모두 실패했습니다: {error}; {file_error}; {records_error}"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn execute_claude_action(
+    pool: &DbPool,
+    agent: &Agent,
+    skill: &db::SkillForAgent,
+    scope_skills: &[db::SkillForAgent],
+    previous_controls: &[StoredControl],
+    source_path: String,
+    existing: Option<StoredControl>,
+    action: ExternalAction,
+) -> Result<(), String> {
+    execute_name_override_action(
+        pool,
+        agent,
+        skill,
+        scope_skills,
+        previous_controls,
+        source_path,
+        existing,
+        action,
+        Adapter::ClaudeSkillOverrides,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_list_adapter_action(
+    pool: &DbPool,
+    agent: &Agent,
+    skill: &db::SkillForAgent,
+    scope_skills: &[db::SkillForAgent],
+    previous_controls: &[StoredControl],
+    source_path: String,
+    existing: Option<StoredControl>,
+    action: ExternalAction,
+    adapter: Adapter,
+) -> Result<(), String> {
+    let label = list_adapter_label(adapter)?;
+    let config_path = list_adapter_config_path(agent, adapter)?;
+    let before = read_file_if_exists(&config_path)?;
+    let current = list_adapter_values(adapter, before.as_deref())?;
+    list_adapter_state(adapter, &current, &skill.name)?;
+    let current_present = current.iter().any(|value| value == &skill.name);
+    if let Some(control) = existing.as_ref() {
+        let expected_present = control
+            .applied_value
+            .parse::<bool>()
+            .map_err(|_| format!("{label} 제어 기록이 손상되었습니다"))?;
+        if current_present != expected_present {
+            return Err(
+                "설정이 다른 프로그램에 의해 바뀌어 충돌했습니다. 덮어쓰지 않습니다".to_string(),
+            );
+        }
+    }
+
+    if action == ExternalAction::Enable
+        && existing
+            .as_ref()
+            .is_some_and(|control| control.state == STATE_DELETED)
+    {
+        return Err("적용 삭제된 스킬은 재적용 버튼으로 다시 활성화하세요".to_string());
+    }
+    let restore = matches!(action, ExternalAction::Enable | ExternalAction::Reapply);
+    let original_present = match existing.as_ref() {
+        Some(control) => control
+            .original_value
+            .as_deref()
+            .unwrap_or("false")
+            .parse::<bool>()
+            .map_err(|_| format!("{label}의 원래 값 기록이 손상되었습니다"))?,
+        None if restore => false,
+        None => current_present,
+    };
+    let target_present = if restore { original_present } else { true };
+    let state = match action {
+        ExternalAction::Delete => STATE_DELETED,
+        ExternalAction::Disable => STATE_INACTIVE,
+        ExternalAction::Enable | ExternalAction::Reapply => STATE_ACTIVE,
+    };
+    let text = mutate_list_adapter_item(adapter, before.as_deref(), &skill.name, target_present)?;
+    let expected = list_adapter_values(adapter, Some(&text))?;
+    list_adapter_state(adapter, &expected, &skill.name).and_then(|actual| {
+        let expected_state = if target_present {
+            STATE_INACTIVE
+        } else {
+            STATE_ACTIVE
+        };
+        if actual == expected_state {
+            Ok(())
+        } else {
+            Err(format!("{label}를 바꿔도 요청한 상태가 되지 않습니다"))
+        }
+    })?;
+    let applied = target_present.to_string();
+    write_atomic(&config_path, &text)?;
+
+    let verification = read_file_if_exists(&config_path)
+        .and_then(|text| list_adapter_values(adapter, text.as_deref()))
+        .and_then(|values| {
+            let present = values.iter().any(|value| value == &skill.name);
+            if present != target_present {
+                return Err(format!("{label}를 다시 읽었을 때 값이 달라졌습니다"));
+            }
+            list_adapter_state(adapter, &values, &skill.name).map(|_| ())
+        });
+    if let Err(error) = verification {
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match rollback {
+            Ok(()) => format!("{label} 설정 검증에 실패해 변경을 되돌렸습니다: {error}"),
+            Err(rollback_error) => format!(
+                "{label} 설정 검증에 실패했고 되돌리기도 실패했습니다: {error}; {rollback_error}"
+            ),
+        });
+    }
+
+    let db_result = if restore {
+        db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill.name).await
+    } else {
+        let original = existing
+            .as_ref()
+            .and_then(|control| control.original_value.clone())
+            .unwrap_or_else(|| current_present.to_string());
+        let paths = scope_skills
+            .iter()
+            .filter(|candidate| {
+                adapter_for(agent, candidate, false) == adapter && candidate.name == skill.name
+            })
+            .map(|candidate| candidate.dir_path.clone())
+            .chain(std::iter::once(source_path.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let mut result = Ok(());
+        for path in paths {
+            result = db::upsert_platform_skill_control(
+                pool,
+                &StoredControl {
+                    agent_id: agent.id.clone(),
+                    source_path: path,
+                    skill_name: skill.name.clone(),
+                    state: state.to_string(),
+                    original_value: Some(original.clone()),
+                    applied_value: applied.clone(),
+                    updated_at: updated_at.clone(),
+                },
+            )
+            .await;
+            if result.is_err() {
+                break;
+            }
+        }
+        result
+    };
+    if let Err(error) = db_result {
+        let records_rollback = if restore {
+            Ok(())
+        } else {
+            let rollback_delete =
+                db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill.name).await;
+            match rollback_delete {
+                Ok(()) => {
+                    let mut rollback_result = Ok(());
+                    for control in previous_controls
+                        .iter()
+                        .filter(|control| control.skill_name == skill.name)
+                    {
+                        rollback_result = db::upsert_platform_skill_control(pool, control).await;
+                        if rollback_result.is_err() {
+                            break;
+                        }
+                    }
+                    rollback_result
+                }
+                Err(rollback_error) => Err(rollback_error),
+            }
+        };
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match (rollback, records_rollback) {
+            (Ok(()), Ok(())) => {
+                format!("{label} 설정과 제어 기록을 되돌렸지만 저장에 실패했습니다: {error}")
+            }
+            (Err(file_error), Ok(())) => format!(
+                "제어 기록은 되돌렸지만 {label} 설정 복원에 실패했습니다: {error}; {file_error}"
+            ),
+            (Ok(()), Err(records_error)) => format!(
+                "{label} 설정은 되돌렸지만 제어 기록 복원에 실패했습니다: {error}; {records_error}"
+            ),
+            (Err(file_error), Err(records_error)) => format!(
+                "{label} 설정과 제어 기록 복원이 모두 실패했습니다: {error}; {file_error}; {records_error}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_opencode_action(
+    pool: &DbPool,
+    agent: &Agent,
+    skill: &db::SkillForAgent,
+    scope_skills: &[db::SkillForAgent],
+    previous_controls: &[StoredControl],
+    source_path: String,
+    existing: Option<StoredControl>,
+    action: ExternalAction,
+) -> Result<(), String> {
+    let config_path = config_path_for_opencode(agent)?;
+    let before = read_file_if_exists(&config_path)?;
+    let (mut document, shape) = opencode_document(before.as_deref())?;
+    let skill_key = opencode_skill_key(skill)?;
+    let current_effect = opencode_effect(&document, shape, &skill_key)?;
+    let current_state = opencode_action_state(current_effect.as_deref())?;
+    if let Some(control) = existing.as_ref() {
+        if current_state != control.applied_value {
+            return Err(
+                "설정이 다른 프로그램에 의해 바뀌어 충돌했습니다. 덮어쓰지 않습니다".to_string(),
+            );
+        }
+    }
+    if action == ExternalAction::Enable
+        && existing
+            .as_ref()
+            .is_some_and(|control| control.state == STATE_DELETED)
+    {
+        return Err("적용 삭제된 스킬은 재적용 버튼으로 다시 활성화하세요".to_string());
+    }
+
+    let restore = matches!(action, ExternalAction::Enable | ExternalAction::Reapply);
+    let original = if let Some(control) = existing.as_ref() {
+        control
+            .original_value
+            .clone()
+            .ok_or_else(|| "OpenCode의 원래 permission 기록이 없습니다".to_string())?
+    } else {
+        match shape {
+            OpenCodePermissionShape::V1 => {
+                let exact = opencode_v1_skill_permissions(&document)?
+                    .and_then(|permissions| permissions.get(&skill_key))
+                    .map(|value| {
+                        value.as_str().map(str::to_string).ok_or_else(|| {
+                            format!(
+                                "OpenCode v1 permission.skill['{skill_key}']이 문자열이 아닙니다"
+                            )
+                        })
+                    })
+                    .transpose()?;
+                exact
+                    .map(|effect| format!("v1:{effect}"))
+                    .unwrap_or_else(|| "v1:none".to_string())
+            }
+            OpenCodePermissionShape::V2 => "v2:appended-deny".to_string(),
+        }
+    };
+
+    if restore {
+        match (shape, existing.as_ref()) {
+            (OpenCodePermissionShape::V1, Some(_)) => {
+                let effect = original
+                    .strip_prefix("v1:")
+                    .ok_or_else(|| "OpenCode v1 원래 값 기록이 손상되었습니다".to_string())?;
+                opencode_set_v1_exact(
+                    &mut document,
+                    &skill_key,
+                    (effect != "none").then_some(effect),
+                )?;
+            }
+            (OpenCodePermissionShape::V2, Some(_)) => {
+                if original != "v2:appended-deny" {
+                    return Err("OpenCode v2 원래 값 기록이 손상되었습니다".to_string());
+                }
+                opencode_remove_last_v2_rule(&mut document, &skill_key, "deny")?;
+            }
+            (OpenCodePermissionShape::V1, None) => {
+                opencode_set_v1_exact(&mut document, &skill_key, Some("allow"))?;
+            }
+            (OpenCodePermissionShape::V2, None) => {
+                opencode_append_v2_rule(&mut document, &skill_key, "allow")?;
+            }
+        }
+    } else {
+        match shape {
+            OpenCodePermissionShape::V1 => {
+                opencode_set_v1_exact(&mut document, &skill_key, Some("deny"))?;
+            }
+            OpenCodePermissionShape::V2 => {
+                opencode_append_v2_rule(&mut document, &skill_key, "deny")?;
+            }
+        }
+    }
+
+    let text = serde_json::to_string_pretty(&document)
+        .map_err(|error| format!("OpenCode 설정을 저장할 수 없습니다: {error}"))?;
+    write_atomic(&config_path, &text)?;
+    let expected_state = if restore {
+        STATE_ACTIVE
+    } else {
+        STATE_INACTIVE
+    };
+    let verification = read_file_if_exists(&config_path)
+        .and_then(|text| opencode_document(text.as_deref()))
+        .and_then(|(document, verify_shape)| {
+            if verify_shape != shape {
+                return Err("OpenCode 설정 형식이 저장 뒤 달라졌습니다".to_string());
+            }
+            let effect = opencode_effect(&document, shape, &skill_key)?;
+            let state = opencode_action_state(effect.as_deref())?;
+            if state == expected_state {
+                Ok(())
+            } else {
+                Err("OpenCode 설정을 다시 읽었을 때 요청한 상태가 아닙니다".to_string())
+            }
+        });
+    if let Err(error) = verification {
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match rollback {
+            Ok(()) => format!("OpenCode 설정 검증에 실패해 변경을 되돌렸습니다: {error}"),
+            Err(rollback_error) => format!(
+                "OpenCode 설정 검증에 실패했고 되돌리기도 실패했습니다: {error}; {rollback_error}"
+            ),
+        });
+    }
+
+    let db_result = if restore {
+        db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill_key).await
+    } else {
+        let paths = scope_skills
+            .iter()
+            .filter(|candidate| {
+                adapter_for(agent, candidate, false) == Adapter::OpenCodeSkillPermissions
+                    && opencode_skill_key(candidate)
+                        .ok()
+                        .is_some_and(|key| key == skill_key)
+            })
+            .map(|candidate| candidate.dir_path.clone())
+            .chain(std::iter::once(source_path.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let state = if action == ExternalAction::Delete {
+            STATE_DELETED
+        } else {
+            STATE_INACTIVE
+        };
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let mut result = Ok(());
+        for path in paths {
+            result = db::upsert_platform_skill_control(
+                pool,
+                &StoredControl {
+                    agent_id: agent.id.clone(),
+                    source_path: path,
+                    skill_name: skill_key.clone(),
+                    state: state.to_string(),
+                    original_value: Some(original.clone()),
+                    applied_value: STATE_INACTIVE.to_string(),
+                    updated_at: updated_at.clone(),
+                },
+            )
+            .await;
+            if result.is_err() {
+                break;
+            }
+        }
+        result
+    };
+    if let Err(error) = db_result {
+        let records_rollback = if restore {
+            Ok(())
+        } else {
+            let rollback_delete =
+                db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill_key).await;
+            match rollback_delete {
+                Ok(()) => {
+                    let mut rollback_result = Ok(());
+                    for control in previous_controls
+                        .iter()
+                        .filter(|control| control.skill_name == skill_key)
+                    {
+                        rollback_result = db::upsert_platform_skill_control(pool, control).await;
+                        if rollback_result.is_err() {
+                            break;
+                        }
+                    }
+                    rollback_result
+                }
+                Err(rollback_error) => Err(rollback_error),
+            }
+        };
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match (rollback, records_rollback) {
+            (Ok(()), Ok(())) => format!(
+                "OpenCode 설정과 제어 기록을 되돌렸지만 저장에 실패했습니다: {error}"
+            ),
+            (Err(file_error), Ok(())) => format!(
+                "제어 기록은 되돌렸지만 OpenCode 설정 복원에 실패했습니다: {error}; {file_error}"
+            ),
+            (Ok(()), Err(records_error)) => format!(
+                "OpenCode 설정은 되돌렸지만 제어 기록 복원에 실패했습니다: {error}; {records_error}"
+            ),
+            (Err(file_error), Err(records_error)) => format!(
+                "OpenCode 설정과 제어 기록 복원이 모두 실패했습니다: {error}; {file_error}; {records_error}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn stored_openclaw_original(control: &StoredControl) -> Result<Option<bool>, String> {
+    match control.original_value.as_deref() {
+        None | Some("default") => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(_) => Err("OpenClaw의 원래 enabled 값 기록이 손상되었습니다".to_string()),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_openclaw_action(
+    pool: &DbPool,
+    agent: &Agent,
+    skill: &db::SkillForAgent,
+    scope_skills: &[db::SkillForAgent],
+    previous_controls: &[StoredControl],
+    source_path: String,
+    existing: Option<StoredControl>,
+    action: ExternalAction,
+) -> Result<(), String> {
+    let config_path = config_path_for_openclaw(agent)?;
+    let before = read_file_if_exists(&config_path)?;
+    let mut document = openclaw_document(before.as_deref())?;
+    let skill_key = openclaw_skill_key(skill)?;
+    let current = openclaw_enabled(&document, &skill_key)?;
+    let current_text = bool_setting_text(current);
+    if let Some(control) = existing.as_ref() {
+        if current_text != control.applied_value {
+            return Err(
+                "설정이 다른 프로그램에 의해 바뀌어 충돌했습니다. 덮어쓰지 않습니다".to_string(),
+            );
+        }
+    }
+    if action == ExternalAction::Enable
+        && existing
+            .as_ref()
+            .is_some_and(|control| control.state == STATE_DELETED)
+    {
+        return Err("적용 삭제된 스킬은 재적용 버튼으로 다시 활성화하세요".to_string());
+    }
+
+    let restore = matches!(action, ExternalAction::Enable | ExternalAction::Reapply);
+    let target = if restore {
+        existing
+            .as_ref()
+            .map(stored_openclaw_original)
+            .transpose()?
+            .flatten()
+    } else {
+        Some(false)
+    };
+    set_openclaw_enabled(&mut document, &skill_key, target)?;
+    let text = serde_json::to_string_pretty(&document)
+        .map_err(|error| format!("OpenClaw 설정을 저장할 수 없습니다: {error}"))?;
+    write_atomic(&config_path, &text)?;
+
+    let expected_text = bool_setting_text(target);
+    let verification = read_file_if_exists(&config_path)
+        .and_then(|text| openclaw_document(text.as_deref()))
+        .and_then(|document| openclaw_enabled(&document, &skill_key))
+        .and_then(|enabled| {
+            if enabled == target {
+                Ok(())
+            } else {
+                Err("OpenClaw 설정을 다시 읽었을 때 요청한 상태가 아닙니다".to_string())
+            }
+        });
+    if let Err(error) = verification {
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match rollback {
+            Ok(()) => format!("OpenClaw 설정 검증에 실패해 변경을 되돌렸습니다: {error}"),
+            Err(rollback_error) => format!(
+                "OpenClaw 설정 검증에 실패했고 되돌리기도 실패했습니다: {error}; {rollback_error}"
+            ),
+        });
+    }
+
+    let db_result = if restore {
+        db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill_key).await
+    } else {
+        let original = existing
+            .as_ref()
+            .and_then(|control| control.original_value.clone())
+            .unwrap_or(current_text);
+        let paths = scope_skills
+            .iter()
+            .filter(|candidate| {
+                openclaw_skill_key(candidate)
+                    .ok()
+                    .is_some_and(|candidate_key| candidate_key == skill_key)
+            })
+            .map(|candidate| candidate.dir_path.clone())
+            .chain(std::iter::once(source_path.clone()))
+            .collect::<std::collections::BTreeSet<_>>();
+        let state = if action == ExternalAction::Delete {
+            STATE_DELETED
+        } else {
+            STATE_INACTIVE
+        };
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        let mut result = Ok(());
+        for path in paths {
+            result = db::upsert_platform_skill_control(
+                pool,
+                &StoredControl {
+                    agent_id: agent.id.clone(),
+                    source_path: path,
+                    skill_name: skill_key.clone(),
+                    state: state.to_string(),
+                    original_value: Some(original.clone()),
+                    applied_value: expected_text.clone(),
+                    updated_at: updated_at.clone(),
+                },
+            )
+            .await;
+            if result.is_err() {
+                break;
+            }
+        }
+        result
+    };
+    if let Err(error) = db_result {
+        let records_rollback = if restore {
+            Ok(())
+        } else {
+            let rollback_delete =
+                db::delete_platform_skill_controls_by_name(pool, &agent.id, &skill_key).await;
+            match rollback_delete {
+                Ok(()) => {
+                    let mut rollback_result = Ok(());
+                    for control in previous_controls
+                        .iter()
+                        .filter(|control| control.skill_name == skill_key)
+                    {
+                        rollback_result = db::upsert_platform_skill_control(pool, control).await;
+                        if rollback_result.is_err() {
+                            break;
+                        }
+                    }
+                    rollback_result
+                }
+                Err(rollback_error) => Err(rollback_error),
+            }
+        };
+        let rollback = restore_file(&config_path, before.as_deref());
+        return Err(match (rollback, records_rollback) {
+            (Ok(()), Ok(())) => format!(
+                "OpenClaw 설정과 제어 기록을 되돌렸지만 저장에 실패했습니다: {error}"
+            ),
+            (Err(file_error), Ok(())) => format!(
+                "제어 기록은 되돌렸지만 OpenClaw 설정 복원에 실패했습니다: {error}; {file_error}"
+            ),
+            (Ok(()), Err(records_error)) => format!(
+                "OpenClaw 설정은 되돌렸지만 제어 기록 복원에 실패했습니다: {error}; {records_error}"
+            ),
+            (Err(file_error), Err(records_error)) => format!(
+                "OpenClaw 설정과 제어 기록 복원이 모두 실패했습니다: {error}; {file_error}; {records_error}"
+            ),
         });
     }
     Ok(())
@@ -1398,6 +3166,7 @@ pub async fn reapply_platform_skill_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tempfile::TempDir;
 
     fn test_agent(id: &str, display_name: &str, global_skills_dir: &Path) -> Agent {
@@ -1479,6 +3248,635 @@ mod tests {
         )
         .await
         .unwrap();
+    }
+
+    #[test]
+    fn omp_ignored_skills_edit_preserves_unrelated_yaml_and_comments() {
+        let original = "# root comment\nskills:\n  # keep skill comment\n  ignoredSkills:\n    - \"kept-*\"\n  includeSkills: []\nother:\n  value: kept\n";
+        let disabled = mutate_omp_ignored_skill(Some(original), "airbnb-full", true).unwrap();
+        assert!(disabled.contains("# root comment"));
+        assert!(disabled.contains("# keep skill comment"));
+        assert!(disabled.contains("other:\n  value: kept"));
+        assert_eq!(
+            omp_ignored_skills(Some(&disabled)).unwrap(),
+            vec!["kept-*", "airbnb-full"]
+        );
+
+        let restored = mutate_omp_ignored_skill(Some(&disabled), "airbnb-full", false).unwrap();
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn omp_ignored_skills_supports_inline_list_and_rejects_broad_match() {
+        let disabled = mutate_omp_ignored_skill(
+            Some("skills:\n  ignoredSkills: [\"kept\"]\n"),
+            "airbnb-full",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            omp_ignored_skills(Some(&disabled)).unwrap(),
+            vec!["kept", "airbnb-full"]
+        );
+        assert!(omp_ignore_state(&["airbnb-*".to_string()], "airbnb-full").is_err());
+        assert!(omp_ignore_state(
+            &["airbnb-full".to_string(), "airbnb-*".to_string()],
+            "airbnb-full"
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn codebuddy_name_override_round_trips_without_touching_other_settings() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".codebuddy");
+        let skills_root = root.join("skills");
+        let skill = test_skill(
+            "shared-skill",
+            "shared-skill",
+            &skills_root.join("shared-skill"),
+            "compatibility",
+        );
+        let agent = test_agent("codebuddy", "CodeBuddy", &skills_root);
+        let settings_path = root.join("settings.json");
+        fs::write(&settings_path, r#"{"theme":"dark"}"#).unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &skill).await;
+
+        execute_name_override_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &[],
+            skill.dir_path.clone(),
+            None,
+            ExternalAction::Disable,
+            Adapter::CodeBuddySkillOverrides,
+        )
+        .await
+        .unwrap();
+        let disabled: JsonValue =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(disabled["theme"], "dark");
+        assert_eq!(disabled["skillOverrides"]["shared-skill"], "off");
+
+        let controls = db::get_platform_skill_controls(&pool, "codebuddy")
+            .await
+            .unwrap();
+        let status = get_platform_skill_controls_impl(&pool, "codebuddy")
+            .await
+            .unwrap();
+        assert_eq!(status[0].state, STATE_INACTIVE);
+        assert_eq!(status[0].adapter, "codebuddy-skill-overrides");
+        execute_name_override_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &controls,
+            skill.dir_path.clone(),
+            Some(controls[0].clone()),
+            ExternalAction::Enable,
+            Adapter::CodeBuddySkillOverrides,
+        )
+        .await
+        .unwrap();
+        let restored: JsonValue =
+            serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+        assert_eq!(restored["theme"], "dark");
+        assert!(restored
+            .get("skillOverrides")
+            .and_then(|value| value.get("shared-skill"))
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn codebuddy_name_scope_does_not_count_plugin_sources() {
+        let directory = TempDir::new().unwrap();
+        let skills_root = directory.path().join(".codebuddy/skills");
+        let regular = test_skill(
+            "regular-shared-skill",
+            "shared-skill",
+            &skills_root.join("shared-skill"),
+            "compatibility",
+        );
+        let plugin = test_skill(
+            "plugin-shared-skill",
+            "shared-skill",
+            &directory.path().join(".codebuddy/plugins/shared-skill"),
+            "plugin",
+        );
+        let agent = test_agent("codebuddy", "CodeBuddy", &skills_root);
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &regular).await;
+        register_test_observation(&pool, &agent, &plugin).await;
+
+        let statuses = get_platform_skill_controls_impl(&pool, "codebuddy")
+            .await
+            .unwrap();
+        let regular_status = statuses
+            .iter()
+            .find(|status| status.source_kind.as_deref() == Some("compatibility"))
+            .unwrap();
+        assert_eq!(regular_status.affected_source_count, 1);
+        assert_eq!(regular_status.scope, "name");
+        assert!(regular_status.reason.is_none());
+
+        let plugin_status = statuses
+            .iter()
+            .find(|status| status.source_kind.as_deref() == Some("plugin"))
+            .unwrap();
+        assert!(!plugin_status.supported);
+        assert_eq!(plugin_status.adapter, "unsupported");
+    }
+
+    #[tokio::test]
+    async fn omp_adapter_round_trips_and_preserves_comments() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".omp/agent");
+        let skills_root = root.join("skills");
+        let skill = test_skill(
+            "airbnb-full",
+            "airbnb-full",
+            &skills_root.join("airbnb-full"),
+            "compatibility",
+        );
+        let agent = test_agent("omp", "Oh My Pi", &skills_root);
+        let config_path = root.join("config.yml");
+        let original =
+            "# keep\nskills:\n  ignoredSkills:\n    - \"other\"\nother:\n  value: kept\n";
+        fs::write(&config_path, original).unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &skill).await;
+
+        execute_list_adapter_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &[],
+            skill.dir_path.clone(),
+            None,
+            ExternalAction::Disable,
+            Adapter::OmpIgnoredSkills,
+        )
+        .await
+        .unwrap();
+        let disabled = fs::read_to_string(&config_path).unwrap();
+        assert!(disabled.contains("# keep"));
+        assert!(disabled.contains("value: kept"));
+        assert_eq!(
+            omp_ignored_skills(Some(&disabled)).unwrap(),
+            vec!["other", "airbnb-full"]
+        );
+
+        let controls = db::get_platform_skill_controls(&pool, "omp").await.unwrap();
+        let status = get_platform_skill_controls_impl(&pool, "omp")
+            .await
+            .unwrap();
+        assert_eq!(status[0].state, STATE_INACTIVE);
+        assert_eq!(status[0].adapter, "omp-ignored-skills");
+        execute_list_adapter_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &controls,
+            skill.dir_path.clone(),
+            Some(controls[0].clone()),
+            ExternalAction::Enable,
+            Adapter::OmpIgnoredSkills,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn omp_adapter_allows_multiple_independent_disabled_skills() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".omp/agent");
+        let skills_root = root.join("skills");
+        let first = test_skill(
+            "first-skill",
+            "first-skill",
+            &skills_root.join("first-skill"),
+            "compatibility",
+        );
+        let second = test_skill(
+            "second-skill",
+            "second-skill",
+            &skills_root.join("second-skill"),
+            "compatibility",
+        );
+        let agent = test_agent("omp", "Oh My Pi", &skills_root);
+        let config_path = root.join("config.yml");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&config_path, "skills:\n  ignoredSkills: []\n").unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &first).await;
+        register_test_observation(&pool, &agent, &second).await;
+        let skills = vec![first.clone(), second.clone()];
+
+        execute_external_action(&pool, &agent, &first, &skills, ExternalAction::Disable)
+            .await
+            .unwrap();
+        execute_external_action(&pool, &agent, &second, &skills, ExternalAction::Disable)
+            .await
+            .unwrap();
+        let statuses = get_platform_skill_controls_impl(&pool, "omp")
+            .await
+            .unwrap();
+        assert!(statuses.iter().all(|status| status.state == STATE_INACTIVE));
+
+        execute_external_action(&pool, &agent, &first, &skills, ExternalAction::Enable)
+            .await
+            .unwrap();
+        let values = omp_ignored_skills(Some(&fs::read_to_string(&config_path).unwrap())).unwrap();
+        assert_eq!(values, vec!["second-skill"]);
+        execute_external_action(&pool, &agent, &second, &skills, ExternalAction::Enable)
+            .await
+            .unwrap();
+        assert!(
+            omp_ignored_skills(Some(&fs::read_to_string(&config_path).unwrap()))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn json_disabled_skills_adapters_round_trip_unrelated_settings() {
+        for (agent_id, display_name, directory_name, adapter_name) in [
+            (
+                "factory-droid",
+                "Factory Droid",
+                ".factory",
+                "factory-disabled-skills",
+            ),
+            (
+                "command-code",
+                "Command Code",
+                ".commandcode",
+                "command-code-disabled-skills",
+            ),
+        ] {
+            let directory = TempDir::new().unwrap();
+            let root = directory.path().join(directory_name);
+            let skills_root = root.join("skills");
+            let skill = test_skill(
+                "shared-skill",
+                "shared-skill",
+                &skills_root.join("shared-skill"),
+                "native",
+            );
+            let agent = test_agent(agent_id, display_name, &skills_root);
+            let settings_path = root.join("settings.json");
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                &settings_path,
+                r#"{"theme":"dark","disabledSkills":["other"]}"#,
+            )
+            .unwrap();
+            let pool = test_pool(&directory).await;
+            register_test_observation(&pool, &agent, &skill).await;
+
+            execute_external_action(
+                &pool,
+                &agent,
+                &skill,
+                std::slice::from_ref(&skill),
+                ExternalAction::Disable,
+            )
+            .await
+            .unwrap();
+            let disabled: JsonValue =
+                serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+            assert_eq!(disabled["theme"], "dark");
+            assert_eq!(disabled["disabledSkills"], json!(["other", "shared-skill"]));
+            let status = get_platform_skill_controls_impl(&pool, agent_id)
+                .await
+                .unwrap();
+            assert_eq!(status[0].adapter, adapter_name);
+            assert_eq!(status[0].state, STATE_INACTIVE);
+
+            execute_external_action(
+                &pool,
+                &agent,
+                &skill,
+                std::slice::from_ref(&skill),
+                ExternalAction::Enable,
+            )
+            .await
+            .unwrap();
+            let restored: JsonValue =
+                serde_json::from_str(&fs::read_to_string(&settings_path).unwrap()).unwrap();
+            assert_eq!(restored["theme"], "dark");
+            assert_eq!(restored["disabledSkills"], json!(["other"]));
+        }
+    }
+
+    #[tokio::test]
+    async fn hermes_disabled_skills_round_trip_preserves_yaml_comments() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".hermes");
+        let skills_root = root.join("skills");
+        let skill = test_skill(
+            "shared-skill",
+            "shared-skill",
+            &skills_root.join("shared-skill"),
+            "native",
+        );
+        let agent = test_agent("hermes", "Hermes", &skills_root);
+        let config_path = root.join("config.yaml");
+        let original =
+            "# keep\nskills:\n  # keep list comment\n  disabled:\n    - \"other\"\nmodel:\n  default: kept\n";
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&config_path, original).unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &skill).await;
+
+        execute_external_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            ExternalAction::Disable,
+        )
+        .await
+        .unwrap();
+        let disabled = fs::read_to_string(&config_path).unwrap();
+        assert!(disabled.contains("# keep list comment"));
+        assert!(disabled.contains("default: kept"));
+        assert_eq!(
+            hermes_disabled_skills(Some(&disabled)).unwrap(),
+            vec!["other", "shared-skill"]
+        );
+
+        execute_external_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            ExternalAction::Enable,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn mistral_disabled_skills_round_trip_preserves_toml_comments() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".vibe");
+        let skills_root = root.join("skills");
+        let skill = test_skill(
+            "shared-skill",
+            "shared-skill",
+            &skills_root.join("shared-skill"),
+            "native",
+        );
+        let agent = test_agent("mistral-vibe", "Mistral Vibe", &skills_root);
+        let config_path = root.join("config.toml");
+        let original = "# keep\ndisabled_skills = [\"other\"]\nactive_model = \"kept\"\n";
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&config_path, original).unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &skill).await;
+
+        execute_external_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            ExternalAction::Disable,
+        )
+        .await
+        .unwrap();
+        let disabled = fs::read_to_string(&config_path).unwrap();
+        assert!(disabled.contains("# keep"));
+        assert!(disabled.contains("active_model = \"kept\""));
+        assert_eq!(
+            mistral_disabled_skills(Some(&disabled)).unwrap(),
+            vec!["other", "shared-skill"]
+        );
+        let status = get_platform_skill_controls_impl(&pool, "mistral-vibe")
+            .await
+            .unwrap();
+        assert_eq!(status[0].adapter, "mistral-disabled-skills");
+        assert_eq!(status[0].state, STATE_INACTIVE);
+
+        execute_external_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            ExternalAction::Enable,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read_to_string(&config_path).unwrap(), original);
+    }
+
+    #[test]
+    fn mistral_refuses_allowlist_and_broad_deny_patterns() {
+        assert!(
+            mistral_disabled_skills(Some("enabled_skills = [\"shared-skill\"]\n"))
+                .unwrap_err()
+                .contains("allowlist")
+        );
+        assert!(pattern_disabled_state(
+            &["shared-*".to_string()],
+            "shared-skill",
+            "Mistral disabled_skills",
+        )
+        .is_err());
+        assert!(pattern_disabled_state(
+            &["re:^shared-".to_string()],
+            "shared-skill",
+            "Mistral disabled_skills",
+        )
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn opencode_v1_and_v2_permissions_round_trip() {
+        for (shape_name, original) in [
+            (
+                "v1",
+                r#"{"theme":"kept","permission":{"skill":{"*":"allow"}}}"#,
+            ),
+            (
+                "v2",
+                r#"{"theme":"kept","permissions":[{"action":"skill","resource":"*","effect":"allow"}]}"#,
+            ),
+        ] {
+            let directory = TempDir::new().unwrap();
+            let skills_root = directory.path().join(".opencode/skills");
+            let skill = test_skill(
+                "shared-skill",
+                "shared-skill",
+                &skills_root.join("shared-skill"),
+                "compatibility",
+            );
+            let agent = test_agent("opencode", "OpenCode", &skills_root);
+            let config_path = directory.path().join(".config/opencode/opencode.json");
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, original).unwrap();
+            let pool = test_pool(&directory).await;
+            register_test_observation(&pool, &agent, &skill).await;
+            sqlx::query("UPDATE agents SET is_builtin = 0 WHERE id = 'opencode'")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            execute_external_action(
+                &pool,
+                &agent,
+                &skill,
+                std::slice::from_ref(&skill),
+                ExternalAction::Disable,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{shape_name} disable failed: {error}"));
+            let disabled_text = fs::read_to_string(&config_path).unwrap();
+            let (disabled, shape) = opencode_document(Some(&disabled_text)).unwrap();
+            assert_eq!(disabled["theme"], "kept");
+            assert_eq!(
+                opencode_action_state(
+                    opencode_effect(&disabled, shape, "shared-skill")
+                        .unwrap()
+                        .as_deref(),
+                )
+                .unwrap(),
+                STATE_INACTIVE
+            );
+            let status = get_platform_skill_controls_impl(&pool, "opencode")
+                .await
+                .unwrap();
+            assert_eq!(status[0].adapter, "opencode-skill-permissions");
+            assert_eq!(status[0].state, STATE_INACTIVE);
+
+            execute_external_action(
+                &pool,
+                &agent,
+                &skill,
+                std::slice::from_ref(&skill),
+                ExternalAction::Enable,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{shape_name} enable failed: {error}"));
+            let restored_text = fs::read_to_string(&config_path).unwrap();
+            let (restored, shape) = opencode_document(Some(&restored_text)).unwrap();
+            assert_eq!(restored["theme"], "kept");
+            assert_eq!(
+                opencode_action_state(
+                    opencode_effect(&restored, shape, "shared-skill")
+                        .unwrap()
+                        .as_deref(),
+                )
+                .unwrap(),
+                STATE_ACTIVE
+            );
+        }
+    }
+
+    #[test]
+    fn opencode_refuses_ambiguous_or_commented_config() {
+        assert!(opencode_document(None).is_err());
+        assert!(opencode_document(Some(
+            "{ // keep\n permission: { skill: { '*': 'allow' } }\n}"
+        ))
+        .unwrap_err()
+        .contains("주석"));
+        assert!(
+            opencode_document(Some(r#"{"permission":{"skill":{}},"permissions":[]}"#)).is_err()
+        );
+
+        let (mut document, shape) =
+            opencode_document(Some(r#"{"permission":{"bash":"ask"},"theme":"kept"}"#)).unwrap();
+        assert_eq!(shape, OpenCodePermissionShape::V1);
+        assert_eq!(
+            opencode_effect(&document, shape, "shared-skill").unwrap(),
+            None
+        );
+        opencode_set_v1_exact(&mut document, "shared-skill", Some("deny")).unwrap();
+        assert_eq!(document["permission"]["bash"], "ask");
+        assert_eq!(document["permission"]["skill"]["shared-skill"], "deny");
+    }
+
+    #[test]
+    fn openclaw_json5_comment_guard_ignores_comment_markers_inside_strings() {
+        assert!(!has_json_comments(r#"{"url":"https://example.com/a/*/b"}"#));
+        assert!(has_json_comments("{ // keep\n value: true\n}"));
+        assert!(openclaw_document(Some("{ // keep\n value: true\n}")).is_err());
+    }
+
+    #[tokio::test]
+    async fn openclaw_adapter_uses_metadata_key_and_round_trips_enabled_value() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join(".openclaw");
+        let skills_root = root.join("skills");
+        let skill = test_skill(
+            "display-name",
+            "display-name",
+            &skills_root.join("display-name"),
+            "compatibility",
+        );
+        fs::write(
+            &skill.file_path,
+            "---\nname: display-name\nmetadata:\n  openclaw:\n    skillKey: stable-key\n---\n",
+        )
+        .unwrap();
+        let agent = test_agent("openclaw", "OpenClaw", &skills_root);
+        let config_path = root.join("openclaw.json");
+        fs::write(&config_path, r#"{"theme":"dark"}"#).unwrap();
+        let pool = test_pool(&directory).await;
+        register_test_observation(&pool, &agent, &skill).await;
+
+        execute_openclaw_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &[],
+            skill.dir_path.clone(),
+            None,
+            ExternalAction::Disable,
+        )
+        .await
+        .unwrap();
+        let disabled = openclaw_document(fs::read_to_string(&config_path).ok().as_deref()).unwrap();
+        assert_eq!(disabled["theme"], "dark");
+        assert_eq!(
+            disabled["skills"]["entries"]["stable-key"]["enabled"],
+            false
+        );
+        let controls = db::get_platform_skill_controls(&pool, "openclaw")
+            .await
+            .unwrap();
+        assert_eq!(controls[0].skill_name, "stable-key");
+        let status = get_platform_skill_controls_impl(&pool, "openclaw")
+            .await
+            .unwrap();
+        assert_eq!(status[0].state, STATE_INACTIVE);
+        assert_eq!(status[0].adapter, "openclaw-skill-entries");
+
+        execute_openclaw_action(
+            &pool,
+            &agent,
+            &skill,
+            std::slice::from_ref(&skill),
+            &controls,
+            skill.dir_path.clone(),
+            Some(controls[0].clone()),
+            ExternalAction::Enable,
+        )
+        .await
+        .unwrap();
+        let restored = openclaw_document(fs::read_to_string(&config_path).ok().as_deref()).unwrap();
+        assert_eq!(restored["theme"], "dark");
+        assert_eq!(openclaw_enabled(&restored, "stable-key").unwrap(), None);
     }
 
     #[test]
