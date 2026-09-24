@@ -567,6 +567,18 @@ export function SettingsView() {
   const [scanDirError, setScanDirError] = useState<string | null>(null);
   const [platformError, setPlatformError] = useState<string | null>(null);
   const [githubPatInput, setGitHubPatInput] = useState("");
+  const [githubAuthStatus, setGitHubAuthStatus] = useState("checking");
+  const [githubAuthRefresh, setGitHubAuthRefresh] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    setGitHubAuthStatus("checking");
+    invoke<string>("get_github_auth_status")
+      .then((status) => { if (active) setGitHubAuthStatus(status ?? "unavailable"); })
+      .catch(() => { if (active) setGitHubAuthStatus("unavailable"); });
+    return () => { active = false; };
+  }, [githubPat, githubAuthRefresh]);
+
   const [githubPatMessage, setGitHubPatMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   // ── Load on mount ──────────────────────────────────────────────────────────
@@ -828,6 +840,16 @@ export function SettingsView() {
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
+              <div className="rounded-md border p-3 space-y-2 text-sm" aria-live="polite">
+                <p>{t(`settings.githubAuth.${githubAuthStatus}`)}</p>
+                <p className="text-xs text-muted-foreground">{t("settings.githubAuth.loginHelp")}</p>
+                <code className="block text-xs">gh auth login --hostname github.com --web</code>
+                <Button type="button" size="sm" variant="outline"
+                  disabled={githubAuthStatus === "checking"}
+                  onClick={() => setGitHubAuthRefresh((value) => value + 1)}>
+                  {t("settings.githubAuth.refresh")}
+                </Button>
+              </div>
               <div>
                 <label htmlFor="github-pat" className="mb-1 block text-xs text-muted-foreground">
                   {t("settings.githubPatLabel")}

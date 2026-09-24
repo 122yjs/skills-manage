@@ -114,7 +114,7 @@ fn executable_names(agent: &Agent) -> Vec<String> {
 
 /// macOS 앱은 셸보다 짧은 PATH로 실행될 수 있다.
 /// Homebrew로 설치한 CLI도 실제 설치 여부 판단에 포함한다.
-fn executable_search_paths() -> Vec<std::path::PathBuf> {
+pub(crate) fn executable_search_paths() -> Vec<std::path::PathBuf> {
     let directories: Vec<std::path::PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();

@@ -11,6 +11,7 @@ import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 import { DevToolSetupDialog } from "@/components/settings/DevToolSetupDialog";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import { invoke, isTauriRuntime } from "@/lib/tauri";
 
 /**
  * Top-level app shell shared visually with the read-only web dashboard.
@@ -47,8 +48,23 @@ export function AppShell() {
         rescanDiscoverFromDisk(),
         loadUsageStatus(),
       ]);
+      if (isTauriRuntime()) {
+        void invoke("check_linked_skill_origins")
+          .then(() => loadCentralSkills())
+          .catch(() => undefined);
+      }
     });
   }, [initialize, loadCentralSkills, rescanDiscoverFromDisk, loadUsageStatus]);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    const timer = window.setInterval(() => {
+      void invoke("check_linked_skill_origins")
+        .then(() => loadCentralSkills())
+        .catch(() => undefined);
+    }, 6 * 60 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [loadCentralSkills]);
 
   useEffect(() => {
     if (!mainRef.current) return;

@@ -75,6 +75,8 @@ pub struct SkillDetail {
     pub source_root: Option<String>,
     pub source_label: Option<String>,
     pub is_read_only: bool,
+    /// 플랫폼 설치 제어와 별개로, 실제 관리 원본의 GitHub 정보를 변경할 수 있는지 여부입니다.
+    pub can_manage_origin: bool,
     pub conflict_group: Option<String>,
     pub conflict_count: i64,
     /// Agent IDs that can see this central skill through a read-only compatibility root.
@@ -708,6 +710,15 @@ async fn get_observation_detail(
     let (conflict_group, conflict_count) =
         observation_conflict_metadata(agent_id, &observation.skill_id, &conflict_counts);
 
+    let can_manage_origin = !observation.is_read_only
+        || super::skill_origin::can_manage_observed_origin(
+            pool,
+            &observation.skill_id,
+            &observation.source_kind,
+            Path::new(&observation.dir_path),
+        )
+        .await?;
+
     Ok(Some(SkillDetail {
         row_id: observation.row_id,
         id: observation.skill_id.clone(),
@@ -739,6 +750,7 @@ async fn get_observation_detail(
         source_root: Some(observation.source_root),
         source_label: observation.source_label,
         is_read_only: observation.is_read_only,
+        can_manage_origin,
         conflict_group,
         conflict_count,
         read_only_agents: Vec::new(),
@@ -815,6 +827,7 @@ pub(crate) async fn get_skill_detail_with_row_impl(
         source_root: None,
         source_label: None,
         is_read_only: false,
+        can_manage_origin: true,
         conflict_group: None,
         conflict_count: 0,
         read_only_agents,

@@ -24,3 +24,15 @@ export function githubSkillSourceUrl(origin: GitHubSkillOriginSummary): string {
     "/SKILL.md"
   );
 }
+
+export function githubCompareUrl(
+  origin: GitHubSkillOriginSummary,
+  baseCommit: string,
+  headCommit: string
+): string {
+  return (
+    `https://github.com/${encodeURIComponent(origin.owner)}` +
+    `/${encodeURIComponent(origin.repo)}/compare/` +
+    `${encodeURIComponent(baseCommit)}...${encodeURIComponent(headCommit)}`
+  );
+}

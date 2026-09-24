@@ -1,3 +1,4 @@
+import { GitHubSourceLink } from "@/components/skill/GitHubSourceLink";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref, type ReactNode } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -41,7 +42,7 @@ import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agent
 import { findFileNodeByPath } from "@/lib/fileTree";
 import { FileTreeNode } from "@/components/skill/FileTreeNode";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
-import { githubSkillSourceUrl } from "@/lib/skillOrigin";
+import { githubCompareUrl, githubSkillSourceUrl } from "@/lib/skillOrigin";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import {
   isSkillUsageBusyError,
@@ -493,6 +494,8 @@ export function SkillDetailView({
 
   const origin = useSkillOriginStore((s) => s.origin);
   const originStatus = useSkillOriginStore((s) => s.status);
+  const originCandidates = useSkillOriginStore((s) => s.candidates);
+  const originDiscovering = useSkillOriginStore((s) => s.isDiscovering);
   const originLoading = useSkillOriginStore((s) => s.isLoading);
   const originChecking = useSkillOriginStore((s) => s.isChecking);
   const originUpdating = useSkillOriginStore((s) => s.isUpdating);
@@ -504,6 +507,7 @@ export function SkillDetailView({
   const prepareUpdate = useSkillOriginStore((s) => s.prepareUpdate);
   const applyUpdate = useSkillOriginStore((s) => s.applyUpdate);
   const resetOrigin = useSkillOriginStore((s) => s.reset);
+  const autoCheckedOrigin = useRef<string | null>(null);
 
   // Platform agents (loaded at app init)
   const agents = usePlatformStore((s) => s.agents);
@@ -635,6 +639,14 @@ export function SkillDetailView({
       resetOrigin();
     };
   }, [detailRequest, loadDetail, loadOrigin, reset, resetOrigin]);
+
+  useEffect(() => {
+    if (!detailRequest || !origin) return;
+    const key = `${detailRequest.skillId}:${detailRequest.agentId ?? ""}:${detailRequest.rowId ?? ""}:${origin.bindingId}`;
+    if (autoCheckedOrigin.current === key) return;
+    autoCheckedOrigin.current = key;
+    if (!originStatus) void checkOrigin(detailRequest).catch(() => {});
+  }, [detailRequest, origin, originStatus, checkOrigin]);
 
   useLayoutEffect(() => {
     if (explanationRequestKey && skillContent) {
@@ -910,6 +922,20 @@ export function SkillDetailView({
         refName: originRefName.trim() || undefined,
       });
       toast.success(`GitHub origin linked (${status.remoteCommitOid.slice(0, 7)})`);
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
+
+  async function handleChooseOrigin(candidate: typeof originCandidates[number]) {
+    if (!detailRequest) return;
+    try {
+      await linkOrigin(detailRequest, {
+        repoUrl: candidate.repoUrl,
+        sourcePath: candidate.sourcePath,
+        refName: candidate.refName,
+      });
+      toast.success(t("skillOrigin.linked"));
     } catch (err) {
       toast.error(String(err));
     }
@@ -1390,9 +1416,13 @@ export function SkillDetailView({
                           {detail.source_kind && (
                             <SourceOriginBadge originKind={detail.source_kind} />
                           )}
-                          {detail.is_read_only && <ReadOnlySourceBadge />}
+                          {detail.is_read_only && !detail.can_manage_origin && <ReadOnlySourceBadge />}
                         </div>
-                        {detail.is_read_only ? (
+                        {detail.is_read_only && detail.can_manage_origin ? (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t("detail.sharedOriginDesc")}
+                          </p>
+                        ) : detail.is_read_only ? (
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.readOnlyDesc", {
                               defaultValue: i18n.language.startsWith("zh")
@@ -1413,7 +1443,7 @@ export function SkillDetailView({
                     </section>
                   )}
 
-                  {!detail.is_read_only && detailRequest && (
+                  {(!detail.is_read_only || detail.can_manage_origin) && detailRequest && (
                     <section aria-label="GitHub origin">
                       <SectionLabel>GitHub origin</SectionLabel>
                       <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-2.5">
@@ -1426,7 +1456,7 @@ export function SkillDetailView({
                           <>
                             <div className="space-y-1 text-[11px] text-muted-foreground">
                               <div className="font-mono break-all">
-                                <a
+                                <GitHubSourceLink
                                   href={githubSkillSourceUrl(origin)}
                                   target="_blank"
                                   rel="noreferrer"
@@ -1435,7 +1465,7 @@ export function SkillDetailView({
                                   className="underline decoration-dotted underline-offset-2 hover:text-foreground"
                                 >
                                   {origin.sourcePath}
-                                </a>
+                                </GitHubSourceLink>
                                 {" @ "}
                                 {origin.refName}
                               </div>
@@ -1450,24 +1480,60 @@ export function SkillDetailView({
                                   </>
                                 )}
                               </div>
-                              <div>
-                                Baseline: {origin.baselineState === "verified" ? "verified" : "unknown"}
-                                {origin.baseCommitOid ? ` · ${origin.baseCommitOid.slice(0, 7)}` : ""}
-                              </div>
                               {origin.lastCheckedAt && (
-                                <div>Checked {new Date(origin.lastCheckedAt).toLocaleString()}</div>
+                                <div>
+                                  {t("skillOrigin.lastChecked", {
+                                    date: new Date(origin.lastCheckedAt).toLocaleString(),
+                                  })}
+                                </div>
                               )}
                             </div>
 
                             {originStatus && (
                               <div className="rounded-md border border-border bg-background/60 p-2 space-y-1 text-[11px]">
-                                <div className="font-medium">{originStatus.state.split("_").join(" ")}</div>
-                                <div className="text-muted-foreground">
-                                  Local ↔ remote: +{originStatus.localVsRemote.added} / ~{originStatus.localVsRemote.modified} / -{originStatus.localVsRemote.removed}
+                                <div className="font-medium">
+                                  {t(`skillOrigin.status.${originStatus.state}.title`)}
+                                  <span className="ml-1.5 font-mono font-normal text-muted-foreground">
+                                    ({originStatus.state})
+                                  </span>
                                 </div>
-                                <div className="font-mono text-muted-foreground">
-                                  {originStatus.remoteCommitOid.slice(0, 12)}
+                                <p className="text-muted-foreground">
+                                  {t(`skillOrigin.status.${originStatus.state}.description`)}
+                                </p>
+                                <div className="grid gap-1 sm:grid-cols-2">
+                                  <div>
+                                    <span>{t("skillOrigin.installedVersion")}: </span>
+                                    <span className="font-mono text-foreground/80">
+                                      {origin.baseCommitOid?.slice(0, 12) ?? t("skillOrigin.unknownVersion")}
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <span>{t("skillOrigin.latestVersion")}: </span>
+                                    <GitHubSourceLink
+                                      href={`https://github.com/${encodeURIComponent(origin.owner)}/${encodeURIComponent(origin.repo)}/commit/${encodeURIComponent(originStatus.remoteCommitOid)}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="font-mono text-foreground/80 underline decoration-dotted underline-offset-2 hover:text-foreground"
+                                    >
+                                      {originStatus.remoteCommitOid.slice(0, 12)}
+                                    </GitHubSourceLink>
+                                  </div>
                                 </div>
+                                {origin.baseCommitOid &&
+                                  origin.baseCommitOid !== originStatus.remoteCommitOid && (
+                                    <GitHubSourceLink
+                                      href={githubCompareUrl(
+                                        origin,
+                                        origin.baseCommitOid,
+                                        originStatus.remoteCommitOid
+                                      )}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="inline-block underline decoration-dotted underline-offset-2 hover:text-foreground"
+                                    >
+                                      {t("skillOrigin.compareVersions")}
+                                    </GitHubSourceLink>
+                                  )}
                               </div>
                             )}
 
@@ -1508,6 +1574,25 @@ export function SkillDetailView({
                           </>
                         ) : (
                           <>
+                            {originDiscovering && (
+                              <p className="text-[11px] text-muted-foreground">{t("skillOrigin.searching")}</p>
+                            )}
+                            {originCandidates.length > 0 && (
+                              <div className="space-y-2">
+                                <p className="text-[11px] text-muted-foreground">{t("skillOrigin.candidateIntro")}</p>
+                                {originCandidates.map((candidate) => (
+                                  <div key={`${candidate.repoUrl}/${candidate.sourcePath}/${candidate.refName}`} className="flex items-start justify-between gap-2 rounded-md border border-border p-2 text-[11px]">
+                                    <div className="min-w-0 break-all">
+                                      <div className="font-medium text-foreground">{candidate.repoUrl.replace("https://github.com/", "")}/{candidate.sourcePath}</div>
+                                      <div className="text-muted-foreground">{t(`skillOrigin.reason.${candidate.reason}`)} · {candidate.refName}</div>
+                                    </div>
+                                    <Button type="button" size="sm" variant="outline" disabled={originChecking} onClick={() => handleChooseOrigin(candidate)}>
+                                      {t("skillOrigin.choose")}
+                                    </Button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                             <p className="text-[11px] leading-relaxed text-muted-foreground">
                               Link this physical skill copy to its GitHub repository and source directory. Linking does not change local files.
                             </p>
@@ -1558,7 +1643,7 @@ export function SkillDetailView({
                     <div className="space-y-1.5">
                       {detail.is_read_only ? (
                         <p className="text-xs leading-relaxed text-muted-foreground">
-                          {t("detail.readOnlyInstallBlocked", {
+                          {detail.can_manage_origin ? t("detail.sharedInstallHelp") : t("detail.readOnlyInstallBlocked", {
                             defaultValue: i18n.language.startsWith("zh")
                               ? "只读观测副本不可安装或卸载。"
                               : "Install and uninstall are unavailable for read-only observed copies.",
@@ -1644,7 +1729,7 @@ export function SkillDetailView({
                     <SectionLabel>{t("detail.collections")}</SectionLabel>
                     {detail.is_read_only ? (
                       <p className="text-xs leading-relaxed text-muted-foreground">
-                        {t("detail.readOnlyCollectionsBlocked", {
+                        {detail.can_manage_origin ? t("detail.sharedCollectionsHelp") : t("detail.readOnlyCollectionsBlocked", {
                           defaultValue: i18n.language.startsWith("zh")
                             ? "只读观测副本不可调整技能集。"
                             : "Collection management is unavailable for read-only observed copies.",

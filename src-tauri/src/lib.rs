@@ -100,9 +100,11 @@ pub fn run() {
             commands::skills::open_in_file_manager,
             // GitHub origin tracking / safe updates
             commands::skill_origin::get_skill_origin,
+            commands::skill_origin::discover_skill_origin,
             commands::skill_origin::link_skill_origin,
             commands::skill_origin::unlink_skill_origin,
             commands::skill_origin::check_skill_origin,
+            commands::skill_origin::check_linked_skill_origins,
             commands::skill_origin::prepare_skill_update,
             commands::skill_origin::apply_skill_update,
             // Collections
@@ -145,6 +147,7 @@ pub fn run() {
             commands::discover::import_discovered_skill_to_central,
             commands::discover::import_discovered_skill_to_platform,
             commands::discover::clear_discovered_skills,
+            commands::github_import::get_github_auth_status,
             commands::github_import::preview_github_repo_import,
             commands::github_import::import_github_repo_skills,
             commands::github_import::fetch_github_skill_markdown,

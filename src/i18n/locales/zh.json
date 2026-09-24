@@ -82,6 +82,9 @@
     "settingsReadOnlyNote": "Web 仪表盘为只读，不会修改扫描目录或 AI 设置。只有语言选择会保存在此浏览器中，其余设置请在桌面应用中更改。",
     "settingsView": {
       "readOnlyTitle": "以只读方式显示桌面设置",
+      "sharedInstallHelp": "请在共享源详情中管理安装和卸载。",
+      "sharedCollectionsHelp": "请在共享源详情中管理技能集。",
+      "sharedOriginDesc": "此平台使用共享源。可在此管理 GitHub 关联和更新，更新会影响使用同一源的所有平台。请通过共享安装管理安装和卸载。",
       "readOnlyDesc": "可在此查看当前本地配置。需要写入文件或数据库的更改请在桌面应用中完成。",
       "configured": "已配置",
       "notConfigured": "未配置",
@@ -218,11 +221,60 @@
     }
   },
   "skillOrigin": {
+    "updateAvailable": "有可用更新",
+    "searching": "正在从安装记录查找 GitHub 来源…",
+    "candidateIntro": "找到可能的来源。请确认路径后再关联。",
+    "choose": "关联",
+    "linked": "已关联 GitHub 来源。",
+    "reason": {
+      "installation_record": "安装记录中的仓库",
+      "catalog_name": "市场目录中同名的技能",
+      "public_search": "GitHub 搜索中同名的技能",
+      "content_match": "SKILL.md 内容相同",
+      "name_description": "名称和说明相同"
+    },
+    "openFailed": "无法打开 GitHub 来源，请重试。",
     "viewSource": "在 GitHub 上打开来源",
     "installedAs": "安装 ID {{id}}",
     "installedAsTitle": "本地安装 ID 为 {{id}}；SKILL.md 名称见上方",
     "originalName": "SKILL.md 名称",
-    "localId": "本地安装 ID"
+    "localId": "本地安装 ID",
+    "status": {
+      "up_to_date": {
+        "title": "当前已是最新版本",
+        "description": "已安装版本与 GitHub 最新版本相同。"
+      },
+      "unknown_baseline": {
+        "title": "无法确认已安装版本",
+        "description": "未记录 GitHub 基准版本。请打开下方最新提交查看。"
+      },
+      "remote_update": {
+        "title": "GitHub 上有新版本",
+        "description": "GitHub 最新版本比已安装版本更新。请先查看版本差异再更新。"
+      },
+      "local_changes": {
+        "title": "本地文件已修改",
+        "description": "当前文件与已安装版本不同。请先与 GitHub 版本比较再更新。"
+      },
+      "diverged": {
+        "title": "本地和 GitHub 版本都有更改",
+        "description": "请先比较双方更改，再决定是否更新。"
+      },
+      "local_matches_remote": {
+        "title": "文件与最新版本相同",
+        "description": "文件内容相同，但记录的已安装版本不同。"
+      }
+    },
+    "changeSummary": "此次更新会更改的文件",
+    "added": "新增 {{count}} 项",
+    "modified": "修改 {{count}} 项",
+    "removed": "删除 {{count}} 项",
+    "checkedVersion": "已检查的 GitHub 版本 · 提交 {{commit}}",
+    "installedVersion": "已安装版本",
+    "latestVersion": "GitHub 最新版本",
+    "unknownVersion": "未记录",
+    "compareVersions": "在 GitHub 上查看版本差异",
+    "lastChecked": "上次检查：{{date}}"
   },
   "skillUsage": {
     "active": "已激活",
@@ -342,7 +394,12 @@
     "count": "{{count}} 个来源位置",
     "help": "折叠列表不会减少智能体加载的技能。请比较原文件与内容，再分别管理各来源。",
     "checkDuplicates": "需要检查重复来源",
-    "result": { "same_origin": "同一份原文件", "identical": "内容相同的副本", "different": "内容不同", "unknown": "需要检查" },
+    "result": {
+      "same_origin": "同一份原文件",
+      "identical": "内容相同的副本",
+      "different": "内容不同",
+      "unknown": "需要检查"
+    },
     "compare": "比较原文件与内容",
     "comparing": "正在比较文件…",
     "same_origin": "这些路径指向同一份原文件。实际文件只有一份，技能列表是否去重由平台决定。",
@@ -640,6 +697,16 @@
     "noPlatforms": "暂无自定义平台。点击「添加平台」注册新平台。",
     "editPlatformLabel": "编辑平台 {{name}}",
     "removePlatformLabel": "删除平台 {{name}}",
+    "githubAuth": {
+      "saved_token": "正在使用已保存的令牌",
+      "github_cli": "已关联 GitHub CLI 登录",
+      "not_signed_in": "请登录 GitHub CLI",
+      "cli_missing": "请安装 GitHub CLI（gh）并登录",
+      "checking": "正在检查认证",
+      "unavailable": "无法检查认证状态",
+      "loginHelp": "未设置应用令牌时自动使用 gh 登录。在终端执行以下命令登录，然后检查连接。",
+      "refresh": "检查连接"
+    },
     "githubPatTitle": "GitHub 导入访问令牌",
     "githubPatDesc": "为仓库导入流程保存 GitHub Personal Access Token，这样下次无需在每次导入时重新输入。",
     "githubPatLabel": "GitHub Personal Access Token",

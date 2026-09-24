@@ -723,6 +723,30 @@ async fn expected_managed_install_path(
     Ok(recorded)
 }
 
+/// 바로가기를 연 플랫폼과 무관하게 실제 파일을 소유한 관리 설치를 찾습니다.
+/// 이름이 같은 다른 복사본이나 플랫폼 폴더 밖의 경로는 선택하지 않습니다.
+pub(crate) async fn managed_copy_for_target(
+    pool: &DbPool,
+    skill_id: &str,
+    target: &Path,
+) -> Result<Option<SkillInstallation>, String> {
+    let Ok(target) = target.canonicalize() else {
+        return Ok(None);
+    };
+    for installation in db::get_skill_installations(pool, skill_id).await? {
+        if !matches!(installation.link_type.as_str(), "copy" | "native") {
+            continue;
+        }
+        if expected_managed_install_path(pool, &installation)
+            .await
+            .is_ok_and(|path| path == target)
+        {
+            return Ok(Some(installation));
+        }
+    }
+    Ok(None)
+}
+
 /// 복사 설치를 지우기 직전에 전체 내용을 보존합니다.
 pub async fn backup_copy_installation(
     pool: &DbPool,

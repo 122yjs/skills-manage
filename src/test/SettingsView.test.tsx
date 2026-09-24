@@ -178,6 +178,20 @@ describe("SettingsView", () => {
     expect(screen.getByText("GitHub 导入访问令牌")).toBeTruthy();
   });
 
+  it("shows GitHub CLI authentication and refreshes after login", async () => {
+    setupMocks();
+    let status = "not_signed_in";
+    vi.mocked(invoke).mockImplementation(async (command) =>
+      command === "get_github_auth_status" ? status : null
+    );
+    renderSettingsView();
+    expect(await screen.findByText("请登录 GitHub CLI")).toBeTruthy();
+    expect(screen.getByText("gh auth login --hostname github.com --web")).toBeTruthy();
+    status = "github_cli";
+    fireEvent.click(screen.getByRole("button", { name: "检查连接" }));
+    expect(await screen.findByText("已关联 GitHub CLI 登录")).toBeTruthy();
+  });
+
   it("renders the existing settings sections", () => {
     setupMocks();
     renderSettingsView();
