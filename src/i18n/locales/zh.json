@@ -160,7 +160,7 @@
     "librarySection": "仓库",
     "installTargetsSection": "安装目标",
     "universal": "共享安装 (.agents)",
-    "collections": "技能集合",
+    "collections": "合集",
     "settings": "设置",
     "scanning": "扫描中...",
     "noPlatforms": "没有检测到平台",
@@ -1121,5 +1121,29 @@
     "bulkPartial": "有 {{failed}} 个公用安装未能更改。",
     "bulkEnableSuccess": "已恢复 {{count}} 个公用安装。",
     "bulkDisableSuccess": "已停用 {{count}} 个公用安装。"
+  },
+  "skillGroups": {
+    "sourceGroups": "原始合集",
+    "goTo": "前往 {{name}} 合集",
+    "openFolder": "打开 {{name}} 源文件夹",
+    "description": "在同一处浏览插件、GitHub 技能集和自建合集。",
+    "filter": "合集类型",
+    "all": "全部合集",
+    "plugin": "插件",
+    "repository": "GitHub 技能集",
+    "collection": "自建合集",
+    "search": "搜索合集",
+    "noMatch": "没有匹配的合集。",
+    "locations": "{{count}} 个文件位置",
+    "repositoryFolder": "GitHub 源文件夹",
+    "folder": "打开源文件夹",
+    "virtualGroup": "每个源技能只显示一次。展开文件位置以查看库中的原本和各平台的安装副本。",
+    "retry": "重试",
+    "unavailable": "正在加载合集，或该来源已不可用。",
+    "installedSkills": "本地 {{count}} 个技能",
+    "locationFolder": "打开技能文件夹：{{path}}",
+    "sourceSkills": "原始 {{count}} 个技能",
+    "bundle": "应用提供的技能集",
+    "skillset": "技能集"
   }
 }

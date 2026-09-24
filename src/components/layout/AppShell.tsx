@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
@@ -31,6 +31,16 @@ export function AppShell() {
   const loadDevToolSetup = useDevToolSetupStore((s) => s.load);
   const loadUsageStatus = useSkillUsageStore((s) => s.loadUsageStatus);
 
+  const refreshOrigins = useCallback(async () => {
+    if (!isTauriRuntime()) return;
+    await invoke("check_linked_skill_origins");
+    // 원본 연결이 끝나면 열린 플랫폼 목록도 DB의 새 링크를 읽는다.
+    usePlatformStore.setState((state) => ({
+      scanGeneration: (state.scanGeneration ?? 0) + 1,
+    }));
+    await loadCentralSkills();
+  }, [loadCentralSkills]);
+
   useEffect(() => {
     void loadDevToolSetup();
     void loadStorageStatus().catch(() => undefined);
@@ -48,23 +58,17 @@ export function AppShell() {
         rescanDiscoverFromDisk(),
         loadUsageStatus(),
       ]);
-      if (isTauriRuntime()) {
-        void invoke("check_linked_skill_origins")
-          .then(() => loadCentralSkills())
-          .catch(() => undefined);
-      }
+      void refreshOrigins().catch(() => undefined);
     });
-  }, [initialize, loadCentralSkills, rescanDiscoverFromDisk, loadUsageStatus]);
+  }, [initialize, loadCentralSkills, rescanDiscoverFromDisk, loadUsageStatus, refreshOrigins]);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
     const timer = window.setInterval(() => {
-      void invoke("check_linked_skill_origins")
-        .then(() => loadCentralSkills())
-        .catch(() => undefined);
+      void refreshOrigins().catch(() => undefined);
     }, 6 * 60 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [loadCentralSkills]);
+  }, [refreshOrigins]);
 
   useEffect(() => {
     if (!mainRef.current) return;
@@ -73,6 +77,7 @@ export function AppShell() {
 
   async function handleGlobalRescan() {
     await rescan();
+    void refreshOrigins().catch(() => undefined);
     await Promise.allSettled([
       loadCentralSkills(),
       rescanDiscoverFromDisk(),

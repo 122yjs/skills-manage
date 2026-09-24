@@ -13,6 +13,7 @@ pub mod scanner;
 pub mod settings;
 pub mod skill_duplicates;
 pub mod skill_origin;
+pub mod skill_groups;
 pub mod skill_translation;
 pub mod skills;
 pub mod storage;

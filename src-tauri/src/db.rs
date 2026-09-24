@@ -472,6 +472,32 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
+    // 설치 개수와 무관하게 원본 저장소가 여러 스킬을 제공하는지 기록한다.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS skill_repository_catalog (
+            owner TEXT NOT NULL,
+            repo TEXT NOT NULL,
+            ref_name TEXT NOT NULL,
+            skill_count INTEGER NOT NULL,
+            PRIMARY KEY (owner, repo, ref_name)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // 복사한 플러그인의 출처는 재스캔 후에도 유지한다. 이름 대신 실제 경로로 연결한다.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS skill_group_sources (
+            target_path TEXT PRIMARY KEY,
+            source_root TEXT NOT NULL,
+            source_label TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
     // GitHub 원본 추적은 scanner가 매번 갱신하는 `skills.source`와 분리한다.
     // 같은 논리 스킬이라도 중앙 원본과 플랫폼 copy는 서로 다른 파일 상태를
     // 가질 수 있으므로 실제 대상 경로(target_key)마다 독립적으로 연결한다.

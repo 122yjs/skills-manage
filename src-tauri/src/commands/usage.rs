@@ -425,7 +425,7 @@ async fn pause_active_installation_locked(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 스킬은 비활성화할 수 없습니다".to_string());
+        return Err("스킬 보관함 스킬은 비활성화할 수 없습니다".to_string());
     }
     let installation = db::get_skill_installation(pool, skill_id, agent_id)
         .await?
@@ -482,7 +482,7 @@ async fn restore_paused_installation_locked(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 스킬은 활성/비활성 전환 대상이 아닙니다".to_string());
+        return Err("스킬 보관함 스킬은 활성/비활성 전환 대상이 아닙니다".to_string());
     }
     if db::get_skill_installation(pool, skill_id, agent_id)
         .await?
@@ -693,7 +693,7 @@ pub(crate) async fn delete_managed_installation_locked(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 설치는 삭제할 수 없습니다".to_string());
+        return Err("스킬 보관함 설치는 삭제할 수 없습니다".to_string());
     }
     ensure_not_shared_universal_root(pool, &agent).await?;
 
@@ -741,7 +741,7 @@ pub async fn delete_platform_installations_impl(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함 설치는 삭제할 수 없습니다".to_string());
+        return Err("스킬 보관함 설치는 삭제할 수 없습니다".to_string());
     }
     ensure_not_shared_universal_root(pool, &agent).await?;
 
@@ -905,7 +905,7 @@ pub async fn set_platform_usage_impl(
         .await?
         .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", agent_id))?;
     if agent.id == "central" {
-        return Err("중앙 보관함은 활성/비활성 전환 대상이 아닙니다".to_string());
+        return Err("스킬 보관함은 활성/비활성 전환 대상이 아닙니다".to_string());
     }
 
     // Non-universal bulk never auto-includes shared installs: those move only
@@ -1234,7 +1234,7 @@ pub async fn compute_shared_impact(
         if inside {
             let vault_text = vault.to_string_lossy().into_owned();
             reason = Some(format!(
-                "중앙 보관함 안의 원본이라 공용 제어로 옮기지 않습니다. 보관함에서 직접 관리하세요: {vault_text}"
+                "스킬 보관함 안의 원본이라 공용 제어로 옮기지 않습니다. 보관함에서 직접 관리하세요: {vault_text}"
             ));
             management_path = vault_text;
         }
@@ -1420,7 +1420,7 @@ async fn pause_shared_installation_locked(
             .await?
             .ok_or_else(|| format!("플랫폼 '{}'을(를) 찾을 수 없습니다", installation.agent_id))?;
         if agent.id == "central" {
-            return Err("중앙 보관함 스킬은 비활성화할 수 없습니다".to_string());
+            return Err("스킬 보관함 스킬은 비활성화할 수 없습니다".to_string());
         }
         let raw_target =
             validate_active_installation(Path::new(&agent.global_skills_dir), installation)?;

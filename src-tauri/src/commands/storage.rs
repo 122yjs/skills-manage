@@ -666,6 +666,16 @@ async fn update_database_paths(
         .map_err(|e| e.to_string())?;
     }
 
+    // 보관함을 옮겨도 개별 추출본의 원래 플러그인 모음은 유지한다.
+    let group_paths = sqlx::query_scalar::<_, String>("SELECT target_path FROM skill_group_sources")
+        .fetch_all(&mut *transaction).await.map_err(|e| e.to_string())?;
+    for path in group_paths {
+        if let Some(new_path) = replace_path_prefix(&path, old_root, new_root) {
+            sqlx::query("UPDATE skill_group_sources SET target_path = ? WHERE target_path = ?")
+                .bind(new_path).bind(path).execute(&mut *transaction).await.map_err(|e| e.to_string())?;
+        }
+    }
+
     // GitHub 원본 연결은 실제 물리 대상 경로에 귀속된다. 보관함 이동 뒤에도
     // 같은 원본 연결이 유지되도록 대상 경로와 키를 함께 옮긴다.
     let origins = sqlx::query("SELECT binding_id, target_key, target_path FROM skill_origins")
@@ -1226,9 +1236,17 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query("INSERT INTO skill_group_sources (target_path, source_root, source_label) VALUES (?, '/plugins/original', 'original')")
+            .bind(path_to_string(&source.join("nested/demo")))
+            .execute(&pool).await.unwrap();
+
         let result = change_central_path_impl(&pool, &destination, &legacy, &universal)
             .await
             .unwrap();
+
+        let group_path: String = sqlx::query_scalar("SELECT target_path FROM skill_group_sources")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(group_path, path_to_string(&destination.join("nested/demo")));
 
         assert_eq!(result.skill_count, 1);
         assert_eq!(

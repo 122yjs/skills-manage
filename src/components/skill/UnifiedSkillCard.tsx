@@ -1,3 +1,4 @@
+import { SkillGroupLinks } from "./SkillGroupLinks";
 import { GitHubSourceLink } from "@/components/skill/GitHubSourceLink";
 import {
   PackagePlus,
@@ -510,6 +511,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           ) : description ? (
             <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
           ) : null}
+
+          <SkillGroupLinks filePath={translation?.filePath} />
 
           {/* Row 3: Info badges */}
           <div className="flex flex-wrap items-center gap-1.5 empty:hidden">

@@ -1,3 +1,4 @@
+import { useSkillGroupStore } from "@/stores/skillGroupStore";
 import { useEffect, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import {
@@ -55,6 +56,10 @@ export function Sidebar() {
   const openDevToolEditor = useDevToolSetupStore((state) => state.openEditor);
 
   const collections = useCollectionStore((s) => s.collections);
+  const sourceGroups = useSkillGroupStore((s) => s.groups);
+  const loadGroups = useSkillGroupStore((s) => s.load);
+  const scanGeneration = usePlatformStore((s) => s.scanGeneration);
+  useEffect(() => { void loadGroups(); }, [loadGroups, scanGeneration]);
   const loadCollections = useCollectionStore((s) => s.loadCollections);
 
   const totalDiscovered = useDiscoverStore((s) => s.totalSkillsFound);
@@ -152,11 +157,12 @@ export function Sidebar() {
         {/* Collections */}
         <DashboardNavItem
           label={t("sidebar.collections")}
+          wrapLabel
           isActive={isCollectionActive}
           onClick={handleCollectionClick}
           icon={<Layers className="size-4" />}
           expanded={expanded}
-          count={collections.length}
+          count={collections.length + sourceGroups.length}
         />
 
         <DashboardSectionLabel expanded={expanded}>

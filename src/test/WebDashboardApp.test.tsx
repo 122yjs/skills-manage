@@ -178,7 +178,7 @@ describe("WebDashboardApp", () => {
     // 사이드바 메뉴가 실제로 렌더링된다 (zh 로케일 기준).
     expect(await screen.findByRole("navigation")).toBeInTheDocument();
     expect(screen.getAllByText("技能仓库").length).toBeGreaterThan(0);
-    expect(screen.getByRole("link", { name: /技能集/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /合集/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Claude Code/ })).toBeInTheDocument();
 
     // 중앙 보관함과 플러그인 그룹이 함께 보인다.

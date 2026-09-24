@@ -1,3 +1,5 @@
+import { SkillGroupMenu, SkillGroupDetail } from "@/components/collection/SkillGroupBrowser";
+import { skillGroupUrl, useSkillGroupStore } from "@/stores/skillGroupStore";
 import { useEffect, useRef, useState } from "react";
 import {
   Plus,
@@ -24,8 +26,7 @@ import { CollectionInstallDialog } from "@/components/collection/CollectionInsta
 import { InstallDialog } from "@/components/central/InstallDialog";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
-import { Collection, SkillWithLinks } from "@/types";
-import { cn } from "@/lib/utils";
+import { SkillWithLinks } from "@/types";
 import {
   consumeScrollPosition,
   consumeReturnContext,
@@ -50,6 +51,14 @@ export function CollectionsListView() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
+
+  const groups = useSkillGroupStore((s) => s.groups);
+  const groupsLoading = useSkillGroupStore((s) => s.loading);
+  const groupError = useSkillGroupStore((s) => s.error);
+  const loadGroups = useSkillGroupStore((s) => s.load);
+  const groupId = new URLSearchParams(location.search).get("group");
+  const sourceGroup = groups.find((group) => group.id === groupId);
+  useEffect(() => { void loadGroups(); }, [loadGroups]);
 
   // Collection store
   const collections = useCollectionStore((s) => s.collections);
@@ -98,6 +107,7 @@ export function CollectionsListView() {
   // auto-select-first-collection effect below does not override the user's
   // prior focus while data is loading.
   const [selectedId, setSelectedId] = useState<string | null>(() => {
+    if (groupId?.startsWith("collection:")) return groupId.slice("collection:".length);
     if (locationCollectionContext?.collectionId) {
       return locationCollectionContext.collectionId;
     }
@@ -137,6 +147,12 @@ export function CollectionsListView() {
     loadCollections();
   }, [loadCollections]);
 
+  useEffect(() => {
+    if (!groupId && !isLoading && collections.length === 0 && groups.length > 0) {
+      navigate(skillGroupUrl(groups[0].id), { replace: true });
+    }
+  }, [groupId, isLoading, collections.length, groups, navigate]);
+
   // Auto-select first collection when none is selected.
   // If we previously seeded selectedId from location.state or the in-memory
   // return-context map, selectedId is already truthy on first render so this
@@ -158,6 +174,11 @@ export function CollectionsListView() {
       setSelectedId(collections[0].id);
     }
   }, [selectedId, collections]);
+
+  useEffect(() => {
+    if (groupId?.startsWith("collection:")) setSelectedId(groupId.slice("collection:".length));
+    setIsDrawerOpen(false);
+  }, [groupId]);
 
   // Load detail when selection changes.
   useEffect(() => {
@@ -217,7 +238,8 @@ export function CollectionsListView() {
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   function handleSelect(id: string) {
-    setSelectedId(id);
+    navigate(skillGroupUrl(id));
+    if (id.startsWith("collection:")) setSelectedId(id.slice("collection:".length));
   }
 
   function setDetailButtonRef(skillId: string, node: HTMLButtonElement | null) {
@@ -260,7 +282,7 @@ export function CollectionsListView() {
     try {
       const text = await file.text();
       const collection = await importCollection(text);
-      setSelectedId(collection.id);
+      handleSelect(`collection:${collection.id}`);
     } catch (err) {
       toast.error(String(err));
     } finally {
@@ -284,6 +306,7 @@ export function CollectionsListView() {
     try {
       await deleteCollection(selectedId);
       setSelectedId(null);
+      navigate("/collections", { replace: true });
     } catch (err) {
       toast.error(t("collection.deleteError", { error: String(err) }));
     } finally {
@@ -349,9 +372,13 @@ export function CollectionsListView() {
         </div>
       </div>
 
+      {groupError && <div role="alert" className="px-6 py-2 text-sm text-destructive">{groupError}<Button variant="ghost" onClick={() => void loadGroups()}>{t("skillGroups.retry")}</Button></div>}
+      <SkillGroupMenu groups={groups} collections={collections} selectedId={groupId ?? (selectedId ? `collection:${selectedId}` : null)} onSelect={handleSelect} />
       {/* Content */}
       <div className="flex-1 overflow-auto">
-        {isLoading ? (
+        {sourceGroup ? <SkillGroupDetail group={sourceGroup} /> : groupId && !groupId.startsWith("collection:") ? (
+          <p className="px-6 py-8 text-sm text-muted-foreground">{groupsLoading ? t("common.loading") : t("skillGroups.unavailable")}</p>
+        ) : isLoading ? (
           <div className="flex items-center justify-center h-full gap-3 text-muted-foreground">
             <Loader2 className="size-5 animate-spin" />
             <span className="text-sm">{t("common.loading")}</span>
@@ -371,18 +398,6 @@ export function CollectionsListView() {
           </div>
         ) : (
           <>
-            {/* Collection cards — horizontal row */}
-            <div className="flex items-center gap-2 px-6 py-4 border-b border-border overflow-x-auto">
-              {collections.map((col) => (
-                <CollectionChip
-                  key={col.id}
-                  collection={col}
-                  isActive={selectedId === col.id}
-                  onClick={() => handleSelect(col.id)}
-                />
-              ))}
-            </div>
-
             {/* Selected collection detail */}
             {selectedId && currentDetail && currentDetail.id === selectedId ? (
               <div className="flex flex-col flex-1 min-h-0">
@@ -488,7 +503,7 @@ export function CollectionsListView() {
       </div>
 
       {/* Dialogs */}
-      <CollectionEditor open={isEditorOpen} onOpenChange={setIsEditorOpen} collection={null} />
+      <CollectionEditor open={isEditorOpen} onOpenChange={setIsEditorOpen} collection={null} onCreated={(collection) => handleSelect(`collection:${collection.id}`)} />
 
       {currentDetail && (
         <>
@@ -550,32 +565,5 @@ export function CollectionsListView() {
         }
       />
     </div>
-  );
-}
-
-// ─── CollectionChip ──────────────────────────────────────────────────────────
-
-function CollectionChip({
-  collection,
-  isActive,
-  onClick,
-}: {
-  collection: Collection;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-2 px-4 py-2 rounded-md border transition-colors cursor-pointer shrink-0",
-        isActive
-          ? "bg-primary/15 border-primary text-foreground font-medium"
-          : "border-border hover:border-primary/40 hover:bg-hover-bg/10 text-muted-foreground"
-      )}
-    >
-      <Layers className={cn("size-4", isActive ? "text-primary" : "text-muted-foreground")} />
-      <span className="text-sm truncate max-w-[160px]">{collection.name}</span>
-    </button>
   );
 }

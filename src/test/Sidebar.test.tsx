@@ -246,7 +246,7 @@ describe("Sidebar", () => {
   it("renders Collections icon button", () => {
     renderSidebar();
     // Use exact string match to avoid also matching "导入技能集"
-    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "合集" })).toBeInTheDocument();
   });
 
   it("new/import collection buttons are on the list page, not sidebar", () => {
@@ -430,7 +430,7 @@ describe("Sidebar", () => {
       })
     );
     renderSidebar();
-    expect(screen.getByRole("button", { name: "技能集合" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "合集" })).toBeInTheDocument();
   });
 
   it("highlights active collection route", () => {
@@ -449,7 +449,7 @@ describe("Sidebar", () => {
       </MemoryRouter>
     );
     // The collections icon button should be highlighted (exact match)
-    const colButton = screen.getByRole("button", { name: "技能集合" });
+    const colButton = screen.getByRole("button", { name: "合集" });
     expect(colButton).toHaveAttribute("aria-current", "page");
   });
 

@@ -101,6 +101,7 @@ interface DashboardNavItemProps {
   count?: number;
   title?: string;
   ariaLabel?: string;
+  wrapLabel?: boolean;
   to?: string;
   end?: boolean;
   isActive?: boolean;
@@ -115,6 +116,7 @@ export function DashboardNavItem({
   count,
   title,
   ariaLabel,
+  wrapLabel = false,
   to,
   end,
   isActive = false,
@@ -133,7 +135,7 @@ export function DashboardNavItem({
       <span className="shrink-0">{icon}</span>
       {expanded && (
         <>
-          <span className="flex-1 truncate text-left">{label}</span>
+          <span className={cn("flex-1 text-left", wrapLabel ? "whitespace-normal break-keep leading-snug" : "truncate")}>{label}</span>
           {count !== undefined && count > 0 && (
             <span
               className={cn(

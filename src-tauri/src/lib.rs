@@ -110,6 +110,7 @@ pub fn run() {
             // Collections
             commands::collections::create_collection,
             commands::collections::get_collections,
+            commands::skill_groups::get_skill_groups,
             commands::collections::get_collection_detail,
             commands::collections::add_skill_to_collection,
             commands::collections::remove_skill_from_collection,

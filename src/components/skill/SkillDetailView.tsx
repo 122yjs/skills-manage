@@ -1,3 +1,6 @@
+import { Link } from "react-router-dom";
+import { skillGroupUrl } from "@/stores/skillGroupStore";
+import { SkillGroupLinks } from "./SkillGroupLinks";
 import { GitHubSourceLink } from "@/components/skill/GitHubSourceLink";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type Ref, type ReactNode } from "react";
 import { toast } from "sonner";
@@ -1443,6 +1446,8 @@ export function SkillDetailView({
                     </section>
                   )}
 
+                  <SkillGroupLinks filePath={detail.file_path} onNavigate={_onRequestClose} />
+
                   {(!detail.is_read_only || detail.can_manage_origin) && detailRequest && (
                     <section aria-label="GitHub origin">
                       <SectionLabel>GitHub origin</SectionLabel>
@@ -1738,14 +1743,16 @@ export function SkillDetailView({
                     ) : (
                       <div className="flex flex-wrap gap-1.5 items-center">
                         {skillCollections.map((collection) => (
-                          <span
+                          <Link
+                            to={skillGroupUrl(`collection:${collection.id}`)}
+                            onClick={_onRequestClose}
                             key={collection.id}
                             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-primary/10 text-primary ring-1 ring-primary/20"
                             title={collection.description ?? collection.name}
                           >
                             <Tag className="size-2.5" />
                             {collection.name}
-                          </span>
+                          </Link>
                         ))}
                         <Button
                           ref={addToCollectionButtonRef}

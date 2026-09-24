@@ -160,7 +160,7 @@
     "librarySection": "Library",
     "installTargetsSection": "Install targets",
     "universal": "Shared Install (.agents)",
-    "collections": "Collections",
+    "collections": "Skill sets & plugins",
     "settings": "Settings",
     "scanning": "Scanning...",
     "noPlatforms": "No platforms detected",
@@ -1121,5 +1121,29 @@
     "bulkPartial": "{{failed}} shared install(s) could not be changed.",
     "bulkEnableSuccess": "Restored {{count}} shared install(s).",
     "bulkDisableSuccess": "Disabled {{count}} shared install(s)."
+  },
+  "skillGroups": {
+    "sourceGroups": "Source groups",
+    "goTo": "Go to {{name}}",
+    "openFolder": "Open {{name}} source folder",
+    "description": "Browse plugins, GitHub skill sets, and your own collections together.",
+    "filter": "Group type",
+    "all": "All groups",
+    "plugin": "Plugin",
+    "repository": "GitHub skill set",
+    "collection": "Custom collection",
+    "search": "Search groups",
+    "noMatch": "No matching groups.",
+    "locations": "{{count}} file locations",
+    "repositoryFolder": "GitHub source folder",
+    "folder": "Open source folder",
+    "virtualGroup": "Each source skill appears once. Expand its file locations to inspect library originals and platform installations.",
+    "retry": "Retry",
+    "unavailable": "Loading this group, or its source is no longer available.",
+    "installedSkills": "{{count}} local skills",
+    "locationFolder": "Open skill folder: {{path}}",
+    "sourceSkills": "{{count}} source skills",
+    "bundle": "App-provided skill set",
+    "skillset": "Skill sets"
   }
 }
