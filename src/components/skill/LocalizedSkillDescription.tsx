@@ -84,7 +84,43 @@ export function LocalizedSkillDescription({
               {state.isShowingOriginal ? t("common.showTranslation") : t("common.showOriginal")}
             </button>
           )}
-          {state.canTranslate && state.apiConfirming ? (
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-sm hover:text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={!state.canTranslate || state.isLoading}
+            title={state.unavailableReason ?? state.onDeviceError}
+            onClick={(event) => {
+              event.stopPropagation();
+              void state.requestOnDeviceTranslation();
+            }}
+          >
+            {state.loadingEngine === "apple" && <Loader2 className="size-3 animate-spin" />}
+            {t("common.translateOnDevice")}
+            {state.loadingEngine === "apple"
+              ? ` · ${t("common.translationLoading")}`
+              : state.onDeviceError
+                ? ` · ${t("common.retry")}`
+                : null}
+          </button>
+          <button
+            type="button"
+            className="inline-flex items-center gap-1 rounded-sm hover:text-primary hover:underline disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled={!state.canTranslate || state.isLoading || state.apiConfirming}
+            title={state.unavailableReason}
+            onClick={(event) => {
+              event.stopPropagation();
+              void state.requestApiTranslation();
+            }}
+          >
+            {state.loadingEngine === "api" ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Languages className="size-3" />
+            )}
+            {t("common.translateWithApi")}
+            {state.loadingEngine === "api" && ` · ${t("common.translationLoading")}`}
+          </button>
+          {state.canTranslate && state.apiConfirming && (
             <span className="inline-flex items-center gap-1.5">
               <span>{t("common.translateWithApiConfirm")}</span>
               <button
@@ -101,6 +137,7 @@ export function LocalizedSkillDescription({
               <button
                 type="button"
                 className="rounded-sm hover:underline"
+                disabled={state.isLoading}
                 onClick={(event) => {
                   event.stopPropagation();
                   state.cancelApiConfirmation();
@@ -109,24 +146,14 @@ export function LocalizedSkillDescription({
                 {t("common.cancel")}
               </button>
             </span>
-          ) : state.canTranslate ? (
-            <button
-              type="button"
-              className="inline-flex items-center gap-1 rounded-sm hover:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              disabled={state.isLoading}
-              onClick={(event) => {
-                event.stopPropagation();
-                void state.requestApiTranslation();
-              }}
-            >
-              {state.isLoading ? (
-                <Loader2 className="size-3 animate-spin" />
-              ) : (
-                <Languages className="size-3" />
-              )}
-              {state.isLoading ? t("common.translationLoading") : t("common.translateWithApi")}
-            </button>
-          ) : null}
+          )}
+          {state.unavailableReason && <span>{state.unavailableReason}</span>}
+          {state.isLoading && !state.loadingEngine && <span>{t("common.translationChecking")}</span>}
+          {state.onDeviceError && (
+            <span className="basis-full" role="status">
+              {t("common.onDeviceTranslationFailed", { error: state.onDeviceError })}
+            </span>
+          )}
           {state.error && (
             <span role="alert" className="text-destructive">
               {t("common.translationFailed", { error: state.error })}
