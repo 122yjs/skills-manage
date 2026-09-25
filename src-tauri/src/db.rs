@@ -903,12 +903,19 @@ pub fn builtin_agents() -> Vec<Agent> {
             Some(".claude/skills"),
             "claude",
         ),
+        // Codex는 공식 문서상 사용자 스킬 경로로 `~/.agents/skills`를 읽지만,
+        // 실제 실행 파일은 `~/.codex/skills`도 함께 읽는다(실측 확인).
+        // 앱 스캐너도 두 경로를 모두 스캔하므로 대표 전역 경로는 플랫폼 고유
+        // 폴더인 `.codex/skills`로 두고, `.agents/skills`는 호환 출처로 함께
+        // 읽는다. 이렇게 해야 "다른 하네스로 이식" 목록에서 codex가 공용(.agents)
+        // 설치와 같은 대상으로 합쳐져 사라지지 않는다.
+        // 프로젝트 범위는 공식 문서대로 `$CWD/.agents/skills`를 그대로 쓴다.
         agent(
             "codex",
             "Codex CLI",
             "coding",
-            ".agents/skills",
-            None,
+            ".codex/skills",
+            Some(".agents/skills"),
             "codex",
         ),
         agent(
@@ -3276,6 +3283,51 @@ mod tests {
         for agent in &agents {
             assert!(agent.is_builtin, "All seeded agents should be builtin");
         }
+    }
+
+    /// Codex의 대표 전역 경로는 플랫폼 고유 폴더인 `.codex/skills`이고,
+    /// 공용 경로 `.agents/skills`는 Universal 에이전트가 계속 담당한다.
+    /// 예전 DB에 `.agents/skills`로 저장된 Codex 경로도 재시딩으로 갱신된다.
+    #[tokio::test]
+    async fn test_codex_uses_dedicated_skills_dir_not_shared_agents_path() {
+        let home = resolve_home_dir();
+        let codex = builtin_agents()
+            .into_iter()
+            .find(|agent| agent.id == "codex")
+            .expect("Codex should be a built-in agent");
+        assert_eq!(
+            codex.global_skills_dir,
+            path_to_string(&home.join(".codex/skills"))
+        );
+        // 프로젝트 범위는 공식 문서의 REPO 경로(`$CWD/.agents/skills`)를 유지한다.
+        assert_eq!(codex.project_skills_dir.as_deref(), Some(".agents/skills"));
+
+        let pool = setup_test_db().await;
+        // 예전 버전이 남긴 공용 경로 값을 흉내낸다.
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'codex'")
+            .bind(path_to_string(&home.join(".agents/skills")))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        init_database(&pool).await.unwrap();
+
+        assert_eq!(
+            get_agent_by_id(&pool, "codex")
+                .await
+                .unwrap()
+                .unwrap()
+                .global_skills_dir,
+            path_to_string(&home.join(".codex/skills"))
+        );
+        assert_eq!(
+            get_agent_by_id(&pool, "universal")
+                .await
+                .unwrap()
+                .unwrap()
+                .global_skills_dir,
+            path_to_string(&home.join(".agents/skills"))
+        );
     }
 
     #[tokio::test]
