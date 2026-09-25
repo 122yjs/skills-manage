@@ -205,7 +205,13 @@ pub(crate) struct RemoteSkillCandidate {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GitHubRepoSnapshot {
-    pub(crate) files: HashMap<String, Vec<u8>>,
+    pub(crate) files: HashMap<String, SnapshotFile>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SnapshotFile {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) executable: bool,
 }
 
 const GITHUB_PAT_SETTING_KEY: &str = "github_pat";
@@ -1345,7 +1351,7 @@ pub(crate) fn build_repo_skill_candidates_from_snapshot(
             .files
             .get(&manifest.skill_md_path)
             .ok_or_else(|| format!("Missing snapshot file '{}'.", manifest.skill_md_path))?;
-        let content = String::from_utf8(raw.clone())
+        let content = String::from_utf8(raw.bytes.clone())
             .map_err(|_| format!("Skill '{}' is not valid UTF-8.", manifest.source_path))?;
         let frontmatter = parse_frontmatter(&content).ok_or_else(|| {
             if manifest.source_path == "." {
@@ -1511,6 +1517,9 @@ fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSn
         }
 
         let relative_path = relative_archive_path(&entry)?;
+        let mode = entry.header().mode().map_err(|error| {
+            format!("저장소 파일 '{relative_path}'의 권한을 읽지 못했습니다: {error}")
+        })?;
         let mut content = Vec::new();
         entry.read_to_end(&mut content).map_err(|e| {
             format!(
@@ -1518,7 +1527,13 @@ fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSn
                 relative_path, e
             )
         })?;
-        files.insert(relative_path, content);
+        files.insert(
+            relative_path,
+            SnapshotFile {
+                bytes: content,
+                executable: mode & 0o111 != 0,
+            },
+        );
     }
 
     Ok(GitHubRepoSnapshot { files })
@@ -1574,7 +1589,7 @@ pub(crate) fn collect_snapshot_source_files(
     let mut files = snapshot
         .files
         .iter()
-        .filter_map(|(path, bytes)| {
+        .filter_map(|(path, file)| {
             let relative_path = if source_path == "." {
                 if path.contains('/') {
                     return None;
@@ -1592,7 +1607,7 @@ pub(crate) fn collect_snapshot_source_files(
             Some(SnapshotSourceFile {
                 repo_path: path.clone(),
                 relative_path,
-                byte_len: bytes.len(),
+                byte_len: file.bytes.len(),
             })
         })
         .collect::<Vec<_>>();
@@ -1628,7 +1643,7 @@ pub(crate) fn write_snapshot_source_to_target(
             ));
         }
 
-        let bytes = snapshot.files.get(&file.repo_path).ok_or_else(|| {
+        let source = snapshot.files.get(&file.repo_path).ok_or_else(|| {
             format!(
                 "Repository file '{}' is no longer available in the archive.",
                 file.repo_path
@@ -1641,13 +1656,14 @@ pub(crate) fn write_snapshot_source_to_target(
             .ok_or_else(|| "Failed to determine imported file parent directory.".to_string())?;
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create imported file parent directory: {}", e))?;
-        std::fs::write(&destination, bytes).map_err(|e| {
+        std::fs::write(&destination, &source.bytes).map_err(|e| {
             format!(
                 "Failed to write imported file '{}': {}",
                 destination.display(),
                 e
             )
         })?;
+        set_file_executable(&destination, source.executable)?;
 
         progress_state.completed_files += 1;
         progress_state.completed_bytes += file.byte_len as u64;
@@ -1665,6 +1681,35 @@ pub(crate) fn write_snapshot_source_to_target(
         );
     }
 
+    Ok(())
+}
+
+/// Git의 실행 여부만 반영하고, 현재 읽기 범위와 특수 권한은 확대하지 않는다.
+pub(crate) fn set_file_executable(path: &Path, executable: bool) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path)
+            .map_err(|error| {
+                format!(
+                    "파일 '{}'의 권한을 읽지 못했습니다: {error}",
+                    path.display()
+                )
+            })?
+            .permissions();
+        let mode = permissions.mode() & !0o111;
+        let execute_bits = if executable { (mode & 0o444) >> 2 } else { 0 };
+        permissions.set_mode(mode | execute_bits);
+        std::fs::set_permissions(path, permissions).map_err(|error| {
+            format!(
+                "파일 '{}'의 실행 권한을 반영하지 못했습니다: {error}",
+                path.display()
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, executable);
     Ok(())
 }
 
@@ -2170,7 +2215,15 @@ mod tests {
         GitHubRepoSnapshot {
             files: files
                 .iter()
-                .map(|(path, content)| (path.to_string(), content.as_bytes().to_vec()))
+                .map(|(path, content)| {
+                    (
+                        path.to_string(),
+                        SnapshotFile {
+                            bytes: content.as_bytes().to_vec(),
+                            executable: false,
+                        },
+                    )
+                })
                 .collect::<HashMap<_, _>>(),
         }
     }
@@ -2225,13 +2278,22 @@ mod tests {
     }
 
     fn repository_archive(files: &[(&str, &[u8])]) -> Vec<u8> {
+        repository_archive_with_modes(
+            &files
+                .iter()
+                .map(|(path, content)| (*path, *content, 0o644))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn repository_archive_with_modes(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut builder = tar::Builder::new(encoder);
-        for (path, content) in files {
+        for (path, content, mode) in files {
             let archive_path = format!("repo-snapshot/{}", path);
             let mut header = tar::Header::new_gnu();
             header.set_size(content.len() as u64);
-            header.set_mode(0o644);
+            header.set_mode(*mode);
             header.set_entry_type(tar::EntryType::Regular);
             header.set_cksum();
             builder
@@ -2374,6 +2436,68 @@ mod tests {
         assert!(snapshot.files.contains_key("README.md"));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn import_preserves_executable_permissions_from_archive() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let pool = setup_test_db().await;
+        let central_root = tempdir().unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_root.path().to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let archive = repository_archive_with_modes(&[
+            ("skills/demo/SKILL.md", b"---\nname: demo\n---\n", 0o644),
+            (
+                "skills/demo/scripts/run",
+                b"#!/bin/sh\nprintf 'ready\\n'\n",
+                0o6755,
+            ),
+            ("skills/demo/references/guide.md", b"guide\n", 0o644),
+        ]);
+        let snapshot = snapshot_from_repository_archive(&archive).unwrap();
+        install_snapshot(
+            &pool,
+            snapshot,
+            vec![import_selection(
+                "skills/demo",
+                DuplicateResolution::Overwrite,
+            )],
+        )
+        .await
+        .unwrap();
+
+        let target = central_root.path().join("demo");
+        // 실제 실행으로 검증해야 설명서만 설치된 상태를 성공으로 놓치지 않는다.
+        let output = std::process::Command::new(target.join("scripts/run"))
+            .output()
+            .expect("가져온 스크립트를 직접 실행할 수 있어야 한다");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ready\n");
+        assert_eq!(
+            std::fs::metadata(target.join("scripts/run"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7000,
+            0,
+            "압축파일의 특수 권한은 설치 파일에 전달하면 안 된다"
+        );
+        for relative in ["SKILL.md", "references/guide.md"] {
+            assert_eq!(
+                std::fs::metadata(target.join(relative))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o111,
+                0,
+                "일반 문서에 실행 권한을 추가하면 안 된다"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn preview_marks_canonical_conflicts_without_writing() {
         let pool = setup_test_db().await;
@@ -2510,7 +2634,7 @@ mod tests {
             std::fs::read(review_dir.join("SKILL.md"))
                 .expect("read overwritten")
                 .as_slice(),
-            review_bytes.as_slice()
+            review_bytes.bytes.as_slice()
         );
         assert_eq!(
             central_entries(central_root.path()),
@@ -2945,7 +3069,7 @@ mod tests {
             std::fs::read(new_dir.join("SKILL.md"))
                 .expect("read new skill")
                 .as_slice(),
-            repo_bytes.as_slice()
+            repo_bytes.bytes.as_slice()
         );
         let new_record = db::get_skill_by_id(&pool, "agent-planner-imported")
             .await
@@ -3188,7 +3312,7 @@ mod tests {
             std::fs::read(planner_dir.join("SKILL.md"))
                 .expect("read planner")
                 .as_slice(),
-            planner_bytes.as_slice()
+            planner_bytes.bytes.as_slice()
         );
         assert_eq!(
             std::fs::read_to_string(commit_dir.join("SKILL.md")).expect("read commit"),
