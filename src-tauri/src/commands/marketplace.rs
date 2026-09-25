@@ -1048,8 +1048,8 @@ pub async fn install_from_skills_sh(
             skill_md_path_in_repo
         )
     })?;
-    let content_str =
-        std::str::from_utf8(raw_content).map_err(|_| "SKILL.md is not valid UTF-8.".to_string())?;
+    let content_str = std::str::from_utf8(&raw_content.bytes)
+        .map_err(|_| "SKILL.md is not valid UTF-8.".to_string())?;
     let frontmatter = github_import::parse_frontmatter(content_str)
         .ok_or_else(|| "Skill is missing valid frontmatter.".to_string())?;
 

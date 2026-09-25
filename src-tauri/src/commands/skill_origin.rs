@@ -10,6 +10,7 @@ use tauri::State;
 use tokio::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
+use crate::commands::github_import::SnapshotFile;
 use crate::commands::{github_import, marketplace, recovery, scanner, skills};
 use crate::db::{self, DbPool};
 use crate::AppState;
@@ -60,6 +61,9 @@ pub struct ManifestEntry {
     pub path: String,
     pub size: u64,
     pub sha256: String,
+    // 일반 파일은 이전 저장 형식을 유지해 권한 정보 추가만으로 업데이트를 표시하지 않는다.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub executable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -239,11 +243,11 @@ fn safe_relative_path(path: &str) -> bool {
 fn remote_files(
     snapshot: &github_import::GitHubRepoSnapshot,
     source_path: &str,
-) -> Result<BTreeMap<String, Vec<u8>>, String> {
+) -> Result<BTreeMap<String, SnapshotFile>, String> {
     let source_path = source_path.trim_matches('/');
     let mut files = BTreeMap::new();
     let mut total_bytes = 0usize;
-    for (repo_path, bytes) in &snapshot.files {
+    for (repo_path, file) in &snapshot.files {
         let relative = if source_path.is_empty() || source_path == "." {
             repo_path.clone()
         } else {
@@ -256,16 +260,16 @@ fn remote_files(
         if !safe_relative_path(&relative) {
             return Err(format!("Unsupported repository path: {relative}"));
         }
-        if bytes.len() > MAX_SKILL_FILE_BYTES {
+        if file.bytes.len() > MAX_SKILL_FILE_BYTES {
             return Err(format!(
                 "Repository file is too large to update safely: {relative}"
             ));
         }
-        total_bytes = total_bytes.saturating_add(bytes.len());
+        total_bytes = total_bytes.saturating_add(file.bytes.len());
         if files.len() >= MAX_SKILL_FILES || total_bytes > MAX_SKILL_BYTES {
             return Err("GitHub skill payload exceeds the safe update limit".to_string());
         }
-        files.insert(relative, bytes.clone());
+        files.insert(relative, file.clone());
     }
     if files.is_empty() || !files.contains_key("SKILL.md") {
         return Err(format!(
@@ -280,14 +284,16 @@ fn remote_files(
     Ok(files)
 }
 
-fn manifest_from_remote_files(files: &BTreeMap<String, Vec<u8>>) -> SkillManifest {
+fn manifest_from_files(files: &BTreeMap<String, SnapshotFile>) -> SkillManifest {
     SkillManifest {
         entries: files
             .iter()
-            .map(|(path, bytes)| ManifestEntry {
+            .map(|(path, file)| ManifestEntry {
                 path: path.clone(),
-                size: bytes.len() as u64,
-                sha256: sha256_hex(bytes),
+                size: file.bytes.len() as u64,
+                sha256: sha256_hex(&file.bytes),
+                // Windows에서는 Unix 실행 비트가 없으므로 내용만 비교한다.
+                executable: cfg!(unix) && file.executable,
             })
             .collect(),
     }
@@ -296,7 +302,7 @@ fn manifest_from_remote_files(files: &BTreeMap<String, Vec<u8>>) -> SkillManifes
 fn collect_local_files(
     root: &Path,
     current: &Path,
-    out: &mut BTreeMap<String, Vec<u8>>,
+    out: &mut BTreeMap<String, SnapshotFile>,
 ) -> Result<(), String> {
     let mut entries = fs::read_dir(current)
         .map_err(|error| format!("Failed to read '{}': {error}", current.display()))?
@@ -329,13 +335,20 @@ fn collect_local_files(
                 .replace('\\', "/");
             let bytes = fs::read(&path)
                 .map_err(|error| format!("Failed to read '{}': {error}", path.display()))?;
-            let current_size = out.values().map(Vec::len).sum::<usize>();
+            let current_size = out.values().map(|file| file.bytes.len()).sum::<usize>();
             if out.len() >= MAX_SKILL_FILES
                 || current_size.saturating_add(bytes.len()) > MAX_SKILL_BYTES
             {
                 return Err("Local skill payload exceeds the safe update limit".to_string());
             }
-            out.insert(relative, bytes);
+            #[cfg(unix)]
+            let executable = {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            };
+            #[cfg(not(unix))]
+            let executable = false;
+            out.insert(relative, SnapshotFile { bytes, executable });
         } else {
             return Err(format!("Unsupported file type: {}", path.display()));
         }
@@ -360,14 +373,19 @@ fn manifest_from_local_directory(root: &Path) -> Result<SkillManifest, String> {
             root.display()
         ));
     }
-    Ok(manifest_from_remote_files(&files))
+    Ok(manifest_from_files(&files))
 }
 
-fn manifest_map(manifest: &SkillManifest) -> BTreeMap<&str, (&str, u64)> {
+fn manifest_map(manifest: &SkillManifest) -> BTreeMap<&str, (&str, u64, bool)> {
     manifest
         .entries
         .iter()
-        .map(|entry| (entry.path.as_str(), (entry.sha256.as_str(), entry.size)))
+        .map(|entry| {
+            (
+                entry.path.as_str(),
+                (entry.sha256.as_str(), entry.size, entry.executable),
+            )
+        })
         .collect()
 }
 
@@ -826,7 +844,7 @@ async fn fetch_remote_snapshot(
             .bind(skills.len() as i64).execute(pool).await.map_err(|error| error.to_string())?;
     }
     let files = remote_files(&snapshot, source_path)?;
-    let manifest = manifest_from_remote_files(&files);
+    let manifest = manifest_from_files(&files);
     Ok(RemoteSnapshot {
         repository_id,
         owner: repo.owner,
@@ -853,7 +871,7 @@ async fn cached_remote_snapshot(
     let key = (repo_url.to_string(), ref_name.map(str::to_string));
     if let Some(cached) = cache.get(&key) {
         let mut remote = cached.clone();
-        remote.manifest = manifest_from_remote_files(&remote_files(&remote.snapshot, source_path)?);
+        remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
         remote.source_path = source_path.to_string();
         return Ok(remote);
     }
@@ -1082,7 +1100,7 @@ async fn search_public_origin_candidates(
 ) -> Vec<SkillOriginCandidate> {
     let auth = github_import::github_direct_auth_from_settings(pool).await.ok().flatten();
     let Ok(client) = reqwest::Client::builder()
-        .user_agent("skills-manage/0.12.1")
+        .user_agent("skills-manage/0.12.2")
         .timeout(std::time::Duration::from_secs(12))
         .build() else { return Vec::new(); };
     let Ok(mut url) = reqwest::Url::parse("https://api.github.com/search/repositories") else { return Vec::new(); };
@@ -1118,7 +1136,8 @@ async fn search_public_origin_candidates(
                 };
                 let reason = if local_content.as_ref()
                     .zip(snapshot.files.get(&manifest_path))
-                    .is_some_and(|(local, remote)| local == remote) {
+                    .is_some_and(|(local, remote)| local == &remote.bytes)
+                {
                     "content_match"
                 } else if description.zip(skill.description.as_deref())
                     .is_some_and(|(left, right)| left.trim().eq_ignore_ascii_case(right.trim())) {
@@ -1528,20 +1547,21 @@ pub async fn prepare_skill_update(
     })
 }
 
-fn write_stage(files: &BTreeMap<String, Vec<u8>>, stage: &Path) -> Result<(), String> {
+fn write_stage(files: &BTreeMap<String, SnapshotFile>, stage: &Path) -> Result<(), String> {
     fs::create_dir(stage).map_err(|error| format!("Failed to create update stage: {error}"))?;
-    for (relative, bytes) in files {
+    for (relative, file) in files {
         let destination = stage.join(relative);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("Failed to create staged directory: {error}"))?;
         }
-        fs::write(&destination, bytes).map_err(|error| {
+        fs::write(&destination, &file.bytes).map_err(|error| {
             format!(
                 "Failed to write staged file '{}': {error}",
                 destination.display()
             )
         })?;
+        github_import::set_file_executable(&destination, file.executable)?;
     }
     scanner::parse_skill_md(&stage.join("SKILL.md"))
         .ok_or_else(|| "Updated SKILL.md has invalid frontmatter".to_string())?;
@@ -1893,6 +1913,38 @@ mod tests {
         assert_eq!(summary.removed, 0);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn local_manifest_detects_executable_permission_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = TempDir::new().unwrap();
+        write_file(temp.path(), "SKILL.md", "---\nname: demo\n---\n");
+        write_file(temp.path(), "scripts/run", "#!/bin/sh\nexit 0\n");
+        let before = manifest_from_local_directory(temp.path()).unwrap();
+        fs::set_permissions(
+            temp.path().join("scripts/run"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let after = manifest_from_local_directory(temp.path()).unwrap();
+        assert_eq!(summarize_changes(&before, &after).modified, 1);
+        assert_eq!(
+            classify_state(Some(&before), &before, &after),
+            OriginSyncState::RemoteUpdate
+        );
+    }
+
+    #[test]
+    fn legacy_manifest_without_executable_permissions_remains_readable() {
+        let legacy = r#"{"entries":[{"path":"SKILL.md","size":1,"sha256":"a"}]}"#;
+        let manifest = parse_manifest(Some(legacy))
+            .expect("이전 버전의 비교 기록도 읽을 수 있어야 한다");
+        assert_eq!(manifest.entries.len(), 1);
+        assert!(!manifest.entries[0].executable);
+        assert_eq!(manifest_json(&manifest).unwrap(), legacy);
+    }
+
     #[test]
     fn three_way_state_distinguishes_remote_local_and_diverged() {
         let base = SkillManifest {
@@ -1900,6 +1952,7 @@ mod tests {
                 path: "SKILL.md".into(),
                 size: 1,
                 sha256: "a".into(),
+                executable: false,
             }],
         };
         let local = SkillManifest {
@@ -1907,6 +1960,7 @@ mod tests {
                 path: "SKILL.md".into(),
                 size: 1,
                 sha256: "b".into(),
+                executable: false,
             }],
         };
         let remote = SkillManifest {
@@ -1914,6 +1968,7 @@ mod tests {
                 path: "SKILL.md".into(),
                 size: 1,
                 sha256: "c".into(),
+                executable: false,
             }],
         };
         assert_eq!(
@@ -2070,6 +2125,8 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn shared_origin_update_replaces_files_preserves_links_and_keeps_restorable_backup() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp = TempDir::new().unwrap();
         let (pool, target) = shared_origin_fixture(&temp).await;
         let mut origin = load_origin(&pool, &origin_target_key(&target))
@@ -2079,15 +2136,35 @@ mod tests {
         origin.agent_id = Some("omp".into());
         let link = temp.path().join("omp-demo");
         std::os::unix::fs::symlink(&target, &link).unwrap();
+        write_file(
+            &target,
+            "scripts/previous.sh",
+            "#!/bin/sh\nprintf 'old\\n'\n",
+        );
+        fs::set_permissions(
+            target.join("scripts/previous.sh"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
         let before = manifest_from_local_directory(&target).unwrap();
         let files = BTreeMap::from([
             (
                 "SKILL.md".to_string(),
-                b"---\nname: demo\ndescription: Updated\n---\nUpdated content\n".to_vec(),
+                SnapshotFile {
+                    bytes: b"---\nname: demo\ndescription: Updated\n---\nUpdated content\n"
+                        .to_vec(),
+                    executable: false,
+                },
             ),
-            ("scripts/new.sh".to_string(), b"echo updated\n".to_vec()),
+            (
+                "scripts/new.sh".to_string(),
+                SnapshotFile {
+                    bytes: b"#!/bin/sh\nprintf 'updated\\n'\n".to_vec(),
+                    executable: true,
+                },
+            ),
         ]);
-        let remote_manifest = manifest_from_remote_files(&files);
+        let remote_manifest = manifest_from_files(&files);
         let operation_id = Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO skill_update_operations (operation_id, binding_id, state, expected_target_key, expected_local_manifest_json, remote_commit_oid, remote_manifest_json, created_at, updated_at) VALUES (?, ?, 'prepared', ?, ?, 'new-commit', ?, 'now', 'now')")
             .bind(&operation_id).bind(&origin.binding_id).bind(&origin.target_key)
@@ -2122,8 +2199,13 @@ mod tests {
             .is_symlink());
         assert_eq!(
             fs::read_to_string(link.join("scripts/new.sh")).unwrap(),
-            "echo updated\n"
+            "#!/bin/sh\nprintf 'updated\\n'\n"
         );
+        let output = std::process::Command::new(link.join("scripts/new.sh"))
+            .output()
+            .expect("업데이트한 스크립트를 바로가기로 실행할 수 있어야 한다");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"updated\n");
         let state: String =
             sqlx::query_scalar("SELECT state FROM skill_update_operations WHERE operation_id = ?")
                 .bind(&operation_id)
@@ -2149,6 +2231,11 @@ mod tests {
             .unwrap();
         assert_eq!(manifest_from_local_directory(&target).unwrap(), before);
         assert!(link.join("SKILL.md").is_file());
+        let restored = std::process::Command::new(link.join("scripts/previous.sh"))
+            .output()
+            .expect("백업을 복원하면 기존 실행 권한도 복원되어야 한다");
+        assert!(restored.status.success());
+        assert_eq!(restored.stdout, b"old\n");
         assert!(fs::read_dir(target.parent().unwrap())
             .unwrap()
             .all(|entry| {
@@ -2383,7 +2470,10 @@ mod tests {
         // 최신 내용이 다른 설치는 원본 연결만 확정하고 설치 버전을 추측하지 않는다.
         files.insert(
             "skills/engineering/second/SKILL.md".into(),
-            b"new upstream".to_vec(),
+            SnapshotFile {
+                bytes: b"new upstream".to_vec(),
+                executable: false,
+            },
         );
         let snapshot = Arc::new(github_import::GitHubRepoSnapshot { files });
         let remote = RemoteSnapshot {
@@ -2393,7 +2483,7 @@ mod tests {
             ref_name: "release/v2".into(),
             commit_oid: "latest-commit".into(),
             source_path: "skills/engineering/demo".into(),
-            manifest: manifest_from_remote_files(
+            manifest: manifest_from_files(
                 &remote_files(&snapshot, "skills/engineering/demo").unwrap(),
             ),
             snapshot,
