@@ -74,4 +74,43 @@ describe("getDistinctInstallTargetAgents", () => {
       "cursor",
     ]);
   });
+
+  it("공용 경로를 읽어도 대표 경로가 다르면 별도 대상으로 남긴다", () => {
+    const agents: AgentWithStatus[] = [
+      {
+        id: UNIVERSAL_AGENT_ID,
+        display_name: "Universal",
+        category: "shared",
+        global_skills_dir: "~/.agents/skills",
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: true,
+      },
+      {
+        // Codex는 공용 경로도 읽지만 대표 경로가 .codex/skills라 별도 대상이다.
+        id: "codex",
+        display_name: "Codex CLI",
+        category: "coding",
+        global_skills_dir: "~/.codex/skills",
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: true,
+      },
+      {
+        // Cline은 대표 경로 자체가 공용 경로라 Universal로 합쳐진다.
+        id: "cline",
+        display_name: "Cline",
+        category: "coding",
+        global_skills_dir: "~/.agents/skills",
+        is_detected: true,
+        is_builtin: true,
+        is_enabled: true,
+      },
+    ];
+
+    expect(getDistinctInstallTargetAgents(agents).map((agent) => agent.id)).toEqual([
+      UNIVERSAL_AGENT_ID,
+      "codex",
+    ]);
+  });
 });

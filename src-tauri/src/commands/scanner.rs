@@ -1578,22 +1578,38 @@ mod tests {
     #[test]
     fn test_codex_scan_roots_exclude_cursor_and_claude_locations() {
         let tmp = TempDir::new().unwrap();
-        let primary_root = tmp.path().join(".agents/skills");
-        let codex_root = tmp.path().join(".codex/skills");
+        let universal_root = tmp.path().join(".agents/skills");
+        let primary_root = tmp.path().join(".codex/skills");
         let cursor_root = tmp.path().join(".cursor/skills");
         let claude_root = tmp.path().join(".claude/skills");
-        for root in [&primary_root, &codex_root, &cursor_root, &claude_root] {
+        for root in [&primary_root, &universal_root, &cursor_root, &claude_root] {
             fs::create_dir_all(root).unwrap();
         }
 
         let agent = test_agent("codex", "Codex CLI", &primary_root);
-        let roots = scan_roots_for_agent(&agent, Some(&primary_root), None);
-        let paths: HashSet<PathBuf> = roots.into_iter().map(|root| root.path).collect();
+        let roots = scan_roots_for_agent(&agent, Some(&universal_root), None);
+        let paths: HashSet<PathBuf> = roots.iter().map(|root| root.path.clone()).collect();
 
         assert!(paths.contains(&primary_root));
-        assert!(paths.contains(&codex_root));
+        assert!(paths.contains(&universal_root));
         assert!(!paths.contains(&cursor_root));
         assert!(!paths.contains(&claude_root));
+
+        // 자신의 .codex 경로는 관리 대상(읽기 전용 아님)이고,
+        // 공용 .agents 경로는 호환 출처(읽기 전용)여야 한다.
+        let primary = roots
+            .iter()
+            .find(|root| root.path == primary_root)
+            .expect("codex primary root");
+        assert!(primary.source_kind.is_none());
+        let universal = roots
+            .iter()
+            .find(|root| root.path == universal_root)
+            .expect("codex compatibility root");
+        assert_eq!(
+            universal.source_kind,
+            Some(AgentSkillSourceKind::Compatibility)
+        );
     }
 
     /// Gemini와 Antigravity는 전용 경로(.gemini/config/skills)를 공유한다.
@@ -1834,6 +1850,12 @@ enabled = false
             "grill-me",
             &valid_skill_md("grill-me", "Direct Codex user skill"),
         );
+        // 공용 경로(.agents/skills)의 스킬도 Codex가 호환 출처로 함께 읽는다.
+        create_skill_dir(
+            &universal_root,
+            "shared-skill",
+            &valid_skill_md("shared-skill", "Shared agents skill"),
+        );
         create_skill_dir(
             &plugin_root,
             "ponytail",
@@ -1846,7 +1868,7 @@ enabled = false
         .unwrap();
 
         for (agent_id, root) in [
-            ("codex", &universal_root),
+            ("codex", &direct_root),
             ("universal", &universal_root),
             ("central", &central_root),
         ] {
@@ -1859,7 +1881,7 @@ enabled = false
         }
 
         let result = scan_all_skills_impl(&pool).await.unwrap();
-        assert_eq!(result.skills_by_agent.get("codex").copied(), Some(2));
+        assert_eq!(result.skills_by_agent.get("codex").copied(), Some(3));
 
         let skills = db::get_skills_for_agent(&pool, "codex").await.unwrap();
         assert!(skills.iter().any(|skill| skill.id == "grill-me"));
@@ -1869,6 +1891,14 @@ enabled = false
             .expect("enabled plugin skill should be visible");
         assert_eq!(ponytail.source_label.as_deref(), Some("ponytail@ponytail"));
         assert!(ponytail.is_read_only);
+
+        // 공용 경로의 스킬은 Codex에서 읽기 전용 호환 출처로 보인다.
+        let shared = skills
+            .iter()
+            .find(|skill| skill.id == "shared-skill")
+            .expect("shared .agents skill should be visible to codex");
+        assert!(shared.is_read_only);
+        assert_eq!(shared.source_kind.as_deref(), Some("compatibility"));
     }
 
     #[tokio::test]
