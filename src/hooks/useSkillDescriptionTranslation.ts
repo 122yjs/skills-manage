@@ -36,6 +36,10 @@ export interface SkillDescriptionTranslationState {
   isShowingOriginal: boolean;
   isLoading: boolean;
   error?: string;
+  onDeviceError?: string;
+  loadingEngine?: "apple" | "api";
+  unavailableReason?: string;
+  requestOnDeviceTranslation: () => Promise<void>;
   apiConfirming: boolean;
   canTranslate: boolean;
   isEnglishFallback: boolean;
@@ -53,7 +57,7 @@ function normalizeLocale(locale: string): string {
  * 카드가 화면에 보일 때마다 같은 요청을 반복하면 macOS가 언어 다운로드
  * 창을 계속 띄우기 때문에, 한 번 실패한 조합은 다시 시도하지 않는다.
  */
-const unavailableOnDevicePairs = new Set<string>();
+const unavailableOnDevicePairs = new Map<string, string>();
 
 /**
  * 같은 언어 조합의 첫 기기 번역 요청만 실제로 보내고, 동시에 보이는 다른
@@ -88,7 +92,7 @@ export function useSkillDescriptionTranslation({
   description,
   isVisible = true,
 }: UseSkillDescriptionTranslationOptions): SkillDescriptionTranslationState {
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const targetLocale = normalizeLocale(i18n.resolvedLanguage ?? i18n.language ?? "en");
 
   // 사용자가 언어 팩을 설치한 뒤 표시 언어를 다시 고르면 자동 번역이 되살아난다.
@@ -105,11 +109,20 @@ export function useSkillDescriptionTranslation({
   const [translation, setTranslation] = useState<TranslationResult>();
   const [isShowingOriginal, setIsShowingOriginal] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingEngine, setLoadingEngine] = useState<"apple" | "api">();
+  const [onDeviceError, setOnDeviceError] = useState<string>();
   const [error, setError] = useState<string>();
   const [apiConfirming, setApiConfirming] = useState(false);
   const repositoryRequestRef = useRef(0);
   const translationRequestRef = useRef(0);
-  const apiTranslationInFlightRef = useRef(false);
+  const manualTranslationInFlightRef = useRef(false);
+  const identityRef = useRef(0);
+
+  useEffect(() => () => {
+    identityRef.current += 1;
+    translationRequestRef.current += 1;
+    repositoryRequestRef.current += 1;
+  }, []);
 
   const availableDescriptions = useMemo(
     () => ({
@@ -148,6 +161,11 @@ export function useSkillDescriptionTranslation({
 
   useEffect(() => {
     translationRequestRef.current += 1;
+    identityRef.current += 1;
+    manualTranslationInFlightRef.current = false;
+    setOnDeviceError(undefined);
+    setLoadingEngine(undefined);
+    setIsLoading(false);
     setTranslation(undefined);
     setIsShowingOriginal(false);
     setApiConfirming(false);
@@ -184,6 +202,13 @@ export function useSkillDescriptionTranslation({
       !sourceMatchesTarget &&
       isTauriRuntime()
   );
+  const unavailableReason = !isTauriRuntime()
+    ? t("common.translationDesktopOnly")
+    : alreadyLocalized || sourceMatchesTarget
+      ? t("common.translationAlreadyLocalized")
+      : awaitingRepositoryDescriptions
+        ? t("common.translationChecking")
+        : undefined;
   const isEnglishFallback = Boolean(
     !translation &&
       resolved?.source === "english-fallback" &&
@@ -216,6 +241,9 @@ export function useSkillDescriptionTranslation({
 
   useEffect(() => {
     const requestId = ++translationRequestRef.current;
+    if (manualTranslationInFlightRef.current) return;
+    setIsLoading(false);
+    setLoadingEngine(undefined);
     if (
       !isVisible ||
       !isRepositoryResolved ||
@@ -243,17 +271,25 @@ export function useSkillDescriptionTranslation({
           translationRequest.sourceLocale,
           translationRequest.targetLocale
         );
-        if (unavailableOnDevicePairs.has(pairKey)) return;
+        if (unavailableOnDevicePairs.has(pairKey)) {
+          setOnDeviceError(unavailableOnDevicePairs.get(pairKey));
+          return;
+        }
 
         // 같은 언어 조합이 이미 진행 중이면 그 결과를 기다렸다가,
         // 실패한 조합이면 새 요청을 보내지 않는다.
         const pending = inFlightOnDevicePairs.get(pairKey);
         if (pending) {
           await pending.catch(() => undefined);
-          if (unavailableOnDevicePairs.has(pairKey)) return;
+          if (translationRequestRef.current !== requestId) return;
+          if (unavailableOnDevicePairs.has(pairKey)) {
+            setOnDeviceError(unavailableOnDevicePairs.get(pairKey));
+            return;
+          }
         }
 
         try {
+          setLoadingEngine("apple");
           const onDeviceRequest = invoke<TranslationResult>(
             "translate_skill_description_on_device",
             { request: translationRequest }
@@ -265,46 +301,73 @@ export function useSkillDescriptionTranslation({
             }
           });
           if (translationRequestRef.current === requestId) setTranslation(onDevice);
-        } catch {
-          // macOS 15가 아니거나 번역 언어 팩이 없으면 원문을 조용히 유지한다.
-          // 같은 언어 조합은 이번 세션에서 다시 시도하지 않는다.
-          unavailableOnDevicePairs.add(pairKey);
+        } catch (cause) {
+          // macOS 15가 아니거나 번역 언어 팩이 없으면 원문을 유지하고 실패 이유를 표시한다.
+          // 같은 언어 조합의 자동 재시도는 막되 사용자가 직접 재시도할 수 있다.
+          const message = cause instanceof Error ? cause.message : String(cause);
+          unavailableOnDevicePairs.set(pairKey, message);
+          if (translationRequestRef.current === requestId) setOnDeviceError(message);
         }
       })
       .catch(() => {
         // 캐시 조회 실패 역시 원문 표시를 막지 않는다.
       })
       .finally(() => {
-        if (translationRequestRef.current === requestId) setIsLoading(false);
+        if (translationRequestRef.current === requestId) {
+          setIsLoading(false);
+          setLoadingEngine(undefined);
+        }
       });
   }, [alreadyLocalized, isRepositoryResolved, isVisible, translationRequest]);
 
-  const requestApiTranslation = useCallback(async () => {
-    if (!translationRequest || !isTauriRuntime() || apiTranslationInFlightRef.current) return;
+  // 명시적인 재시도는 이 카드에만 적용하고 자동 재시도 차단은 유지한다.
+  const requestTranslation = useCallback(async (engine: "apple" | "api") => {
+    if (!translationRequest || !isTauriRuntime() || manualTranslationInFlightRef.current) return;
+    manualTranslationInFlightRef.current = true;
+    const identity = identityRef.current;
+    // 늦게 도착한 자동 번역이 사용자의 선택을 덮어쓰지 않게 한다.
+    translationRequestRef.current += 1;
+    setIsLoading(true);
+    setLoadingEngine(engine);
+    setError(undefined);
+    if (engine === "apple") setOnDeviceError(undefined);
+    try {
+      const result = await invoke<TranslationResult>(
+        engine === "apple" ? "translate_skill_description_on_device" : "translate_skill_description_with_api",
+        { request: translationRequest }
+      );
+      if (identityRef.current !== identity) return;
+      setTranslation(result);
+      setIsShowingOriginal(false);
+      if (engine === "apple") {
+        unavailableOnDevicePairs.delete(languagePairKey(translationRequest.sourceLocale, translationRequest.targetLocale));
+      }
+    } catch (cause) {
+      if (identityRef.current !== identity) return;
+      const message = cause instanceof Error ? cause.message : String(cause);
+      if (engine === "apple") setOnDeviceError(message);
+      else setError(message);
+    } finally {
+      if (identityRef.current === identity) {
+        manualTranslationInFlightRef.current = false;
+        setIsLoading(false);
+        setLoadingEngine(undefined);
+        setApiConfirming(false);
+      }
+    }
+  }, [translationRequest]);
 
+  const requestOnDeviceTranslation = useCallback(
+    () => requestTranslation("apple"), [requestTranslation]
+  );
+  const requestApiTranslation = useCallback(async () => {
+    if (!translationRequest || !isTauriRuntime() || manualTranslationInFlightRef.current) return;
     if (!apiConfirming) {
       setApiConfirming(true);
       return;
     }
-
-    apiTranslationInFlightRef.current = true;
-    setIsLoading(true);
-    setError(undefined);
-    try {
-      const result = await invoke<TranslationResult>(
-        "translate_skill_description_with_api",
-        { request: translationRequest }
-      );
-      setTranslation(result);
-      setIsShowingOriginal(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      apiTranslationInFlightRef.current = false;
-      setIsLoading(false);
-      setApiConfirming(false);
-    }
-  }, [apiConfirming, translationRequest]);
+    await requestTranslation("api");
+  }, [apiConfirming, translationRequest, requestTranslation]);
 
   const toggleOriginal = useCallback(() => {
     setIsShowingOriginal((showing) => !showing);
@@ -321,6 +384,10 @@ export function useSkillDescriptionTranslation({
     isShowingOriginal,
     isLoading,
     error,
+    onDeviceError,
+    loadingEngine,
+    unavailableReason,
+    requestOnDeviceTranslation,
     apiConfirming,
     canTranslate,
     isEnglishFallback,

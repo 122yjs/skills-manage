@@ -129,6 +129,8 @@ export function PlatformView() {
   const [returnFocusRowKey, setReturnFocusRowKey] = useState<string | null>(null);
   const [isPlatformDeleteDialogOpen, setIsPlatformDeleteDialogOpen] = useState(false);
   const [sharedDialogOpen, setSharedDialogOpen] = useState(false);
+  const [showReloadHint, setShowReloadHint] = useState(false);
+  useEffect(() => setShowReloadHint(false), [agentId]);
   const [sharedDialogImpacts, setSharedDialogImpacts] = useState<SharedSkillImpact[]>([]);
   const [sharedDialogDesired, setSharedDialogDesired] = useState(false);
   const [sharedDialogConfirming, setSharedDialogConfirming] = useState(false);
@@ -208,6 +210,7 @@ export function PlatformView() {
     try {
       await setSkillUsage(skillId, agentId, enabled);
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      setShowReloadHint(true);
     } catch (err) {
       if (isSkillUsageBusyError(err)) return;
       toast.error(t("skillUsage.updateError", { error: String(err) }));
@@ -228,6 +231,7 @@ export function PlatformView() {
         enabled
       );
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      setShowReloadHint(true);
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
@@ -324,6 +328,7 @@ export function PlatformView() {
       }
       setSharedDialogOpen(false);
       setSharedDialogImpacts([]);
+      setShowReloadHint(true);
       if (agentId) {
         await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
       }
@@ -365,6 +370,7 @@ export function PlatformView() {
     try {
       await setPlatformUsage(agentId, !canPausePlatform);
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
+      setShowReloadHint(true);
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
@@ -717,7 +723,7 @@ export function PlatformView() {
                 {t("skillUsage.externalHint", { count: usageStatus.external_count })}
               </p>
             )}
-            {usageStatus.skills.length > 0 && (
+            {showReloadHint && (
               <p className="basis-full text-xs text-muted-foreground">
                 {t("skillUsage.reloadHint")}
               </p>
@@ -917,6 +923,7 @@ export function PlatformView() {
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
                           isUniversalSource={isUniversalSource(skill, universalRoot)}
+                          platformDisplayName={agent.display_name}
                           usageControl={platformControl?.shared_install
                             ? undefined
                             : isManagedInstallation && usage
@@ -977,16 +984,7 @@ export function PlatformView() {
                                   : null,
                               }
                             : undefined}
-                          platformControlNotice={
-                            platformControl?.supported
-                              ? [
-                                  platformControl.reason,
-                                  platformControl.requires_reload ? t("skillUsage.reloadHint") : undefined,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" ") || undefined
-                              : undefined
-                          }
+                          platformControlNotice={platformControl?.supported ? platformControl.reason ?? undefined : undefined}
                           externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
                           isLoading={
                             agentId

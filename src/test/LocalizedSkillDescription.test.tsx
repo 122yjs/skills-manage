@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
 import { resetUnavailableOnDeviceTranslations } from "@/hooks/useSkillDescriptionTranslation";
@@ -186,13 +186,15 @@ describe("LocalizedSkillDescription", () => {
     });
   });
 
-  it("Tauri가 아닌 환경에서는 원문만 표시하고 번역 동작을 숨긴다", () => {
+  it("Tauri가 아닌 환경에서도 두 메뉴와 사용 불가 이유를 표시한다", () => {
     mockIsTauriRuntime.mockReturnValue(false);
 
     renderDescription({ immediate: true, sourceLocale: "en" });
 
     expect(screen.getByText("English legacy description")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "使用 API 翻译" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "使用 API 翻译" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "在设备上翻译" })).toBeDisabled();
+    expect(screen.getByText("请在桌面应用中使用翻译")).toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalled();
   });
 
@@ -231,4 +233,81 @@ describe("LocalizedSkillDescription", () => {
       expect.anything()
     );
   });
+  it("현재 언어 설명이 있어도 두 메뉴를 비활성 상태로 유지한다", () => {
+    renderDescription({ immediate: true, localizedDescriptions: { zh: "中文说明" } });
+    expect(screen.getByRole("button", { name: "使用 API 翻译" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "在设备上翻译" })).toBeDisabled();
+    expect(screen.getByText("说明已使用当前语言")).toBeInTheDocument();
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it("실패 이유를 표시하고 선택한 카드만 기기 번역을 재시도한다", async () => {
+    let attempts = 0;
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "get_cached_skill_description_translation") return Promise.resolve(null);
+      if (command === "translate_skill_description_on_device") {
+        attempts += 1;
+        return attempts === 1 ? Promise.reject("language_not_downloaded") : Promise.resolve({
+          translatedText: "重试成功", engine: "apple", targetLocale: "zh", cached: false,
+        });
+      }
+      return Promise.reject(new Error(command));
+    });
+    const first = renderDescription({ immediate: true, sourceLocale: "en" });
+    await within(first.container).findByText(/language_not_downloaded/);
+    const second = renderDescription({ immediate: true, sourceLocale: "en", resourceId: "skill:second" });
+    await within(second.container).findByText(/language_not_downloaded/);
+    mockInvoke.mockClear();
+    fireEvent.click(within(second.container).getByRole("button", { name: /在设备上翻译/ }));
+    expect(await within(second.container).findByText("重试成功")).toBeInTheDocument();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("translate_skill_description_on_device", {
+      request: expect.objectContaining({ resourceId: "skill:second" }),
+    });
+    expect(within(first.container).getByText("English legacy description")).toBeInTheDocument();
+    expect(within(second.container).getByRole("button", { name: "使用 API 翻译" })).toBeEnabled();
+  });
+
+  it("API 요청 중에도 두 메뉴를 유지하고 선택한 카드에만 API 진행 상태를 표시한다", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "get_cached_skill_description_translation") return Promise.resolve(null);
+      if (command === "translate_skill_description_on_device") return Promise.reject("unsupported");
+      if (command === "translate_skill_description_with_api") return new Promise(resolve => { finish = resolve; });
+      return Promise.reject(new Error(command));
+    });
+    const first = renderDescription({ immediate: true, sourceLocale: "en" });
+    await waitFor(() => expect(within(first.container).getByRole("button", { name: "使用 API 翻译" })).toBeEnabled());
+    const second = renderDescription({ immediate: true, sourceLocale: "en", resourceId: "skill:second" });
+    await waitFor(() => expect(within(second.container).getByRole("button", { name: "使用 API 翻译" })).toBeEnabled());
+    mockInvoke.mockClear();
+    fireEvent.click(within(first.container).getByRole("button", { name: "使用 API 翻译" }));
+    expect(within(first.container).getByRole("button", { name: "使用 API 翻译" })).toBeInTheDocument();
+    fireEvent.click(within(first.container).getByRole("button", { name: "确认" }));
+    expect(within(first.container).getByRole("button", { name: /使用 API 翻译.*正在翻译/ })).toBeDisabled();
+    expect(within(second.container).getByRole("button", { name: "使用 API 翻译" })).toBeEnabled();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(mockInvoke).toHaveBeenCalledWith("translate_skill_description_with_api", {
+      request: expect.objectContaining({ resourceId: "skill:demo" }),
+    });
+    await act(async () => finish({ translatedText: "API 结果", engine: "api", targetLocale: "zh", cached: false }));
+    expect(within(first.container).getByRole("button", { name: /在设备上翻译/ })).toBeInTheDocument();
+    expect(within(first.container).getByRole("button", { name: "使用 API 翻译" })).toBeEnabled();
+  });
+
+  it("기기 번역 중에는 API 메뉴에 번역 중 표시를 붙이지 않는다", async () => {
+    let finish: (value: unknown) => void = () => {};
+    mockInvoke.mockImplementation((command: string) => {
+      if (command === "get_cached_skill_description_translation") return Promise.resolve(null);
+      if (command === "translate_skill_description_on_device") return new Promise(resolve => { finish = resolve; });
+      return Promise.reject(new Error(command));
+    });
+    renderDescription({ immediate: true, sourceLocale: "en" });
+    await screen.findByRole("button", { name: /在设备上翻译.*正在翻译/ });
+    expect(screen.getByRole("button", { name: "使用 API 翻译" })).toBeDisabled();
+    await act(async () => finish({ translatedText: "设备结果", engine: "apple", targetLocale: "zh", cached: false }));
+    expect(screen.getByRole("button", { name: "在设备上翻译" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "使用 API 翻译" })).toBeEnabled();
+  });
+
 });

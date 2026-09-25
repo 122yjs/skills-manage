@@ -66,10 +66,10 @@ function RecoveryRow({ entry }: { entry: RecoveryEntry }) {
 
   return (
     <div className="border-b border-border/50 px-4 py-3 last:border-0">
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-sm font-medium break-words">{entry.label}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">{t(`recovery.kind.${entry.kind}`)}</div>
+          <div className="mt-0.5 text-xs text-muted-foreground"><span>{t(`recovery.kind.${entry.kind}`)}</span> · {formatDate(entry.created_at)}</div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <Button
@@ -106,24 +106,27 @@ function RecoveryRow({ entry }: { entry: RecoveryEntry }) {
           />
         </div>
       </div>
-      <dl className="mt-3 grid gap-1 text-xs text-muted-foreground">
-        <div className="grid grid-cols-[auto_1fr] gap-x-2">
-          <dt>{t("recovery.originalPath")}</dt>
-          <dd className="truncate font-mono" title={entry.original_path}>{formatPathForDisplay(entry.original_path)}</dd>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-2">
-          <dt>{t("recovery.backupPath")}</dt>
-          <dd className="truncate font-mono" title={entry.backup_path}>{formatPathForDisplay(entry.backup_path)}</dd>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-2">
-          <dt>{t("recovery.createdAt")}</dt>
-          <dd>{formatDate(entry.created_at)}</dd>
-        </div>
-        <div className="grid grid-cols-[auto_1fr] gap-x-2">
-          <dt>{t("recovery.expiresAt")}</dt>
-          <dd>{entry.expires_at ? formatDate(entry.expires_at) : t("recovery.neverExpires")}</dd>
-        </div>
-      </dl>
+      <details className="mt-2 text-xs text-muted-foreground">
+        <summary className="cursor-pointer">{t("recovery.details")}</summary>
+        <dl className="mt-3 grid gap-1 text-xs text-muted-foreground">
+          <div className="grid grid-cols-[auto_1fr] gap-x-2">
+            <dt>{t("recovery.originalPath")}</dt>
+            <dd className="truncate font-mono" title={entry.original_path}>{formatPathForDisplay(entry.original_path)}</dd>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-2">
+            <dt>{t("recovery.backupPath")}</dt>
+            <dd className="truncate font-mono" title={entry.backup_path}>{formatPathForDisplay(entry.backup_path)}</dd>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-2">
+            <dt>{t("recovery.createdAt")}</dt>
+            <dd>{formatDate(entry.created_at)}</dd>
+          </div>
+          <div className="grid grid-cols-[auto_1fr] gap-x-2">
+            <dt>{t("recovery.expiresAt")}</dt>
+            <dd>{entry.expires_at ? formatDate(entry.expires_at) : t("recovery.neverExpires")}</dd>
+          </div>
+        </dl>
+      </details>
     </div>
   );
 }
@@ -138,6 +141,19 @@ export function RecoverySettings() {
   const error = useRecoveryStore((state) => state.error);
   const loadEntries = useRecoveryStore((state) => state.loadEntries);
   const createDatabaseBackup = useRecoveryStore((state) => state.createDatabaseBackup);
+
+  const openDatabaseBackupFolder = useRecoveryStore((state) => state.openDatabaseBackupFolder);
+  const databaseCount = entries.filter((entry) => entry.kind === "database").length;
+  const fileEntries = entries.filter((entry) => entry.kind !== "database");
+  const isBusy = isLoading || isCreatingDatabaseBackup || Boolean(restoringEntryId || deletingEntryId);
+
+  async function handleOpenDatabaseFolder() {
+    try {
+      await openDatabaseBackupFolder();
+    } catch (cause) {
+      toast.error(String(cause));
+    }
+  }
 
   useEffect(() => {
     void loadEntries().catch(() => undefined);
@@ -155,37 +171,36 @@ export function RecoverySettings() {
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <CardTitle>{t("recovery.title")}</CardTitle>
-            <CardDescription className="mt-1">{t("recovery.description")}</CardDescription>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={handleCreateDatabaseBackup}
-            disabled={isCreatingDatabaseBackup || Boolean(restoringEntryId || deletingEntryId)}
-          >
-            {isCreatingDatabaseBackup ? <Loader2 className="size-3.5 animate-spin" /> : <DatabaseBackup className="size-3.5" />}
-            {isCreatingDatabaseBackup ? t("recovery.creatingDatabaseBackup") : t("recovery.createDatabaseBackup")}
-          </Button>
-        </div>
+        <CardTitle>{t("recovery.title")}</CardTitle>
+        <CardDescription>{t("recovery.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <p className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-          {t("recovery.databaseRestoreHint")}
-        </p>
-        {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
-        {isLoading ? (
-          <div className="flex justify-center py-4"><Loader2 className="size-4 animate-spin text-muted-foreground" /></div>
-        ) : entries.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">{t("recovery.empty")}</p>
-        ) : (
-          <div className="overflow-hidden rounded-lg border border-border">
-            {entries.map((entry) => <RecoveryRow key={entry.id} entry={entry} />)}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
+          <span className="text-sm" aria-live="polite">
+            {isLoading ? t("recovery.loading") : t("recovery.databaseCount", { count: databaseCount })}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={handleOpenDatabaseFolder} disabled={isBusy}>
+              <FolderOpen className="size-3.5" />{t("recovery.openFolder")}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={handleCreateDatabaseBackup} disabled={isBusy}>
+              {isCreatingDatabaseBackup ? <Loader2 className="size-3.5 animate-spin" /> : <DatabaseBackup className="size-3.5" />}
+              {isCreatingDatabaseBackup ? t("recovery.creatingDatabaseBackup") : t("recovery.createDatabaseBackup")}
+            </Button>
           </div>
-        )}
+        </div>
+        <p className="text-xs text-muted-foreground">{t("recovery.databaseRestoreHint")}</p>
+        {error ? <p className="text-xs text-destructive" role="alert">{error}</p> : null}
+        <details className="rounded-lg border border-border">
+          <summary className="cursor-pointer px-3 py-2 text-sm">{t("recovery.fileRecoveryCount", { count: fileEntries.length })}</summary>
+          {fileEntries.length === 0 ? (
+            <p className="px-3 pb-3 text-xs text-muted-foreground">{t("recovery.empty")}</p>
+          ) : (
+            <div className="max-h-96 overflow-y-auto border-t border-border">
+              {fileEntries.map((entry) => <RecoveryRow key={entry.id} entry={entry} />)}
+            </div>
+          )}
+        </details>
       </CardContent>
     </Card>
   );
