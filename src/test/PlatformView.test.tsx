@@ -896,7 +896,7 @@ describe("PlatformView", () => {
 
     const toggle = screen.getByRole("switch", { name: /shared-public.*활성 상태|shared-public.*激活状态/i });
     expect(toggle).toBeChecked();
-    expect(screen.getAllByText(/새 세션|新会话|reload/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/새 세션|新会话|reload/i)).not.toBeInTheDocument();
     fireEvent.click(toggle);
 
     await waitFor(() => {
@@ -909,6 +909,7 @@ describe("PlatformView", () => {
         },
         false
       );
+      expect(screen.getByText(/새 세션|新会话|reload/i)).toBeInTheDocument();
     });
   });
 
@@ -1369,10 +1370,11 @@ describe("PlatformView", () => {
     renderPlatformView();
     fireEvent.click(screen.getByRole("button", { name: /查看 .+ 的 \d+ 个来源位置/ }));
 
+    fireEvent.click(screen.getByLabelText("ponytail-audit 的操作"));
     fireEvent.click(
       screen.getByRole("button", { name: "从 Claude Code 删除 ponytail-audit 安装" })
     );
-    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认从 Claude Code 删除 ponytail-audit 的安装" }));
 
     await waitFor(() => {
       expect(mockDeleteSkillFromAgent).toHaveBeenCalledWith("ponytail-audit", "claude-code");
@@ -1863,8 +1865,8 @@ describe("PlatformView 공용 설치 판정", () => {
       screen.queryByRole("button", { name: manageUniversalText })
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: universalBadgeText })
-    ).not.toBeInTheDocument();
+      getCardBadgeMatches(new RegExp(`^${universalBadgeText}$`))
+    ).toHaveLength(0);
     expect(
       screen.queryByRole("tablist", { name: installSourceTablist })
     ).not.toBeInTheDocument();
@@ -1943,7 +1945,7 @@ describe("PlatformView 공용 설치 판정", () => {
 
       expect(getCardBadgeMatches(compatibilityBadgeText)).toHaveLength(3);
       expect(getCardBadgeMatches(readOnlyText)).toHaveLength(2);
-      expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+      expect(getCardBadgeMatches(new RegExp(`^${universalBadgeText}$`))).toHaveLength(1);
       expect(screen.getAllByRole("button", { name: manageUniversalText })).toHaveLength(1);
       expect(screen.getByRole("tab", { name: claudeTabName(universalBadgeText, 1) })).toBeInTheDocument();
     }
@@ -1956,7 +1958,7 @@ describe("PlatformView 공용 설치 판정", () => {
       "C:\\Users\\test\\.agents\\skills\\"
     );
 
-    expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+    expect(getCardBadgeMatches(new RegExp(`^${universalBadgeText}$`))).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: manageUniversalText })).toHaveLength(1);
   });
 
@@ -1974,7 +1976,7 @@ describe("PlatformView 공용 설치 판정", () => {
       "/Users/test/custom/shared-skills"
     );
 
-    expect(screen.getAllByRole("button", { name: universalBadgeText })).toHaveLength(1);
+    expect(getCardBadgeMatches(new RegExp(`^${universalBadgeText}$`))).toHaveLength(1);
     expect(getCardBadgeMatches(readOnlyText)).toHaveLength(1);
     expect(screen.getByRole("tab", { name: claudeTabName(universalBadgeText, 1) })).toBeInTheDocument();
   });

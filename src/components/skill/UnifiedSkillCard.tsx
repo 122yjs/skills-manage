@@ -15,8 +15,9 @@ import {
   Lock,
   Trash2,
   RotateCcw,
+  MoreHorizontal,
 } from "lucide-react";
-import type { MouseEventHandler, Ref } from "react";
+import { useRef, useState, type MouseEventHandler, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
@@ -182,6 +183,7 @@ export interface UnifiedSkillCardProps {
   onInstallToPlatform?: () => void;
   onUninstallFromPlatform?: () => void;
   onManageUniversal?: () => void;
+  platformDisplayName?: string;
   uninstallFromLabel?: string;
   uninstallConfirmLabel?: string;
   uninstallRequiresDialog?: boolean;
@@ -198,6 +200,8 @@ export interface UnifiedSkillCardProps {
 
 export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   const { t } = useTranslation();
+  const [confirmPlatformRemoval, setConfirmPlatformRemoval] = useState(false);
+  const platformActionsRef = useRef<HTMLDetailsElement>(null);
   const {
     name,
     description,
@@ -232,6 +236,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallToPlatform,
     onUninstallFromPlatform,
     onManageUniversal,
+    platformDisplayName,
     uninstallFromLabel,
     uninstallConfirmLabel,
     uninstallRequiresDialog,
@@ -244,6 +249,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     detailButtonRef,
   } = props;
 
+  const isPlatformCard = Boolean(platformDisplayName || sharedControl || usageControl || sourceType);
+
   // Determine variant features
   const hasCheckbox = !!checkbox;
   const hasPlatformIcons = !!platformIcons;
@@ -254,7 +261,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     onInstallToPlatform ||
     onUninstallFromPlatform ||
     onReapplyPlatform ||
-    onManageUniversal ||
+    (onManageUniversal && !isPlatformCard) ||
     onDeleteFromCentral ||
     onInstall ||
     onRemove
@@ -414,7 +421,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </button>
                 )}
 
-                {onUninstallFromPlatform && (uninstallRequiresDialog ? (
+                {!isPlatformCard && onUninstallFromPlatform && (uninstallRequiresDialog ? (
                   <button type="button" onClick={onUninstallFromPlatform} disabled={isLoading}
                     aria-label={uninstallFromLabel ?? t("common.uninstall")}
                     title={uninstallFromLabel ?? t("common.uninstall")}
@@ -432,7 +439,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   />
                 ))}
 
-                {onReapplyPlatform && (
+                {!isPlatformCard && onReapplyPlatform && (
                   <button
                     type="button"
                     onClick={onReapplyPlatform}
@@ -445,7 +452,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   </button>
                 )}
 
-                {onManageUniversal && (
+                {!isPlatformCard && onManageUniversal && (
                   <button
                     type="button"
                     onClick={onManageUniversal}
@@ -454,6 +461,41 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                   >
                     {t("platform.manageUniversal")}
                   </button>
+                )}
+
+                {isPlatformCard && (onUninstallFromPlatform || onReapplyPlatform) && (
+                  <details ref={platformActionsRef} className="relative" onClick={(event) => event.stopPropagation()}>
+                    <summary className="flex size-8 cursor-pointer list-none items-center justify-center rounded-md text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("platform.cardActions", { name })} onClick={() => setConfirmPlatformRemoval(false)}>
+                      <MoreHorizontal className="size-4" aria-hidden="true" />
+                    </summary>
+                    <div className="absolute right-0 z-20 mt-1 flex w-60 max-w-[calc(100vw-2rem)] flex-col gap-1 rounded-lg border border-border bg-popover p-1.5 shadow-md">
+                      {onReapplyPlatform && (
+                        <button type="button" onClick={() => { onReapplyPlatform(); if (platformActionsRef.current) platformActionsRef.current.open = false; }} disabled={isLoading}
+                          className="rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted disabled:opacity-50">
+                          {reapplyPlatformLabel ?? t("common.reapply")}
+                        </button>
+                      )}
+                      {onUninstallFromPlatform && (
+                        <button type="button" disabled={isLoading}
+                          onClick={() => {
+                            if (uninstallRequiresDialog || confirmPlatformRemoval) {
+                              onUninstallFromPlatform();
+                              setConfirmPlatformRemoval(false);
+                              if (platformActionsRef.current) platformActionsRef.current.open = false;
+                            } else {
+                              setConfirmPlatformRemoval(true);
+                            }
+                          }}
+                          className="rounded-md px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50">
+                          {confirmPlatformRemoval ? (uninstallConfirmLabel ?? t("platform.confirmRemoveFromPlatform", { platform: platformDisplayName, name })) : (uninstallFromLabel ?? t("common.uninstall"))}
+                        </button>
+                      )}
+                      {confirmPlatformRemoval && (
+                        <button type="button" onClick={() => setConfirmPlatformRemoval(false)}
+                          className="rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted">{t("common.cancel")}</button>
+                      )}
+                    </div>
+                  </details>
                 )}
 
                 {onDeleteFromCentral &&
@@ -512,9 +554,94 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
           ) : null}
 
-          <SkillGroupLinks filePath={translation?.filePath} />
+          {!isPlatformCard && <SkillGroupLinks filePath={translation?.filePath} />}
 
-          {/* Row 3: Info badges */}
+          {isPlatformCard && (
+            <div className="space-y-2 pt-1">
+              {(sharedControl || usageControl) && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-2.5 py-2 text-xs">
+                  <div className="min-w-0">
+                    <div className="font-medium text-foreground">
+                      {sharedControl?.individual ? t("platform.allowOnPlatform", { platform: sharedControl.individual.platformDisplayName }) : t("platform.useOnPlatform", { platform: platformDisplayName ?? t("platform.thisPlatform") })}
+                    </div>
+                    <div className="text-muted-foreground">
+                      {sharedControl?.individual
+                        ? sharedControl.individual.enabled ? t("platform.allowedHere") : t("platform.blockedHere")
+                        : sharedControl ? t("platform.individualUnavailable")
+                        : usageControl?.state === "unsupported" || (usageControl?.state && !["active", "inactive", "deleted"].includes(usageControl.state))
+                          ? t("skillUsage.unavailable")
+                          : usageControl?.enabled ? t("skillUsage.active") : t("skillUsage.paused")}
+                    </div>
+                  </div>
+                  {sharedControl?.individual ? (
+                    <Switch checked={sharedControl.individual.enabled}
+                      disabled={sharedControl.individual.isLoading || !sharedControl.individual.canToggle || Boolean(sharedControl.individual.disabledReason)}
+                      onCheckedChange={sharedControl.individual.onToggle}
+                      aria-label={t("skillUsage.toggleIndividualSkill", { name, platform: sharedControl.individual.platformDisplayName })} />
+                  ) : usageControl && (
+                    <Switch checked={usageControl.enabled}
+                      disabled={usageControl.isLoading || Boolean(usageControl.disabledReason) || usageControl.state === "deleted"}
+                      onCheckedChange={usageControl.onCheckedChange}
+                      aria-label={t("skillUsage.toggleSkill", { name })} />
+                  )}
+                  {(sharedControl?.individual?.disabledReason || usageControl?.disabledReason) && (
+                    <p className="basis-full text-amber-700 dark:text-amber-300">{sharedControl?.individual?.disabledReason || usageControl?.disabledReason}</p>
+                  )}
+                </div>
+              )}
+              {sharedControl && (
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/60 pt-2 text-xs">
+                  <div className="min-w-0">
+                    <div className="font-medium text-foreground">{t("platform.sharedAcrossPlatforms")}</div>
+                    <div className="text-muted-foreground">
+                      {sharedControl.impact.enabled ? t("platform.sharedOn") : t("platform.sharedOff")}
+                      {sharedControl.individual?.enabled && !sharedControl.impact.enabled && ` · ${t("platform.sharedOffHere")}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {onManageUniversal && (
+                      <button type="button" onClick={onManageUniversal}
+                        className="rounded-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={t("platform.manageUniversal")}>{t("platform.manageSharedShort")}</button>
+                    )}
+                    <Switch checked={sharedControl.impact.enabled}
+                      disabled={sharedControl.isLoading || Boolean(sharedControl.impact.reason)}
+                      onCheckedChange={sharedControl.onToggleShared}
+                      aria-label={t("skillUsage.toggleSharedSkill", { name })} />
+                  </div>
+                  {sharedControl.impact.reason && (
+                    <p className="basis-full text-amber-700 dark:text-amber-300">{sharedControl.impact.reason}</p>
+                  )}
+                </div>
+              )}
+              {!sharedControl && onManageUniversal && (
+                <button type="button" onClick={onManageUniversal}
+                  className="text-xs text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={t("platform.manageUniversal")}>{t("platform.manageUniversal")}</button>
+              )}
+              {platformControlNotice && !usageControl?.disabledReason && (
+                <p className="text-xs text-muted-foreground" title={platformControlNotice}>{platformControlNotice}</p>
+              )}
+              {!usageControl?.enabled && externalUsageCount > 0 && (
+                <p className="text-xs text-amber-700 dark:text-amber-300">{t("skillUsage.externalStillAvailable", { count: externalUsageCount })}</p>
+              )}
+              {(origin || originKind || isExternallyManaged || isUniversalSource || isReadOnly || sourceType || translation?.filePath || sharedControl) && (
+                <details className="text-xs text-muted-foreground">
+                  <summary className="w-fit cursor-pointer rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{t("platform.cardDetails")}</summary>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    {origin && <GitHubOriginBadge origin={origin} installId={localSkillId} originalName={name} />}
+                    {originKind && <SourceOriginBadge originKind={originKind} />}
+                    {isExternallyManaged ? <ExternalManagedBadge /> : isUniversalSource ? <UniversalSourceBadge /> : isReadOnly ? <ReadOnlyBadge /> : null}
+                    {sourceType && <SourceIndicator sourceType={sourceType} />}
+                    {sharedControl && <span>{t("platform.confirmedPlatforms", { count: sharedControl.impact.confirmed_platforms.length })}</span>}
+                    {sharedControl && sharedControl.impact.management_path && <span className="break-all">{formatPathForDisplay(sharedControl.impact.management_path)}</span>}
+                    <SkillGroupLinks filePath={translation?.filePath} />
+                  </div>
+                </details>
+              )}
+            </div>
+          )}
+          {!isPlatformCard && (
           <div className="flex flex-wrap items-center gap-1.5 empty:hidden">
             {origin && (
               <GitHubOriginBadge origin={origin} installId={localSkillId} originalName={name} />
@@ -693,6 +820,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
               </div>
             )}
           </div>
+
+          )}
 
           {/* Row 3: Platform toggles (central) */}
           {hasPlatformIcons && (lobsterAgents.length > 0 || codingAgents.length > 0) && (

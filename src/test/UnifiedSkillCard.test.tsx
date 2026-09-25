@@ -256,23 +256,51 @@ describe("UnifiedSkillCard shared control", () => {
     expect(sharedSwitch).toBeChecked();
   });
 
-  it("keeps the supported individual toggle in a secondary menu", () => {
+  it("shows the individual toggle before the shared control", () => {
     const { onToggleShared, onIndividualToggle } = renderShared(false);
-
-    const menu = screen.getByText("单个平台控制").closest("details");
-    expect(menu).not.toBeNull();
-    expect(menu).not.toHaveAttribute("open");
-    fireEvent.click(screen.getByText("单个平台控制"));
-    expect(menu).toHaveAttribute("open");
-
     const individual = screen.getByRole("switch", {
       name: "仅在 Claude Code 切换 demo-skill",
     });
-    expect(individual).toBeChecked();
+    const shared = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
+    expect(screen.getByText("允许在 Claude Code 中使用")).toBeInTheDocument();
+    expect(individual.compareDocumentPosition(shared) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(individual);
-
     expect(onIndividualToggle).toHaveBeenCalledWith(false);
     expect(onToggleShared).not.toHaveBeenCalled();
+  });
+
+  it("shared installation has one management action and keeps its source in details", () => {
+    const onManageUniversal = vi.fn();
+    render(<UnifiedSkillCard name="demo-skill" sourceType="symlink" isUniversalSource
+      onManageUniversal={onManageUniversal} sharedControl={{ impact: sharedImpact, excludedHere: false, onToggleShared: vi.fn() }} />);
+    expect(screen.getAllByRole("button", { name: "管理共享安装" })).toHaveLength(1);
+    expect(screen.getByText("多个平台共用的安装")).toBeInTheDocument();
+    const details = screen.getByText("来源与安装信息").closest("details");
+    expect(details).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("来源与安装信息"));
+    expect(details).toHaveAttribute("open");
+    expect(screen.getByText("技能仓库")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "管理共享安装" }));
+    expect(onManageUniversal).toHaveBeenCalledOnce();
+  });
+
+  it("platform removal is named and requires a second click", () => {
+    const onUninstall = vi.fn();
+    render(<UnifiedSkillCard name="demo-skill" platformDisplayName="Claude Code"
+      onUninstallFromPlatform={onUninstall} uninstallFromLabel="Claude Code에서 설치 삭제"
+      uninstallConfirmLabel="Claude Code 설치 삭제 확인" />);
+    const menu = screen.getByLabelText("demo-skill 的操作").closest("details");
+    expect(menu).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByLabelText("demo-skill 的操作"));
+    expect(menu).toHaveAttribute("open");
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code에서 설치 삭제" }));
+    expect(onUninstall).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(onUninstall).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code에서 설치 삭제" }));
+    fireEvent.click(screen.getByRole("button", { name: "Claude Code 설치 삭제 확인" }));
+    expect(onUninstall).toHaveBeenCalledOnce();
+    expect(menu).not.toHaveAttribute("open");
   });
 
   it("disables the shared switch and shows the reason when restricted", () => {
@@ -290,6 +318,7 @@ describe("UnifiedSkillCard shared control", () => {
     );
 
     const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
+    expect(screen.getByText("无法单独切换此平台")).toBeInTheDocument();
     expect(
       sharedSwitch.getAttribute("data-disabled") !== null ||
         sharedSwitch.getAttribute("aria-disabled") === "true"
