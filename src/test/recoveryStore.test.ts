@@ -99,4 +99,10 @@ describe("recoveryStore", () => {
     expect(useRecoveryStore.getState().error).toContain("restore conflict");
     expect(useRecoveryStore.getState().restoringEntryId).toBeNull();
   });
+  it("백업 폴더는 백엔드가 확인한 경로로 연다", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("/data/recovery/database").mockResolvedValueOnce(undefined);
+    await useRecoveryStore.getState().openDatabaseBackupFolder();
+    expect(invoke).toHaveBeenNthCalledWith(1, "get_database_backup_directory");
+    expect(invoke).toHaveBeenNthCalledWith(2, "open_in_file_manager", { path: "/data/recovery/database" });
+  });
 });

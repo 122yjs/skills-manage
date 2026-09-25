@@ -151,6 +151,9 @@ pub async fn create_pool(db_path: &str) -> Result<DbPool, String> {
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
+/// 테이블이나 열을 변경할 때 함께 올려서 변경 직전 백업을 남긴다.
+pub const DATABASE_SCHEMA_VERSION: i64 = 1;
+
 /// Initialize all database tables (idempotent) and seed built-in agents.
 pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     // Enable WAL mode (no-op for in-memory databases)
@@ -645,6 +648,18 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
 
     // Seed built-in skill registries (marketplace sources)
     seed_builtin_registries(pool).await?;
+
+    // 초기화에 성공한 뒤에만 버전을 기록해 실패한 변경의 백업을 보존한다.
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if version < DATABASE_SCHEMA_VERSION {
+        sqlx::query(&format!("PRAGMA user_version = {DATABASE_SCHEMA_VERSION}"))
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }

@@ -1,6 +1,10 @@
 export const recoveryResources = {
   ko: {
     recovery: {
+      databaseCount: "DB 백업 {{count}}개",
+      openFolder: "폴더 열기",
+      fileRecoveryCount: "설치 백업 및 휴지통 {{count}}개",
+      details: "상세 정보",
       title: "백업 및 휴지통",
       description: "제거하기 전 보존한 파일과 데이터베이스 백업을 확인하고 관리합니다.",
       createDatabaseBackup: "데이터베이스 백업 만들기",
@@ -29,6 +33,10 @@ export const recoveryResources = {
   },
   en: {
     recovery: {
+      databaseCount: "{{count}} database backups",
+      openFolder: "Open folder",
+      fileRecoveryCount: "Installation backups and trash ({{count}})",
+      details: "Details",
       title: "Backups and Trash",
       description: "Review and manage files preserved before removal and database backups.",
       createDatabaseBackup: "Create database backup",
@@ -57,6 +65,10 @@ export const recoveryResources = {
   },
   zh: {
     recovery: {
+      databaseCount: "数据库备份 {{count}} 个",
+      openFolder: "打开文件夹",
+      fileRecoveryCount: "安装备份和回收站（{{count}} 项）",
+      details: "详细信息",
       title: "备份与回收站",
       description: "查看和管理移除前保留的文件及数据库备份。",
       createDatabaseBackup: "创建数据库备份",

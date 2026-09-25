@@ -30,9 +30,9 @@ pub fn run() {
                     .expect("Failed to open SQLite database")
             });
             tauri::async_runtime::block_on(async {
-                commands::recovery::snapshot_before_startup(&pool)
+                commands::recovery::snapshot_before_schema_change(&pool)
                     .await
-                    .expect("Failed to back up the database before initialization");
+                    .expect("Failed to back up the database before schema changes");
                 db::init_database(&pool)
                     .await
                     .expect("Failed to initialize database schema");
@@ -127,6 +127,7 @@ pub fn run() {
             commands::settings::get_setting,
             commands::settings::set_setting,
             commands::recovery::list_recovery_entries,
+            commands::recovery::get_database_backup_directory,
             commands::recovery::restore_recovery_entry,
             commands::recovery::delete_recovery_entry,
             commands::recovery::create_database_backup,

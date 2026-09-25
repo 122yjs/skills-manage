@@ -19,14 +19,15 @@
 ## 데이터베이스 백업
 
 - SQLite의 일관된 스냅샷 기능을 이용해 기록되지 않은 WAL 변경도 포함한다. 실행 중인 db.sqlite 파일만 단순 복사하지 않는다.
-- 기존 DB 초기화 전, 보관함 삭제 및 위치 이동 전에 스냅샷을 만든다. 새 빈 DB와 메모리 테스트 DB는 실제 사용자 폴더를 건드리지 않는다.
+- DB 구조 버전 변경 전, 보관함 삭제 및 위치 이동 전에 스냅샷을 만든다. 새 빈 DB와 메모리 테스트 DB는 실제 사용자 폴더를 건드리지 않는다.
 - 설정에서 수동 DB 백업과 백업 위치 열기를 제공한다. DB 전체 복원은 앱을 종료한 상태에서 진행하는 수동 작업으로 명시한다.
 - DB 백업은 파일 휴지통과 구분하여 자동 만료하지 않는다.
 
 ## UI와 IPC 계약
 
-설정에 백업 및 휴지통을 추가한다. 목록 항목은 id, kind(copy_backup / vault_trash / database), label, original_path, created_at, expires_at(없으면 null), backup_path를 포함한다.
+설정의 DB 백업은 개수와 폴더 열기·수동 백업 버튼을 한 줄로 표시한다. 설치 백업과 휴지통은 별도 접는 목록에서 복원한다. 내부 복구 항목은 id, kind(copy_backup / vault_trash / database), label, original_path, created_at, expires_at(없으면 null), backup_path를 포함한다.
 
+- get_database_backup_directory() -> string: 백업이 없어도 실제 DB 옆의 폴더를 생성하고 경로를 반환한다.
 - list_recovery_entries() -> RecoveryEntry[]
 - restore_recovery_entry({ id }) -> void: 파일 항목만 복원한다.
 - delete_recovery_entry({ id }) -> void: 확인 후 영구 삭제한다.

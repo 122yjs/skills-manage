@@ -6,6 +6,7 @@ import type { RecoveryEntry } from "@/types/recovery";
 interface RecoveryState {
   entries: RecoveryEntry[];
   isLoading: boolean;
+  openDatabaseBackupFolder: () => Promise<void>;
   isCreatingDatabaseBackup: boolean;
   restoringEntryId: string | null;
   deletingEntryId: string | null;
@@ -84,6 +85,16 @@ export const useRecoveryStore = create<RecoveryState>((set, get) => ({
       return entry;
     } catch (error) {
       set({ error: String(error), isCreatingDatabaseBackup: false });
+      throw error;
+    }
+  },
+
+  openDatabaseBackupFolder: async () => {
+    try {
+      const path = await invoke<string>("get_database_backup_directory");
+      await invoke("open_in_file_manager", { path });
+    } catch (error) {
+      set({ error: String(error) });
       throw error;
     }
   },

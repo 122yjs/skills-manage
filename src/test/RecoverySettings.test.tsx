@@ -42,6 +42,7 @@ function setup({
   deleteEntry = vi.fn().mockResolvedValue(undefined),
   createDatabaseBackup = vi.fn().mockResolvedValue(databaseEntry),
   openBackupLocation = vi.fn().mockResolvedValue(undefined),
+  openDatabaseBackupFolder = vi.fn().mockResolvedValue(undefined),
   rescan = vi.fn().mockResolvedValue(undefined),
   loadCentralSkills = vi.fn().mockResolvedValue(undefined),
   error = null as string | null,
@@ -49,6 +50,7 @@ function setup({
   vi.mocked(useRecoveryStore).mockImplementation((selector) => selector({
     entries,
     isLoading: false,
+    openDatabaseBackupFolder,
     isCreatingDatabaseBackup: false,
     restoringEntryId: null,
     deletingEntryId: null,
@@ -61,7 +63,7 @@ function setup({
   }));
   vi.mocked(usePlatformStore).mockImplementation((selector) => selector({ rescan } as never));
   vi.mocked(useCentralSkillsStore).mockImplementation((selector) => selector({ loadCentralSkills } as never));
-  return { loadEntries, restoreEntry, deleteEntry, createDatabaseBackup, openBackupLocation, rescan, loadCentralSkills };
+  return { openDatabaseBackupFolder, loadEntries, restoreEntry, deleteEntry, createDatabaseBackup, openBackupLocation, rescan, loadCentralSkills };
 }
 
 describe("RecoverySettings", () => {
@@ -70,6 +72,7 @@ describe("RecoverySettings", () => {
   it("loads entries when displayed and renders file metadata", () => {
     const { loadEntries } = setup();
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     expect(loadEntries).toHaveBeenCalled();
     expect(screen.getByText("review skill")).toBeTruthy();
@@ -84,6 +87,7 @@ describe("RecoverySettings", () => {
     const loadCentralSkills = vi.fn().mockImplementation(async () => { calls.push("central"); });
     setup({ restoreEntry, rescan, loadCentralSkills });
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     fireEvent.click(screen.getByRole("button", { name: "恢复文件" }));
 
@@ -93,6 +97,7 @@ describe("RecoverySettings", () => {
   it("does not offer automatic restoration for a database backup", () => {
     setup();
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     expect(screen.getAllByRole("button", { name: "恢复文件" })).toHaveLength(1);
     expect(screen.getByText(/请在退出应用后手动恢复数据库备份/)).toBeTruthy();
@@ -101,6 +106,7 @@ describe("RecoverySettings", () => {
   it("requires a second click before permanent deletion", async () => {
     const { deleteEntry } = setup();
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     fireEvent.click(screen.getAllByRole("button", { name: "永久删除" })[0]);
     expect(deleteEntry).not.toHaveBeenCalled();
@@ -112,6 +118,7 @@ describe("RecoverySettings", () => {
   it("creates a manual database backup", async () => {
     const { createDatabaseBackup } = setup();
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     fireEvent.click(screen.getByRole("button", { name: "创建数据库备份" }));
 
@@ -121,6 +128,7 @@ describe("RecoverySettings", () => {
   it("opens the backup location", async () => {
     const { openBackupLocation } = setup();
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     fireEvent.click(screen.getAllByRole("button", { name: "打开位置" })[0]);
 
@@ -131,7 +139,27 @@ describe("RecoverySettings", () => {
     const loadEntries = vi.fn().mockRejectedValue(new Error("recovery list unavailable"));
     setup({ entries: [], loadEntries, error: "recovery list unavailable" });
     render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
 
     expect(screen.getByRole("alert")).toHaveTextContent("recovery list unavailable");
+  });
+  it("백업이 많아도 개별 목록 대신 한 줄 요약과 폴더 버튼을 표시한다", () => {
+    const entries = Array.from({ length: 85 }, (_, i) => ({ ...databaseEntry, id: `db-${i}`, label: `backup-${i}` }));
+    setup({ entries });
+    render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
+    expect(screen.getByText("数据库备份 85 个")).toBeInTheDocument();
+    expect(screen.queryByText("backup-0")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开文件夹" })).toBeEnabled();
+  });
+
+  it("백업이 없어도 폴더 열기를 사용할 수 있다", async () => {
+    const { openDatabaseBackupFolder } = setup({ entries: [] });
+    render(<RecoverySettings />);
+    fireEvent.click(screen.getByText(/安装备份和回收站（/));
+    fireEvent.click(screen.getByRole("button", { name: "打开文件夹" }));
+    await waitFor(() => expect(openDatabaseBackupFolder).toHaveBeenCalledOnce());
   });
 });

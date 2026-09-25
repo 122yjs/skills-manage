@@ -206,6 +206,41 @@ fn entry_data_path(layout: &RecoveryLayout, kind: &str, id: &str) -> Result<Path
     }
 }
 
+/// 새 백업은 날짜와 이유를 파일명에 담고 기존 UUID 파일도 계속 읽는다.
+fn named_database_path(layout: &RecoveryLayout, entry: &RecoveryEntry) -> Result<PathBuf, String> {
+    let created = DateTime::parse_from_rfc3339(&entry.created_at)
+        .map_err(|_| "백업 생성 시각이 유효하지 않습니다".to_string())?;
+    let label: String = entry
+        .label
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(60)
+        .collect();
+    Ok(layout.database.join(format!(
+        "{}_{}_{}.sqlite",
+        created.with_timezone(&Utc).format("%Y-%m-%d_%H-%M-%S_UTC"),
+        label,
+        entry.id
+    )))
+}
+
+fn saved_entry_path(layout: &RecoveryLayout, entry: &RecoveryEntry) -> Result<PathBuf, String> {
+    let legacy = entry_data_path(layout, &entry.kind, &entry.id)?;
+    let saved = PathBuf::from(&entry.backup_path);
+    let allowed = saved == legacy
+        || (entry.kind == DATABASE_BACKUP && saved == named_database_path(layout, entry)?);
+    if !allowed || !is_path_inside(&saved, &layout.root) {
+        return Err("복구 정보의 백업 경로가 유효하지 않습니다".to_string());
+    }
+    Ok(saved)
+}
+
 fn manifest_path(layout: &RecoveryLayout, id: &str) -> Result<PathBuf, String> {
     if !valid_entry_id(id) {
         return Err("유효하지 않은 복구 항목 ID입니다".to_string());
@@ -512,11 +547,7 @@ fn validate_manifest(
     if !valid_entry_id(&entry.id) || !valid_kind(&entry.kind) || entry.label.trim().is_empty() {
         return Err("복구 정보가 유효하지 않습니다".to_string());
     }
-    let expected_backup = entry_data_path(layout, &entry.kind, &entry.id)?;
-    let saved_backup = PathBuf::from(&entry.backup_path);
-    if saved_backup != expected_backup || !is_path_inside(&expected_backup, &layout.root) {
-        return Err("복구 정보의 백업 경로가 유효하지 않습니다".to_string());
-    }
+    saved_entry_path(layout, entry)?;
     let original = Path::new(&entry.original_path);
     if !original.is_absolute()
         || original
@@ -572,7 +603,7 @@ fn read_manifest(layout: &RecoveryLayout, id: &str) -> Result<RecoveryManifest, 
 }
 
 fn backup_data_exists(layout: &RecoveryLayout, manifest: &RecoveryManifest) -> bool {
-    entry_data_path(layout, &manifest.entry.kind, &manifest.entry.id)
+    saved_entry_path(layout, &manifest.entry)
         .ok()
         .and_then(|path| fs::symlink_metadata(path).ok())
         .is_some()
@@ -593,7 +624,7 @@ fn delete_manifest_entry(
     layout: &RecoveryLayout,
     manifest: &RecoveryManifest,
 ) -> Result<(), String> {
-    let backup_path = entry_data_path(layout, &manifest.entry.kind, &manifest.entry.id)?;
+    let backup_path = saved_entry_path(layout, &manifest.entry)?;
     let manifest_path = manifest_path(layout, &manifest.entry.id)?;
     remove_path_without_following_links(&backup_path)?;
     fs::remove_file(&manifest_path)
@@ -838,7 +869,17 @@ async fn snapshot_database_locked(
         .await?
         .ok_or_else(|| "메모리 데이터베이스는 파일 백업을 만들 수 없습니다".to_string())?;
     let id = Uuid::new_v4().to_string();
-    let data_path = entry_data_path(layout, DATABASE_BACKUP, &id)?;
+    let mut entry = RecoveryEntry {
+        id: id.clone(),
+        kind: DATABASE_BACKUP.to_string(),
+        label: label.to_string(),
+        original_path: database_path.to_string_lossy().into_owned(),
+        created_at: Utc::now().to_rfc3339(),
+        expires_at: None,
+        backup_path: String::new(),
+    };
+    let data_path = named_database_path(layout, &entry)?;
+    entry.backup_path = data_path.to_string_lossy().into_owned();
     let stage = layout.database.join(format!(".{id}.partial.sqlite"));
     if fs::symlink_metadata(&data_path).is_ok() || fs::symlink_metadata(&stage).is_ok() {
         return Err("같은 복구 항목 ID가 이미 있습니다".to_string());
@@ -867,15 +908,6 @@ async fn snapshot_database_locked(
         return Err(format!("데이터베이스 스냅샷을 완성할 수 없습니다: {error}"));
     }
 
-    let entry = RecoveryEntry {
-        id,
-        kind: DATABASE_BACKUP.to_string(),
-        label: label.to_string(),
-        original_path: database_path.to_string_lossy().into_owned(),
-        created_at: Utc::now().to_rfc3339(),
-        expires_at: None,
-        backup_path: data_path.to_string_lossy().into_owned(),
-    };
     let manifest = RecoveryManifest {
         entry: entry.clone(),
         copy_installation: None,
@@ -901,8 +933,15 @@ pub async fn snapshot_database(
         .map(Some)
 }
 
-/// 기존 DB가 있을 때만 앱 초기화 전에 스냅샷을 남깁니다.
-pub async fn snapshot_before_startup(pool: &DbPool) -> Result<(), String> {
+/// 기존 DB의 구조 버전이 바뀌는 경우에만 초기화 전에 백업한다.
+pub async fn snapshot_before_schema_change(pool: &DbPool) -> Result<(), String> {
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if version >= db::DATABASE_SCHEMA_VERSION {
+        return Ok(());
+    }
     let _guard = recovery_lock().await;
     let Some(layout) = recovery_layout(pool).await? else {
         return Ok(());
@@ -918,9 +957,19 @@ pub async fn snapshot_before_startup(pool: &DbPool) -> Result<(), String> {
     .map_err(|error| format!("기존 데이터베이스 상태를 확인할 수 없습니다: {error}"))?
         != 0;
     if has_user_table {
-        snapshot_database_locked(pool, &layout, "앱 시작 전 데이터베이스 백업").await?;
+        snapshot_database_locked(pool, &layout, "데이터 구조 변경 전 백업").await?;
     }
     Ok(())
+}
+
+/// 백업이 없어도 실제 DB 옆의 백업 폴더를 만들어 열 수 있게 한다.
+#[tauri::command]
+pub async fn get_database_backup_directory(state: State<'_, AppState>) -> Result<String, String> {
+    let _guard = recovery_lock().await;
+    let layout = recovery_layout(&state.db)
+        .await?
+        .ok_or_else(|| "메모리 데이터베이스에는 백업 폴더가 없습니다".to_string())?;
+    Ok(layout.database.to_string_lossy().into_owned())
 }
 
 pub async fn list_recovery_entries_impl(pool: &DbPool) -> Result<Vec<RecoveryEntry>, String> {
@@ -1146,6 +1195,74 @@ mod tests {
             Some("saved".to_string())
         );
         assert!(recovery_root(&temp).join("manifests").exists());
+    }
+
+    #[tokio::test]
+    async fn normal_startup_does_not_create_database_backups() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_database(&temp).await;
+        snapshot_before_schema_change(&pool).await.unwrap();
+        snapshot_before_schema_change(&pool).await.unwrap();
+        assert!(list_recovery_entries_impl(&pool).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn schema_change_preserves_old_data_once() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_database(&temp).await;
+        db::set_setting(&pool, "before_migration", "preserved")
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA user_version = 0")
+            .execute(&pool)
+            .await
+            .unwrap();
+        snapshot_before_schema_change(&pool).await.unwrap();
+        db::init_database(&pool).await.unwrap();
+        snapshot_before_schema_change(&pool).await.unwrap();
+        let entries = list_recovery_entries_impl(&pool).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].backup_path.contains("데이터_구조_변경_전_백업"));
+        let backup = SqlitePool::connect(&format!("sqlite://{}?mode=ro", entries[0].backup_path))
+            .await
+            .unwrap();
+        assert_eq!(
+            db::get_setting(&backup, "before_migration")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("preserved")
+        );
+        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&backup)
+            .await
+            .unwrap();
+        assert_eq!(version, 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_and_named_database_backups_remain_readable_and_deletable() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_database(&temp).await;
+        let entry = create_database_backup_impl(&pool).await.unwrap();
+        let layout = recovery_layout(&pool).await.unwrap().unwrap();
+        let mut manifest = read_manifest(&layout, &entry.id).unwrap();
+        let legacy = entry_data_path(&layout, DATABASE_BACKUP, &entry.id).unwrap();
+        fs::rename(&entry.backup_path, &legacy).unwrap();
+        manifest.entry.backup_path = legacy.to_string_lossy().into_owned();
+        fs::write(
+            manifest_path(&layout, &entry.id).unwrap(),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let named = create_database_backup_impl(&pool).await.unwrap();
+        assert!(named.backup_path.contains("데이터베이스_수동_백업"));
+        assert_eq!(list_recovery_entries_impl(&pool).await.unwrap().len(), 2);
+        delete_recovery_entry_impl(&pool, &entry.id).await.unwrap();
+        delete_recovery_entry_impl(&pool, &named.id).await.unwrap();
+        assert!(!legacy.exists());
+        assert!(!Path::new(&named.backup_path).exists());
+        assert!(list_recovery_entries_impl(&pool).await.unwrap().is_empty());
     }
 
     #[tokio::test]
