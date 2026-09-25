@@ -1082,7 +1082,7 @@ async fn search_public_origin_candidates(
 ) -> Vec<SkillOriginCandidate> {
     let auth = github_import::github_direct_auth_from_settings(pool).await.ok().flatten();
     let Ok(client) = reqwest::Client::builder()
-        .user_agent("skills-manage/0.11.0")
+        .user_agent("skills-manage/0.12.0")
         .timeout(std::time::Duration::from_secs(12))
         .build() else { return Vec::new(); };
     let Ok(mut url) = reqwest::Url::parse("https://api.github.com/search/repositories") else { return Vec::new(); };
