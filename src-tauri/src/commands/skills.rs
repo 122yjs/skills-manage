@@ -3563,6 +3563,7 @@ mod tests {
             .is_none());
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn bundle_delete_of_a_symlinked_bundle_keeps_surviving_origin_bindings() {
         let tmp = TempDir::new().unwrap();
