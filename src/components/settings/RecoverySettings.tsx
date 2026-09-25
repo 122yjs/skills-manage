@@ -177,7 +177,7 @@ export function RecoverySettings() {
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2">
           <span className="text-sm" aria-live="polite">
-            {isLoading ? t("common.loading") : t("recovery.databaseCount", { count: databaseCount })}
+            {isLoading ? t("recovery.loading") : t("recovery.databaseCount", { count: databaseCount })}
           </span>
           <div className="flex items-center gap-2">
             <Button type="button" variant="outline" size="sm" onClick={handleOpenDatabaseFolder} disabled={isBusy}>

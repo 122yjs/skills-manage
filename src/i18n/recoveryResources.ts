@@ -1,6 +1,7 @@
 export const recoveryResources = {
   ko: {
     recovery: {
+      loading: "백업 정보를 불러오는 중...",
       databaseCount: "DB 백업 {{count}}개",
       openFolder: "폴더 열기",
       fileRecoveryCount: "설치 백업 및 휴지통 {{count}}개",
@@ -33,6 +34,7 @@ export const recoveryResources = {
   },
   en: {
     recovery: {
+      loading: "Loading backup information...",
       databaseCount: "{{count}} database backups",
       openFolder: "Open folder",
       fileRecoveryCount: "Installation backups and trash ({{count}})",
@@ -65,6 +67,7 @@ export const recoveryResources = {
   },
   zh: {
     recovery: {
+      loading: "正在加载备份信息...",
       databaseCount: "数据库备份 {{count}} 个",
       openFolder: "打开文件夹",
       fileRecoveryCount: "安装备份和回收站（{{count}} 项）",
