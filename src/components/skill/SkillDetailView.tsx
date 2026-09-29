@@ -956,31 +956,18 @@ export function SkillDetailView({
   async function handleUpdateOrigin() {
     if (!detailRequest) return;
     try {
-      let plan;
-      let localChangesConfirmed = false;
-      try {
-        plan = await prepareUpdate(detailRequest, false);
-      } catch (err) {
-        if (!String(err).includes("LOCAL_CHANGES_REQUIRE_CONFIRMATION")) throw err;
-        const confirmed = window.confirm(
-          "Local changes were detected. Preparing a replacement will preserve the current skill in Recovery, but the active copy will be replaced. Continue to review the exact update?"
-        );
-        if (!confirmed) return;
-        localChangesConfirmed = true;
-        plan = await prepareUpdate(detailRequest, true);
-      }
-
+      // 준비는 파일을 바꾸지 않는다. 변경 내역과 백업 안내를 한 번에 확인한다.
+      const plan = await prepareUpdate(detailRequest, true);
       const reviewMessage = [
-        `Apply GitHub commit ${plan.remoteCommitOid.slice(0, 12)}?`,
+        t("skillOrigin.confirmUpdate", { commit: plan.remoteCommitOid.slice(0, 12) }),
         "",
-        `Files added: ${plan.changes.added}`,
-        `Files modified: ${plan.changes.modified}`,
-        `Files removed: ${plan.changes.removed}`,
+        t("skillOrigin.updateChanges", { added: plan.changes.added, modified: plan.changes.modified, removed: plan.changes.removed }),
         "",
-        plan.requiresLocalChangeConfirmation || localChangesConfirmed
-          ? "Local changes exist. The current directory will be backed up before replacement."
-          : "The current directory will be backed up before replacement.",
-      ].join("\n");
+        plan.state === "unknown_baseline"
+          ? t("skillOrigin.updateUnknownVersion")
+          : plan.requiresLocalChangeConfirmation ? t("skillOrigin.updateLocalChanges") : "",
+        t("skillOrigin.updateBackupNotice"),
+      ].filter(Boolean).join("\n");
       if (!window.confirm(reviewMessage)) return;
 
       await applyUpdate(plan.operationId);
@@ -988,7 +975,7 @@ export function SkillDetailView({
       await checkOrigin(detailRequest);
       await refreshCounts();
       await onInstallationsChange?.();
-      toast.success(`Updated to ${plan.remoteCommitOid.slice(0, 7)}. A recovery backup was created.`);
+      toast.success(t("skillOrigin.updateComplete", { commit: plan.remoteCommitOid.slice(0, 7) }));
     } catch (err) {
       toast.error(String(err));
     }
@@ -1493,6 +1480,19 @@ export function SkillDetailView({
                                 </div>
                               )}
                             </div>
+
+                            {origin.discoveryEvidence && (
+                              <div className="rounded-md border border-border p-2 text-[11px] space-y-1">
+                                <p className="font-medium">{t("skillOrigin.inferredTitle")}</p>
+                                <p>{t("skillOrigin.inferredDescription")}</p>
+                                <p className="break-all">{t("skillOrigin.evidenceDocument", { path: origin.discoveryEvidence.repositoryDocument })}</p>
+                                <p>{t("skillOrigin.evidenceContent", {
+                                  files: origin.discoveryEvidence.matchedFiles.length,
+                                  paragraphs: origin.discoveryEvidence.matchedParagraphs,
+                                  characters: origin.discoveryEvidence.matchedCharacters,
+                                })}</p>
+                              </div>
+                            )}
 
                             {originStatus && (
                               <div className="rounded-md border border-border bg-background/60 p-2 space-y-1 text-[11px]">

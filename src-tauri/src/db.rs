@@ -152,7 +152,7 @@ pub async fn create_pool(db_path: &str) -> Result<DbPool, String> {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 /// 테이블이나 열을 변경할 때 함께 올려서 변경 직전 백업을 남긴다.
-pub const DATABASE_SCHEMA_VERSION: i64 = 1;
+pub const DATABASE_SCHEMA_VERSION: i64 = 2;
 
 /// Initialize all database tables (idempotent) and seed built-in agents.
 pub async fn init_database(pool: &DbPool) -> Result<(), String> {
@@ -535,6 +535,11 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    ensure_column(
+        pool, "skill_origins", "discovery_evidence_json",
+        "ALTER TABLE skill_origins ADD COLUMN discovery_evidence_json TEXT",
+    ).await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS skill_origin_ignores (

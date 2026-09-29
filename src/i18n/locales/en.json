@@ -241,6 +241,16 @@
     }
   },
   "skillOrigin": {
+    "confirmUpdate": "Back up and update to {{commit}}?",
+    "updateChanges": "Added {{added}} · Modified {{modified}} · Removed {{removed}}",
+    "updateUnknownVersion": "The installed version is unknown. Replace it with the selected source version.",
+    "updateLocalChanges": "Local edits will also be replaced.",
+    "updateBackupNotice": "The full files and executable permissions will be backed up and verified before replacement. Failed replacement restores the old files. Backups remain available in Settings recovery.",
+    "updateComplete": "Updated to {{commit}}. Previous files are saved in recovery.",
+    "inferredTitle": "Origin linked using multiple pieces of evidence",
+    "inferredDescription": "The documented repository, skill name and description, and unique content match. This does not confirm the installed version.",
+    "evidenceDocument": "Repository clue: {{path}}",
+    "evidenceContent": "Matching files: {{files}} · Body: {{paragraphs}} text segments, {{characters}} characters",
     "updateAvailable": "Update available",
     "searching": "Looking for the GitHub source in installation records…",
     "candidateIntro": "Possible sources found. Check the path before linking.",
@@ -251,7 +261,8 @@
       "catalog_name": "Same name in marketplace catalog",
       "public_search": "Same name in GitHub search",
       "content_match": "Identical SKILL.md contents",
-      "name_description": "Same name and description"
+      "name_description": "Same name and description",
+      "multiple_evidence": "Documented repository, identity and unique content match"
     },
     "openFailed": "Could not open the GitHub source. Please try again.",
     "viewSource": "Open source on GitHub",
@@ -451,6 +462,8 @@
   },
   "central": {
     "title": "Skill Library",
+    "noAutoInstall": "Not automatically installed on platforms",
+    "storageHint": "Not automatically installed on platforms · This library stores originals. Install a skill on the platforms you want to use.",
     "path": "~/.skillsmanage/skills/",
     "searchPlaceholder": "Search the Skill Library...",
     "loading": "Loading skills...",

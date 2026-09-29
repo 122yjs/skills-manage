@@ -201,7 +201,7 @@ describe("AppShell", () => {
     }
   );
 
-  it("데스크톱 시작 시 연결된 원본을 확인하고 중앙 목록을 새로 읽는다", async () => {
+  it("데스크톱 시작 시 연결된 원본을 확인하고 중앙 목록·열린 모음집을 새로 읽는다", async () => {
     mockIsTauriRuntime.mockReturnValue(true);
     const loadCentralSkills = vi.fn().mockResolvedValue(undefined);
     mockUseCentralSkillsStore.mockImplementation((selector?: unknown) => {
@@ -213,6 +213,7 @@ describe("AppShell", () => {
 
     await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("check_linked_skill_origins"));
     await waitFor(() => expect(loadCentralSkills).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalledWith("get_skill_groups"));
     expect(mockUsePlatformStore.setState).toHaveBeenCalled();
   });
 

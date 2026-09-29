@@ -770,6 +770,7 @@ export function CentralSkillsView() {
               <RefreshCw className={`size-4 ${isLoading ? "animate-spin" : ""}`} />
             </Button>
           </div>
+          <p className="mt-1 text-sm text-muted-foreground">{t("central.storageHint")}</p>
           <p className="truncate text-xs text-muted-foreground mt-0.5" title={centralSkillsDir}>
             {centralSkillsDir}
           </p>
