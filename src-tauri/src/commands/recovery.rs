@@ -12,6 +12,7 @@ use crate::db::{self, DbPool, PausedInstallation, SkillInstallation};
 use crate::AppState;
 
 const COPY_BACKUP: &str = "copy_backup";
+const ORIGIN_UPDATE_BACKUP: &str = "origin_update_backup";
 const VAULT_TRASH: &str = "vault_trash";
 const DATABASE_BACKUP: &str = "database";
 const RECOVERY_RETENTION_DAYS: i64 = 30;
@@ -56,7 +57,7 @@ fn valid_entry_id(id: &str) -> bool {
 }
 
 fn valid_kind(kind: &str) -> bool {
-    matches!(kind, COPY_BACKUP | VAULT_TRASH | DATABASE_BACKUP)
+    matches!(kind, COPY_BACKUP | ORIGIN_UPDATE_BACKUP | VAULT_TRASH | DATABASE_BACKUP)
 }
 
 fn safe_child_name(name: &str) -> bool {
@@ -199,7 +200,7 @@ fn entry_data_path(layout: &RecoveryLayout, kind: &str, id: &str) -> Result<Path
         return Err("유효하지 않은 복구 항목입니다".to_string());
     }
     match kind {
-        COPY_BACKUP => Ok(layout.copy_backups.join(id)),
+        COPY_BACKUP | ORIGIN_UPDATE_BACKUP => Ok(layout.copy_backups.join(id)),
         VAULT_TRASH => Ok(layout.vault_trash.join(id)),
         DATABASE_BACKUP => Ok(layout.database.join(format!("{id}.sqlite"))),
         _ => unreachable!(),
@@ -568,7 +569,7 @@ fn validate_manifest(
         DateTime::parse_from_rfc3339(expires_at)
             .map_err(|_| "파일 복구 정보의 만료 시각이 유효하지 않습니다".to_string())?;
     }
-    if entry.kind == COPY_BACKUP {
+    if matches!(entry.kind.as_str(), COPY_BACKUP | ORIGIN_UPDATE_BACKUP) {
         let installation = manifest
             .copy_installation
             .as_ref()
@@ -728,7 +729,7 @@ fn create_file_backup(
     Ok(entry)
 }
 
-async fn expected_managed_install_path(
+async fn expected_origin_update_path(
     pool: &DbPool,
     installation: &SkillInstallation,
 ) -> Result<PathBuf, String> {
@@ -745,6 +746,20 @@ async fn expected_managed_install_path(
     if !is_path_inside(&recorded, &agent_root) {
         return Err("복사 설치 경로가 플랫폼 폴더와 일치하지 않습니다".to_string());
     }
+    Ok(recorded)
+}
+
+async fn expected_managed_install_path(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+) -> Result<PathBuf, String> {
+    let recorded = expected_origin_update_path(pool, installation).await?;
+    let agent = db::get_agent_by_id(pool, &installation.agent_id)
+        .await?
+        .ok_or_else(|| format!("설치 플랫폼을 찾을 수 없습니다: {}", installation.agent_id))?;
+    let agent_root = PathBuf::from(&agent.global_skills_dir)
+        .canonicalize()
+        .map_err(|error| format!("설치 폴더를 확인할 수 없습니다: {error}"))?;
     if installation.link_type == "copy"
         && (!safe_child_name(&installation.skill_id)
             || recorded != agent_root.join(&installation.skill_id))
@@ -776,6 +791,27 @@ pub(crate) async fn managed_copy_for_target(
         }
     }
     Ok(None)
+}
+
+/// 앱이 관리하는 직접 설치와 달리, 중첩된 수동 복사본은 업데이트 백업에만 허용한다.
+pub async fn backup_origin_update_target(
+    pool: &DbPool,
+    skill_id: &str,
+    target: &Path,
+) -> Result<Option<RecoveryEntry>, String> {
+    let target = target.canonicalize().map_err(|error| error.to_string())?;
+    let installation = db::get_skill_installations(pool, skill_id).await?
+        .into_iter()
+        .find(|record| record.installed_path == target.to_string_lossy()
+            && matches!(record.link_type.as_str(), "copy" | "native"))
+        .ok_or_else(|| "업데이트할 실제 원본의 설치 기록을 찾을 수 없습니다".to_string())?;
+    if expected_origin_update_path(pool, &installation).await? != target {
+        return Err("업데이트 경로가 플랫폼 설치 기록과 일치하지 않습니다".into());
+    }
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else { return Ok(None); };
+    create_file_backup(&layout, ORIGIN_UPDATE_BACKUP,
+        format!("GitHub 업데이트 전 백업: {skill_id}"), &target, &target, Some(installation)).map(Some)
 }
 
 /// 복사 설치를 지우기 직전에 전체 내용을 보존합니다.
@@ -1051,7 +1087,11 @@ async fn restore_copy_target(
         .as_ref()
         .ok_or_else(|| "복사 설치 정보가 없습니다".to_string())?
         .clone();
-    let expected = expected_managed_install_path(pool, &installation).await?;
+    let expected = if manifest.entry.kind == ORIGIN_UPDATE_BACKUP {
+        expected_origin_update_path(pool, &installation).await?
+    } else {
+        expected_managed_install_path(pool, &installation).await?
+    };
     if expected.to_string_lossy() != manifest.entry.original_path {
         return Err("복사 설치 복원 경로가 유효하지 않습니다".to_string());
     }
@@ -1075,7 +1115,7 @@ async fn restore_vault_target(
 
 async fn manifest_target_is_allowed(pool: &DbPool, manifest: &RecoveryManifest) -> bool {
     match manifest.entry.kind.as_str() {
-        COPY_BACKUP => restore_copy_target(pool, manifest).await.is_ok(),
+        COPY_BACKUP | ORIGIN_UPDATE_BACKUP => restore_copy_target(pool, manifest).await.is_ok(),
         VAULT_TRASH => restore_vault_target(pool, manifest).await.is_ok(),
         DATABASE_BACKUP => true,
         _ => false,
@@ -1101,7 +1141,7 @@ pub async fn restore_recovery_entry_impl(pool: &DbPool, id: &str) -> Result<(), 
         .map_err(|error| format!("복구 파일을 찾을 수 없습니다: {error}"))?;
 
     let (target, installation) = match manifest.entry.kind.as_str() {
-        COPY_BACKUP => {
+        COPY_BACKUP | ORIGIN_UPDATE_BACKUP => {
             let (target, installation) = restore_copy_target(pool, &manifest).await?;
             (target, Some(installation))
         }

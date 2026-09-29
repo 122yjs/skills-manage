@@ -15,11 +15,13 @@ use crate::commands::{github_import, marketplace, recovery, scanner, skills};
 use crate::db::{self, DbPool};
 use crate::AppState;
 
+mod discovery;
 mod installation_records;
 use installation_records::RecordedOrigin;
 
 // 한 번의 전체 확인에서 같은 저장소를 여러 스킬 때문에 반복 다운로드하지 않는다.
-type RemoteCache = HashMap<(String, Option<String>), RemoteSnapshot>;
+type RemoteCache = HashMap<(String, Option<String>, bool), Result<RemoteSnapshot, String>>;
+type RepositoryHints = BTreeMap<String, Option<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +96,7 @@ struct SkillOriginRow {
     last_remote_manifest_json: Option<String>,
     last_error: Option<String>,
     binding_version: i64,
+    discovery_evidence_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -116,6 +119,7 @@ pub struct SkillOriginInfo {
     pub last_error: Option<String>,
     pub binding_version: i64,
     pub can_update: bool,
+    pub discovery_evidence: Option<discovery::OriginEvidence>,
 }
 
 /// 카드와 목록에 붙일 최소 GitHub 출처 요약입니다.
@@ -541,6 +545,8 @@ fn origin_info(origin: &SkillOriginRow, can_update: bool) -> SkillOriginInfo {
         last_error: origin.last_error.clone(),
         binding_version: origin.binding_version,
         can_update,
+        discovery_evidence: origin.discovery_evidence_json.as_deref()
+            .and_then(|json| serde_json::from_str(json).ok()),
     }
 }
 
@@ -627,7 +633,7 @@ pub async fn persist_imported_skill(
           last_applied_at=excluded.last_applied_at, last_checked_at=excluded.last_checked_at,
           last_remote_commit_oid=excluded.last_remote_commit_oid,
           last_remote_manifest_json=excluded.last_remote_manifest_json,
-          last_error=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at",
+          last_error=NULL, discovery_evidence_json=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at",
     )
     .bind(&binding_id)
     .bind(&target_key)
@@ -775,6 +781,18 @@ async fn fetch_remote_snapshot(
     source_path: &str,
     requested_ref: Option<&str>,
 ) -> Result<RemoteSnapshot, String> {
+    let mut remote = fetch_remote_repository(pool, repo_url, requested_ref, false).await?;
+    remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
+    remote.source_path = source_path.to_string();
+    Ok(remote)
+}
+
+async fn fetch_remote_repository(
+    pool: &DbPool,
+    repo_url: &str,
+    requested_ref: Option<&str>,
+    limited: bool,
+) -> Result<RemoteSnapshot, String> {
     let auth = github_import::github_direct_auth_from_settings(pool).await?;
     let mut repo = github_import::resolve_repo_ref(repo_url, auth.as_deref()).await?;
     let ref_name = requested_ref
@@ -837,28 +855,42 @@ async fn fetch_remote_snapshot(
 
     // 이후 비교와 적용은 사용자가 확인한 불변 커밋을 사용한다.
     repo.branch = commit_oid.clone();
-    let snapshot = github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?;
+    let snapshot = if limited {
+        github_import::download_repo_snapshot_for_origin(&client, &repo, auth.as_deref()).await?
+    } else {
+        github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?
+    };
     if let Ok(skills) = github_import::build_repo_skill_candidates_from_snapshot(&repo, &snapshot) {
         sqlx::query("INSERT INTO skill_repository_catalog (owner, repo, ref_name, skill_count) VALUES (?, ?, ?, ?) ON CONFLICT(owner, repo, ref_name) DO UPDATE SET skill_count = excluded.skill_count")
             .bind(repo.owner.to_lowercase()).bind(repo.repo.to_lowercase()).bind(&ref_name)
             .bind(skills.len() as i64).execute(pool).await.map_err(|error| error.to_string())?;
     }
-    let files = remote_files(&snapshot, source_path)?;
-    let manifest = manifest_from_files(&files);
     Ok(RemoteSnapshot {
         repository_id,
         owner: repo.owner,
         repo: repo.repo,
         ref_name,
         commit_oid,
-        source_path: if source_path.trim().is_empty() {
-            ".".into()
-        } else {
-            source_path.trim_matches('/').into()
-        },
+        source_path: ".".into(),
         snapshot: Arc::new(snapshot),
-        manifest,
+        manifest: SkillManifest::default(),
     })
+}
+
+async fn cached_remote_repository(
+    pool: &DbPool,
+    repo_url: &str,
+    ref_name: Option<&str>,
+    cache: &mut RemoteCache,
+    limited: bool,
+) -> Result<RemoteSnapshot, String> {
+    let key = (repo_url.to_string(), ref_name.map(str::to_string), limited);
+    if let Some(cached) = cache.get(&key) {
+        return cached.clone();
+    }
+    let remote = fetch_remote_repository(pool, repo_url, ref_name, limited).await;
+    cache.insert(key, remote.clone());
+    remote
 }
 
 async fn cached_remote_snapshot(
@@ -867,16 +899,11 @@ async fn cached_remote_snapshot(
     source_path: &str,
     ref_name: Option<&str>,
     cache: &mut RemoteCache,
+    limited: bool,
 ) -> Result<RemoteSnapshot, String> {
-    let key = (repo_url.to_string(), ref_name.map(str::to_string));
-    if let Some(cached) = cache.get(&key) {
-        let mut remote = cached.clone();
-        remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
-        remote.source_path = source_path.to_string();
-        return Ok(remote);
-    }
-    let remote = fetch_remote_snapshot(pool, repo_url, source_path, ref_name).await?;
-    cache.insert(key, remote.clone());
+    let mut remote = cached_remote_repository(pool, repo_url, ref_name, cache, limited).await?;
+    remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
+    remote.source_path = source_path.to_string();
     Ok(remote)
 }
 
@@ -923,6 +950,7 @@ async fn check_origin_with_cache(
         &origin.source_path,
         Some(&origin.ref_name),
         cache,
+        false,
     )
     .await
     {
@@ -1172,14 +1200,42 @@ async fn discover_skill_origin_impl(
     search_public: bool,
     cache: &mut RemoteCache,
 ) -> Result<SkillOriginDiscovery, String> {
+    let (_, repositories) = installed_origin_targets(pool).await?;
+    discover_skill_origin_with_repositories(pool, request, search_public, cache, &repositories).await
+}
+
+async fn discover_skill_origin_with_repositories(
+    pool: &DbPool,
+    request: &SkillTargetRequest,
+    search_public: bool,
+    cache: &mut RemoteCache,
+    shared_repositories: &RepositoryHints,
+) -> Result<SkillOriginDiscovery, String> {
     let target = resolve_target(pool, request).await?;
-    if target.is_read_only { return Ok(SkillOriginDiscovery { origin: None, candidates: vec![] }); }
-    if let Some(origin) = load_origin(pool, &target.target_key).await? {
-        return Ok(SkillOriginDiscovery { origin: Some(origin_info(&origin, true)), candidates: vec![] });
+    if target.is_read_only {
+        return Ok(SkillOriginDiscovery {
+            origin: None,
+            candidates: vec![],
+        });
     }
-    let ignored: Option<String> = sqlx::query_scalar("SELECT target_key FROM skill_origin_ignores WHERE target_key = ?")
-        .bind(&target.target_key).fetch_optional(pool).await.map_err(|error| error.to_string())?;
-    if ignored.is_some() { return Ok(SkillOriginDiscovery { origin: None, candidates: vec![] }); }
+    if let Some(origin) = load_origin(pool, &target.target_key).await? {
+        return Ok(SkillOriginDiscovery {
+            origin: Some(origin_info(&origin, true)),
+            candidates: vec![],
+        });
+    }
+    let ignored: Option<String> =
+        sqlx::query_scalar("SELECT target_key FROM skill_origin_ignores WHERE target_key = ?")
+            .bind(&target.target_key)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    if ignored.is_some() {
+        return Ok(SkillOriginDiscovery {
+            origin: None,
+            candidates: vec![],
+        });
+    }
     let skill = db::get_skill_by_id(pool, &target.skill_id).await?;
     let mut candidates = Vec::new();
     let mut source_candidates = Vec::new();
@@ -1228,15 +1284,56 @@ async fn discover_skill_origin_impl(
             &candidate.source_path,
             (!candidate.ref_name.is_empty()).then_some(candidate.ref_name.as_str()),
             cache,
+            true,
         )
         .await?;
-        let status = link_downloaded_origin(pool, &target, &remote, false).await?;
+        let status = link_downloaded_origin(pool, &target, &remote, false, None, None).await?;
         return Ok(SkillOriginDiscovery {
             origin: Some(status.origin),
             candidates: vec![],
         });
     }
     candidates.extend(source_candidates);
+
+    if records.is_empty() {
+        let mut local_files = BTreeMap::new();
+        collect_local_files(&target.target_path, &target.target_path, &mut local_files)?;
+        let local = manifest_from_files(&local_files);
+        let mut hints = shared_repositories.clone();
+        for (url, document) in discovery::repository_hints(&target.target_path) {
+            if document.is_some() || !hints.contains_key(&url) { hints.insert(url, document); }
+        }
+        // 설치 안내문의 저장소를 먼저 확인한다. 이름순 제한으로 출처 단서가 밀리지 않게 한다.
+        let mut repositories = hints.into_iter().collect::<Vec<_>>();
+        repositories.sort_by_key(|(url, document)| (document.is_none(), url.clone()));
+        let mut matches = Vec::new();
+        for (repo_url, document) in repositories.into_iter().take(10) {
+            let Ok(repository) = cached_remote_repository(pool, &repo_url, None, cache, true).await else { continue; };
+            let exact = discovery::exact_skill_paths(&repository.snapshot, &local);
+            let mut paths = exact.iter().map(|path| (path.clone(), None)).collect::<Vec<_>>();
+            if let Some(document) = &document {
+                paths.extend(discovery::modified_skill_paths(&repository.snapshot, &local_files, document)
+                    .into_iter().filter(|(path, _)| !exact.contains(path)).map(|(path, evidence)| (path, Some(evidence))));
+            }
+            for (source_path, evidence) in paths {
+                let mut remote = repository.clone();
+                remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, &source_path)?);
+                remote.source_path = source_path;
+                matches.push((remote, evidence));
+            }
+        }
+        if matches.len() == 1 {
+            let (remote, evidence) = &matches[0];
+            let status = link_downloaded_origin(pool, &target, remote, false, Some(&local), evidence.as_ref()).await?;
+            return Ok(SkillOriginDiscovery { origin: Some(status.origin), candidates: vec![] });
+        }
+        candidates.extend(matches.into_iter().map(|(remote, evidence)| SkillOriginCandidate {
+            repo_url: format!("https://github.com/{}/{}", remote.owner, remote.repo),
+            source_path: remote.source_path,
+            ref_name: remote.ref_name,
+            reason: if evidence.is_some() { "multiple_evidence" } else { "content_match" }.into(),
+        }));
+    }
 
     if let Some(skill) = &skill {
         let rows = sqlx::query(
@@ -1246,26 +1343,47 @@ async fn discover_skill_origin_impl(
             let url: String = row.get("download_url");
             if let Some((repo, source_path)) = marketplace::github_origin_from_raw_url(&url) {
                 let catalog_description: Option<String> = row.get("description");
-                let same_description = skill.description.as_deref()
+                let same_description = skill
+                    .description
+                    .as_deref()
                     .zip(catalog_description.as_deref())
                     .is_some_and(|(left, right)| left.trim().eq_ignore_ascii_case(right.trim()));
                 candidates.push(SkillOriginCandidate {
-                    repo_url: repo.normalized_url, source_path, ref_name: repo.branch,
-                    reason: if same_description { "name_description" } else { "catalog_name" }.to_string(),
+                    repo_url: repo.normalized_url,
+                    source_path,
+                    ref_name: repo.branch,
+                    reason: if same_description {
+                        "name_description"
+                    } else {
+                        "catalog_name"
+                    }
+                    .to_string(),
                 });
             }
         }
     }
     if search_public && candidates.is_empty() {
         if let Some(skill) = &skill {
-            candidates.extend(search_public_origin_candidates(
-                pool, &skill.id, &skill.name, skill.description.as_deref(),
-                &target.target_path.join("SKILL.md"),
-            ).await);
+            candidates.extend(
+                search_public_origin_candidates(
+                    pool,
+                    &skill.id,
+                    &skill.name,
+                    skill.description.as_deref(),
+                    &target.target_path.join("SKILL.md"),
+                )
+                .await,
+            );
         }
     }
     let mut seen = BTreeSet::new();
-    candidates.retain(|candidate| seen.insert((candidate.repo_url.clone(), candidate.source_path.clone(), candidate.ref_name.clone())));
+    candidates.retain(|candidate| {
+        seen.insert((
+            candidate.repo_url.clone(),
+            candidate.source_path.clone(),
+            candidate.ref_name.clone(),
+        ))
+    });
     candidates.sort_by_key(|candidate| match candidate.reason.as_str() {
         "content_match" => 0,
         "installation_record" => 1,
@@ -1274,7 +1392,10 @@ async fn discover_skill_origin_impl(
         _ => 4,
     });
     candidates.truncate(10);
-    Ok(SkillOriginDiscovery { origin: None, candidates })
+    Ok(SkillOriginDiscovery {
+        origin: None,
+        candidates,
+    })
 }
 
 #[tauri::command]
@@ -1303,7 +1424,7 @@ async fn link_origin_impl(
         ref_name,
     )
     .await?;
-    link_downloaded_origin(pool, target, &remote, true).await
+    link_downloaded_origin(pool, target, &remote, true, None, None).await
 }
 
 async fn link_downloaded_origin(
@@ -1311,6 +1432,8 @@ async fn link_downloaded_origin(
     target: &ResolvedSkillTarget,
     remote: &RemoteSnapshot,
     explicit: bool,
+    expected_local: Option<&SkillManifest>,
+    evidence: Option<&discovery::OriginEvidence>,
 ) -> Result<SkillOriginStatus, String> {
     let _guard = mutation_lock().await;
     if !explicit {
@@ -1332,6 +1455,18 @@ async fn link_downloaded_origin(
         }
     }
     let local = manifest_from_local_directory(&target.target_path)?;
+    if expected_local.is_some_and(|expected| *expected != local) {
+        return Err("Skill files changed during origin discovery".into());
+    }
+    if let Some(evidence) = evidence {
+        let document = Path::new(&evidence.repository_document);
+        let url = format!("https://github.com/{}/{}", remote.owner, remote.repo).to_lowercase();
+        if !document.parent().is_some_and(|directory| {
+            discovery::repository_hints(directory).get(&url).is_some_and(Option::is_some)
+        }) {
+            return Err("Repository evidence changed during origin discovery".into());
+        }
+    }
     let (baseline_state, base_commit_oid, base_manifest_json) = if local == remote.manifest {
         (
             "verified".to_string(),
@@ -1351,8 +1486,8 @@ async fn link_downloaded_origin(
          (binding_id, target_key, skill_id, agent_id, row_id, target_path, provider, repository_id,
           owner, repo, source_path, ref_name, baseline_state, base_commit_oid, base_manifest_json,
           last_checked_at, last_remote_commit_oid, last_remote_manifest_json, last_error,
-          binding_version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+          binding_version, created_at, updated_at, discovery_evidence_json)
+         VALUES (?, ?, ?, ?, ?, ?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)
          ON CONFLICT(target_key) DO UPDATE SET
           skill_id=excluded.skill_id, agent_id=excluded.agent_id, row_id=excluded.row_id,
           target_path=excluded.target_path, repository_id=excluded.repository_id,
@@ -1362,7 +1497,8 @@ async fn link_downloaded_origin(
           last_checked_at=excluded.last_checked_at,
           last_remote_commit_oid=excluded.last_remote_commit_oid,
           last_remote_manifest_json=excluded.last_remote_manifest_json,
-          last_error=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at",
+          last_error=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at,
+          discovery_evidence_json=excluded.discovery_evidence_json",
     )
     .bind(&binding_id)
     .bind(&target.target_key)
@@ -1383,6 +1519,7 @@ async fn link_downloaded_origin(
     .bind(manifest_json(&remote.manifest)?)
     .bind(&now)
     .bind(&now)
+    .bind(evidence.map(serde_json::to_string).transpose().map_err(|e| e.to_string())?)
     .execute(pool)
     .await
     .map_err(|error| error.to_string())?;
@@ -1427,25 +1564,30 @@ pub async fn check_skill_origin(
 
 /// 스캐너의 source 값(copy/symlink)과 무관하게 보관함과 모든 관리 설치를
 /// 살핀다. 물리 경로가 같은 바로가기는 한 번만 처리하고 공개 검색은 하지 않는다.
-async fn discover_installed_origins(pool: &DbPool, cache: &mut RemoteCache) -> Result<(), String> {
+async fn installed_origin_targets(pool: &DbPool) -> Result<(Vec<SkillTargetRequest>, RepositoryHints), String> {
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
         "SELECT id, NULL FROM skills UNION ALL SELECT skill_id, agent_id FROM skill_installations ORDER BY 1, 2"
     ).fetch_all(pool).await.map_err(|error| error.to_string())?;
     let mut seen = BTreeSet::new();
+    let mut targets = Vec::new();
+    let mut repositories = RepositoryHints::new();
     for (skill_id, agent_id) in rows {
-        let request = SkillTargetRequest {
-            skill_id,
-            agent_id,
-            row_id: None,
-        };
-        let Ok(target) = resolve_target(pool, &request).await else {
-            continue;
-        };
-        if target.is_read_only || !seen.insert(target.target_key) {
-            continue;
+        let request = SkillTargetRequest { skill_id, agent_id, row_id: None };
+        let Ok(target) = resolve_target(pool, &request).await else { continue; };
+        if target.is_read_only || !seen.insert(target.target_key) { continue; }
+        for (url, document) in discovery::repository_hints(&target.target_path) {
+            if document.is_some() || !repositories.contains_key(&url) { repositories.insert(url, document); }
         }
+        targets.push(request);
+    }
+    Ok((targets, repositories))
+}
+
+async fn discover_installed_origins(pool: &DbPool, cache: &mut RemoteCache) -> Result<(), String> {
+    let (targets, repositories) = installed_origin_targets(pool).await?;
+    for request in targets {
         // 한 설치의 삭제·손상·원격 실패가 다른 설치의 연결을 막지 않는다.
-        let _ = discover_skill_origin_impl(pool, &request, false, cache).await;
+        let _ = discover_skill_origin_with_repositories(pool, &request, false, cache, &repositories).await;
     }
     Ok(())
 }
@@ -1454,6 +1596,8 @@ async fn discover_installed_origins(pool: &DbPool, cache: &mut RemoteCache) -> R
 /// 기록하고 나머지 스킬의 확인은 계속한다.
 #[tauri::command]
 pub async fn check_linked_skill_origins(state: State<'_, AppState>) -> Result<usize, String> {
+    static DISCOVERY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    let Ok(_guard) = DISCOVERY_LOCK.get_or_init(|| Mutex::new(())).try_lock() else { return Ok(0); };
     let mut cache = RemoteCache::new();
     discover_installed_origins(&state.db, &mut cache).await?;
     let cutoff = (Utc::now() - chrono::Duration::hours(6)).to_rfc3339();
@@ -1500,7 +1644,6 @@ pub async fn prepare_skill_update(
         status.state,
         OriginSyncState::LocalChanges
             | OriginSyncState::Diverged
-            | OriginSyncState::UnknownBaseline
     );
     if requires_local_change_confirmation && !request.allow_local_changes {
         return Err("LOCAL_CHANGES_REQUIRE_CONFIRMATION".to_string());
@@ -1590,10 +1733,11 @@ async fn backup_update_target(
         )
         .await;
     }
-    let installation = recovery::managed_copy_for_target(pool, &origin.skill_id, target)
-        .await?
-        .ok_or_else(|| "업데이트할 실제 원본의 관리 설치 기록을 찾을 수 없습니다".to_string())?;
-    recovery::backup_copy_installation(pool, &installation).await
+    if let Some(installation) = recovery::managed_copy_for_target(pool, &origin.skill_id, target).await? {
+        recovery::backup_copy_installation(pool, &installation).await
+    } else {
+        recovery::backup_origin_update_target(pool, &origin.skill_id, target).await
+    }
 }
 
 #[tauri::command]
@@ -1711,6 +1855,20 @@ async fn apply_downloaded_update(
             return Err(error);
         }
     };
+
+    // 백업이 없거나 복사본이 다르면 원본을 교체하지 않는다.
+    let backup_verified = recovery_entry.as_ref().is_some_and(|entry| {
+        manifest_from_local_directory(Path::new(&entry.backup_path))
+            .is_ok_and(|manifest| manifest == expected_manifest)
+    });
+    if !backup_verified {
+        remove_tree(&stage);
+        return Err("업데이트 전 백업을 검증하지 못했습니다. 기존 파일은 유지됩니다".into());
+    }
+    if manifest_from_local_directory(&target)? != expected_manifest {
+        remove_tree(&stage);
+        return Err("PLAN_STALE: local skill changed while creating backup".into());
+    }
 
     let now = Utc::now().to_rfc3339();
     sqlx::query("UPDATE skill_update_operations SET state='applying', stage_path=?, quarantine_path=?, recovery_entry_id=?, updated_at=? WHERE operation_id=?")
@@ -2123,6 +2281,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nested_platform_copy_update_keeps_a_restorable_backup() {
+        let temp = TempDir::new().unwrap();
+        let pool = db::create_pool(temp.path().join("db.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        db::init_database(&pool).await.unwrap();
+        let root = temp.path().join("platform/skills");
+        let mut skill = write_imported_skill(&root.join("korean"), "demo", "demo");
+        skill.is_central = false;
+        skill.canonical_path = None;
+        persist_imported_skill(&pool, &skill, &imported_repo(), "demo", None).await.unwrap();
+        let target = root.join("korean/demo").canonicalize().unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'hermes'")
+            .bind(root.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        db::upsert_skill_installation(&pool, &db::SkillInstallation {
+            skill_id: "demo".into(), agent_id: "hermes".into(),
+            installed_path: target.to_string_lossy().into_owned(), link_type: "copy".into(),
+            symlink_target: None, created_at: "now".into(),
+        }).await.unwrap();
+        assert!(recovery::managed_copy_for_target(&pool, "demo", &target).await.unwrap().is_none());
+        let before = manifest_from_local_directory(&target).unwrap();
+        let origin = load_origin(&pool, &origin_target_key(&target)).await.unwrap().unwrap();
+        let entry = backup_update_target(&pool, &origin, &target).await.unwrap().unwrap();
+        assert_eq!(manifest_from_local_directory(Path::new(&entry.backup_path)).unwrap(), before);
+        assert!(recovery::list_recovery_entries_impl(&pool).await.unwrap().iter().any(|saved| saved.id == entry.id));
+        fs::remove_dir_all(&target).unwrap();
+        recovery::restore_recovery_entry_impl(&pool, &entry.id).await.unwrap();
+        assert_eq!(manifest_from_local_directory(&target).unwrap(), before);
+    }
+
+    #[tokio::test]
     #[cfg(unix)]
     async fn shared_origin_update_replaces_files_preserves_links_and_keeps_restorable_backup() {
         use std::os::unix::fs::PermissionsExt;
@@ -2134,6 +2326,12 @@ mod tests {
             .unwrap()
             .unwrap();
         origin.agent_id = Some("omp".into());
+        // 설치 버전을 몰라도 검증된 백업을 남기고 교체·복원할 수 있다.
+        sqlx::query("UPDATE skill_origins SET baseline_state='unknown', base_commit_oid=NULL, base_manifest_json=NULL WHERE binding_id=?")
+            .bind(&origin.binding_id).execute(&pool).await.unwrap();
+        origin.baseline_state = "unknown".into();
+        origin.base_commit_oid = None;
+        origin.base_manifest_json = None;
         let link = temp.path().join("omp-demo");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         write_file(
@@ -2397,6 +2595,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn documented_repository_connects_two_exact_copies_without_changing_files() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let mut files = HashMap::new();
+        let mut before = Vec::new();
+        for name in ["first", "second"] {
+            let mut skill = write_imported_skill(temp.path(), name, name);
+            skill.source = None;
+            if name == "first" {
+                fs::write(temp.path().join(name).join("SKILL.md"),
+                    "---\nname: first\ndescription: imported\n---\n\n# body\nSource: https://github.com/acme/skills\n").unwrap();
+            }
+            db::upsert_skill(&pool, &skill).await.unwrap();
+            let local = temp.path().join(name);
+            before.push((
+                local.clone(),
+                manifest_from_local_directory(&local).unwrap(),
+            ));
+            let mut local_files = BTreeMap::new();
+            collect_local_files(&local, &local, &mut local_files).unwrap();
+            for (path, file) in local_files {
+                files.insert(format!("skills/{name}/{path}"), file);
+            }
+        }
+        let mut changed = write_imported_skill(temp.path(), "third", "third");
+        changed.source = None;
+        db::upsert_skill(&pool, &changed).await.unwrap();
+        let third = temp.path().join("third");
+        let mut third_files = BTreeMap::new();
+        collect_local_files(&third, &third, &mut third_files).unwrap();
+        for (path, file) in third_files {
+            files.insert(format!("skills/third/{path}"), file);
+        }
+        fs::write(third.join("references/guide.md"), "local edit").unwrap();
+        let snapshot = Arc::new(github_import::GitHubRepoSnapshot { files });
+        let remote = RemoteSnapshot {
+            repository_id: Some("123".into()),
+            owner: "acme".into(),
+            repo: "skills".into(),
+            ref_name: "main".into(),
+            commit_oid: "abc123".into(),
+            source_path: "skills/first".into(),
+            manifest: manifest_from_files(&remote_files(&snapshot, "skills/first").unwrap()),
+            snapshot,
+        };
+        let mut cache =
+            RemoteCache::from([(("https://github.com/acme/skills".into(), None, true), Ok(remote))]);
+        discover_installed_origins(&pool, &mut cache).await.unwrap();
+        for (path, original) in before {
+            let origin = load_origin(&pool, &origin_target_key(&path))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(origin.owner, "acme");
+            assert_eq!(
+                origin.source_path,
+                format!("skills/{}", path.file_name().unwrap().to_string_lossy())
+            );
+            assert_eq!(origin.baseline_state, "verified");
+            assert_eq!(manifest_from_local_directory(&path).unwrap(), original);
+        }
+        assert!(load_origin(&pool, &origin_target_key(&third)).await.unwrap().is_none());
+        let groups = crate::commands::skill_groups::get_skill_groups_impl(&pool)
+            .await
+            .unwrap();
+        let groups = serde_json::to_value(groups).unwrap();
+        assert_eq!(
+            groups
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|group| group["id"] == "repository:acme/skills")
+                .unwrap()["members"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[tokio::test]
     async fn recorded_installs_connect_nested_sources_and_matching_platform_copies() {
         let temp = TempDir::new().unwrap();
         let pool = setup_origin_db().await;
@@ -2492,8 +2772,9 @@ mod tests {
             (
                 "https://github.com/acme/skills".into(),
                 Some("release/v2".into()),
+                true,
             ),
-            remote,
+            Ok(remote),
         )]);
         discover_installed_origins(&pool, &mut cache).await.unwrap();
         for name in ["demo", "second"] {
@@ -2599,6 +2880,95 @@ mod tests {
             .unwrap();
         assert!(discovery.origin.is_none());
         assert!(discovery.candidates.is_empty());
+    }
+
+    #[tokio::test]
+    async fn documented_moved_body_links_unknown_version_and_rejects_forks_and_races() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let mut guide = write_imported_skill(temp.path(), "setup", "setup");
+        guide.source = None;
+        fs::write(temp.path().join("setup/SKILL.md"), "---\nname: setup\ndescription: 설치 안내\n---\n\ngit clone https://github.com/acme/skills\n").unwrap();
+        db::upsert_skill(&pool, &guide).await.unwrap();
+        let mut skill = write_imported_skill(temp.path(), "renamed", "forecast");
+        skill.source = None;
+        let header = "---\nname: forecast\ndescription: 지역 관측 정보를 확인한다\n---\n\n";
+        let body = format!("{}\n\n{}", "지역별 관측 시각과 측정 단위를 확인하고 관측소의 최근 값을 구분하여 사용한다. ".repeat(8), "누락된 측정값은 임의의 숫자로 채우지 않고 자료가 없는 지역과 다음 관측 시각을 함께 기록한다. ".repeat(8));
+        let dir = temp.path().join("renamed");
+        fs::write(dir.join("SKILL.md"), format!("{header}{body}\n\n로컬 변경" )).unwrap();
+        db::upsert_skill(&pool, &skill).await.unwrap();
+        let before = manifest_from_local_directory(&dir).unwrap();
+        let snapshot = Arc::new(github_import::GitHubRepoSnapshot { files: HashMap::from([
+            ("forecast/SKILL.md".into(), SnapshotFile { bytes: format!("{header}`instruction.md`").into_bytes(), executable: false }),
+            ("forecast/instruction.md".into(), SnapshotFile { bytes: body.into_bytes(), executable: false }),
+        ]) });
+        let remote = RemoteSnapshot { repository_id: Some("123".into()), owner: "acme".into(), repo: "skills".into(), ref_name: "main".into(), commit_oid: "latest".into(), source_path: "forecast".into(), manifest: manifest_from_files(&remote_files(&snapshot, "forecast").unwrap()), snapshot };
+        let mut cache = RemoteCache::from([(("https://github.com/acme/skills".into(), None, true), Ok(remote.clone()))]);
+        let request = SkillTargetRequest { skill_id: "renamed".into(), agent_id: None, row_id: None };
+        let result = discover_skill_origin_impl(&pool, &request, false, &mut cache).await.unwrap();
+        let origin = result.origin.unwrap();
+        assert_eq!(origin.source_path, "forecast");
+        assert_eq!(origin.baseline_state, "unknown");
+        assert!(origin.base_commit_oid.is_none());
+        let evidence = origin.discovery_evidence.unwrap();
+        assert!(evidence.repository_document.ends_with("setup/SKILL.md"));
+        assert!(evidence.matched_characters >= 400);
+        assert_eq!(manifest_from_local_directory(&dir).unwrap(), before);
+        sqlx::query("DELETE FROM skill_origins").execute(&pool).await.unwrap();
+        let mut fork = remote.clone();
+        fork.owner = "fork".into();
+        cache.insert(("https://github.com/fork/skills".into(), None, true), Ok(fork));
+        let hints = RepositoryHints::from([
+            ("https://github.com/acme/skills".into(), Some("installer".into())),
+            ("https://github.com/fork/skills".into(), Some("installer".into())),
+        ]);
+        let ambiguous = discover_skill_origin_with_repositories(&pool, &request, false, &mut cache, &hints).await.unwrap();
+        assert!(ambiguous.origin.is_none());
+        assert_eq!(ambiguous.candidates.len(), 2);
+        let target = resolve_target(&pool, &request).await.unwrap();
+        fs::write(dir.join("SKILL.md"), "사용자가 판별 도중 수정함").unwrap();
+        assert!(link_downloaded_origin(&pool, &target, &remote, false, Some(&before), Some(&evidence)).await.is_err());
+        assert!(load_origin(&pool, &target.target_key).await.unwrap().is_none());
+        cache.insert(("https://github.com/unavailable/repo".into(), None, true), Err("HTTP 429".into()));
+        assert_eq!(cached_remote_repository(&pool, "https://github.com/unavailable/repo", None, &mut cache, true).await.unwrap_err(), "HTTP 429");
+    }
+
+    /// 홈이나 설치 경로를 바꾸지 않고 실제 자동 판별 함수만 복제 DB에 실행한다.
+    #[tokio::test]
+    #[ignore = "복제 DB와 SKILLS_MANAGE_VERIFY_IDS, SKILLS_MANAGE_VERIFY_AGENT가 필요함"]
+    async fn live_documented_origins_verify_in_database_copy() {
+        let path = PathBuf::from(std::env::var("SKILLS_MANAGE_VERIFY_DB").unwrap());
+        assert_ne!(path.canonicalize().unwrap(), crate::path_utils::app_data_dir().join("db.sqlite").canonicalize().unwrap());
+        let pool = db::create_pool(path.to_str().unwrap()).await.unwrap();
+        db::init_database(&pool).await.unwrap();
+        let ids = std::env::var("SKILLS_MANAGE_VERIFY_IDS").unwrap();
+        let agent = std::env::var("SKILLS_MANAGE_VERIFY_AGENT").unwrap();
+        let (_, hints) = installed_origin_targets(&pool).await.unwrap();
+        let mut cache = RemoteCache::new();
+        let mut report = Vec::new();
+        let start = std::time::Instant::now();
+        for id in ids.split(',') {
+            let request = SkillTargetRequest { skill_id: id.into(), agent_id: Some(agent.clone()), row_id: None };
+            let target = resolve_target(&pool, &request).await.unwrap();
+            let before = manifest_from_local_directory(&target.target_path).unwrap();
+            let result = discover_skill_origin_with_repositories(&pool, &request, false, &mut cache, &hints).await;
+            assert_eq!(before, manifest_from_local_directory(&target.target_path).unwrap());
+            let row = match result {
+                Ok(discovery) => serde_json::json!({"id":id,"origin":discovery.origin,"candidates":discovery.candidates}),
+                Err(error) => serde_json::json!({"id":id,"error":error}),
+            };
+            eprintln!("{}: {}", id, row.get("origin").filter(|v| !v.is_null()).map(|o| format!("{}/{} ({})", o["owner"], o["repo"], o["baselineState"])).unwrap_or_else(|| "unconfirmed".into()));
+            report.push(row);
+        }
+        let connected = report.iter().filter(|row| row.get("origin").is_some_and(|v| !v.is_null())).count();
+        let remotes = cache.iter().map(|((url, _, _), value)| match value {
+            Ok(remote) => serde_json::json!({"url":url,"commit":remote.commit_oid}),
+            Err(error) => serde_json::json!({"url":url,"error":error}),
+        }).collect::<Vec<_>>();
+        let output = serde_json::json!({"connected":connected,"targets":report,"repositories":remotes,"elapsedSeconds":start.elapsed().as_secs_f64(),"skillFilesUnchanged":true});
+        fs::write(path.with_extension("report.json"), serde_json::to_string_pretty(&output).unwrap()).unwrap();
+        assert!(connected > 0, "실제 설치본이 하나 이상 자동 연결되어야 함");
+        eprintln!("Verified {connected}/{}; {} repository requests; {:.1}s; files unchanged", report.len(), cache.len(), start.elapsed().as_secs_f64());
     }
 
     /// 실제 설치 파일은 읽기만 하고, 연결 정보는 복제한 DB에서 검증한다.

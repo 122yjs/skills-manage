@@ -130,6 +130,12 @@ export interface GitHubSkillOriginSummary {
 }
 
 export interface SkillOriginInfo {
+  discoveryEvidence?: {
+    repositoryDocument: string;
+    matchedFiles: string[];
+    matchedParagraphs: number;
+    matchedCharacters: number;
+  } | null;
   bindingId: string;
   targetKey: string;
   targetPath: string;
@@ -153,7 +159,7 @@ export interface SkillOriginCandidate {
   repoUrl: string;
   sourcePath: string;
   refName: string;
-  reason: "installation_record" | "catalog_name" | "public_search" | "content_match" | "name_description";
+  reason: "installation_record" | "catalog_name" | "public_search" | "content_match" | "name_description" | "multiple_evidence";
 }
 
 export interface SkillOriginDiscovery {

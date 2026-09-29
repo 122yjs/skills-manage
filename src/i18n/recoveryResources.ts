@@ -26,6 +26,7 @@ export const recoveryResources = {
       neverExpires: "자동 만료 없음",
       kind: {
         copy_backup: "설치 백업",
+        origin_update_backup: "GitHub 업데이트 백업",
         vault_trash: "보관함 휴지통",
         database: "데이터베이스 백업",
       },
@@ -59,6 +60,7 @@ export const recoveryResources = {
       neverExpires: "Does not expire automatically",
       kind: {
         copy_backup: "Installation backup",
+        origin_update_backup: "GitHub update backup",
         vault_trash: "Library trash",
         database: "Database backup",
       },
@@ -92,6 +94,7 @@ export const recoveryResources = {
       neverExpires: "不会自动过期",
       kind: {
         copy_backup: "安装备份",
+        origin_update_backup: "GitHub 更新备份",
         vault_trash: "技能库回收站",
         database: "数据库备份",
       },

@@ -1735,6 +1735,69 @@ describe("SkillDetailView imported origin", () => {
     useSkillOriginStore.getState().reset();
   });
 
+  it("shows the evidence for an inferred origin without claiming a verified version", async () => {
+    const inferred = {
+      ...importedOriginFixture,
+      baselineState: "unknown",
+      baseCommitOid: null,
+      discoveryEvidence: {
+        repositoryDocument: "/skills/setup/SKILL.md",
+        matchedFiles: [],
+        matchedParagraphs: 4,
+        matchedCharacters: 720,
+      },
+    };
+    mockTauriInvoke.mockImplementation(async (command) => {
+      if (command === "get_skill_origin") return inferred;
+      if (command === "check_skill_origin") return {
+        origin: inferred, state: "unknown_baseline",
+        localVsRemote: { added: 1, modified: 1, removed: 0 },
+        localVsBase: { added: 0, modified: 0, removed: 0 },
+        remoteVsBase: { added: 0, modified: 0, removed: 0 },
+        remoteCommitOid: "latest",
+      };
+      if (command === "list_skill_directory") return mockDirectoryTree;
+      if (command === "read_file_by_path") return mockContent;
+      return null;
+    });
+    renderView();
+    expect(await screen.findByText("根据多项证据自动关联来源")).toBeInTheDocument();
+    expect(screen.getByText(/\/skills\/setup\/SKILL.md/)).toBeInTheDocument();
+    expect(screen.getByText(/720/)).toHaveTextContent("4");
+    expect(await screen.findByText(/unknown_baseline/)).toBeInTheDocument();
+  });
+
+  it.each([true, false])("asks once before updating an unknown version (accept=%s)", async (accept) => {
+    mockTauriInvoke.mockClear();
+    const origin = { ...importedOriginFixture, canUpdate: true, baselineState: "unknown", baseCommitOid: null };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(accept);
+    mockTauriInvoke.mockImplementation(async (command) => {
+      if (command === "get_skill_origin") return origin;
+      if (command === "check_skill_origin") return {
+        origin, state: "unknown_baseline", localVsRemote: { added: 1, modified: 2, removed: 0 },
+        localVsBase: { added: 0, modified: 0, removed: 0 }, remoteVsBase: { added: 0, modified: 0, removed: 0 }, remoteCommitOid: "latest123",
+      };
+      if (command === "prepare_skill_update") return {
+        operationId: "update-1", state: "unknown_baseline", remoteCommitOid: "latest123",
+        changes: { added: 1, modified: 2, removed: 0 }, requiresLocalChangeConfirmation: false,
+      };
+      if (command === "apply_skill_update") return { operationId: "update-1", recoveryEntryId: "backup-1" };
+      if (command === "list_skill_directory") return mockDirectoryTree;
+      if (command === "read_file_by_path") return mockContent;
+      return [];
+    });
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "Update" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalledTimes(1));
+    expect(confirm.mock.calls[0][0]).toContain("当前安装版本未知");
+    expect(confirm.mock.calls[0][0]).toContain("备份");
+    await waitFor(() => {
+      expect(mockTauriInvoke.mock.calls.some(([command]) => command === "apply_skill_update")).toBe(accept);
+    });
+    expect(mockTauriInvoke.mock.calls.filter(([command]) => command === "prepare_skill_update")).toHaveLength(1);
+    confirm.mockRestore();
+  });
+
   it("shows the SKILL.md name, the local installation ID, and the manifest link", async () => {
     mockOriginInvoke(importedOriginFixture);
     applyStoreMocks({ detail: renamedDetailFixture });

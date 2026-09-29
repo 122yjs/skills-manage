@@ -241,6 +241,16 @@
     }
   },
   "skillOrigin": {
+    "confirmUpdate": "备份并更新至 {{commit}}？",
+    "updateChanges": "新增 {{added}} · 修改 {{modified}} · 删除 {{removed}}",
+    "updateUnknownVersion": "当前安装版本未知，将替换为所选来源的最新文件。",
+    "updateLocalChanges": "本地修改也将被替换。",
+    "updateBackupNotice": "替换前备份并验证完整文件与执行权限。替换失败时恢复旧文件，也可在设置的恢复功能中还原备份。",
+    "updateComplete": "已更新至 {{commit}}，旧文件已保存在恢复备份中。",
+    "inferredTitle": "根据多项证据自动关联来源",
+    "inferredDescription": "安装说明中的仓库、技能名称和描述及独有内容相符。这不代表已确认安装版本。",
+    "evidenceDocument": "仓库线索：{{path}}",
+    "evidenceContent": "相同文件 {{files}} 个 · 正文 {{paragraphs}} 个片段，{{characters}} 字",
     "updateAvailable": "有可用更新",
     "searching": "正在从安装记录查找 GitHub 来源…",
     "candidateIntro": "找到可能的来源。请确认路径后再关联。",
@@ -251,7 +261,8 @@
       "catalog_name": "市场目录中同名的技能",
       "public_search": "GitHub 搜索中同名的技能",
       "content_match": "SKILL.md 内容相同",
-      "name_description": "名称和说明相同"
+      "name_description": "名称和说明相同",
+      "multiple_evidence": "仓库说明、名称描述及独有内容相符"
     },
     "openFailed": "无法打开 GitHub 来源，请重试。",
     "viewSource": "在 GitHub 上打开来源",
@@ -451,6 +462,8 @@
   },
   "central": {
     "title": "技能仓库",
+    "noAutoInstall": "不会自动安装到平台",
+    "storageHint": "不会自动安装到平台 · 此处仅保存原始文件，使用时请另行安装到所需平台。",
     "path": "~/.skillsmanage/skills/",
     "searchPlaceholder": "搜索技能仓库...",
     "loading": "正在加载技能...",

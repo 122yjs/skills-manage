@@ -11,6 +11,7 @@ import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
 import { DevToolSetupDialog } from "@/components/settings/DevToolSetupDialog";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
+import { useSkillGroupStore } from "@/stores/skillGroupStore";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 
 /**
@@ -38,7 +39,7 @@ export function AppShell() {
     usePlatformStore.setState((state) => ({
       scanGeneration: (state.scanGeneration ?? 0) + 1,
     }));
-    await loadCentralSkills();
+    await Promise.all([loadCentralSkills(), useSkillGroupStore.getState().load()]);
   }, [loadCentralSkills]);
 
   useEffect(() => {

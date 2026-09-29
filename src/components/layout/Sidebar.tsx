@@ -128,6 +128,7 @@ export function Sidebar() {
         {/* Central Skills */}
         <DashboardNavItem
           label={t("sidebar.centralSkills")}
+          title={`${t("sidebar.centralSkills")} (${t("central.noAutoInstall")})`}
           isActive={pathname === "/central" || pathname === "/"}
           onClick={() => navigate("/central")}
           icon={<LibraryBig className="size-4" />}
