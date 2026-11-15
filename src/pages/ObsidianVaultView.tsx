@@ -257,6 +257,7 @@ export function ObsidianVaultView() {
         discoverMetadata={
           drawerSkill
             ? {
+                id: drawerSkill.id,
                 name: drawerSkill.name,
                 description: drawerSkill.description,
                 platformName: drawerSkill.platform_name,

@@ -129,6 +129,7 @@ export function DiscoverView() {
   const [drawerSkillId, setDrawerSkillId] = useState<string | null>(null);
   const [drawerFilePath, setDrawerFilePath] = useState<string | null>(null);
   const [drawerDiscoverMeta, setDrawerDiscoverMeta] = useState<{
+    id: string;
     name: string;
     description?: string;
     platformName: string;
@@ -383,6 +384,7 @@ export function DiscoverView() {
     setDrawerSkillId(null);
     setDrawerFilePath(skill.file_path);
     setDrawerDiscoverMeta({
+      id: skill.id,
       name: skill.name,
       description: skill.description,
       platformName: skill.platform_name,
