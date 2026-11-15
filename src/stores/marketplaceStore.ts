@@ -13,6 +13,7 @@ import {
   GitHubImportFailure,
   GitHubRepoRef,
   ImportedGitHubSkillSummary,
+  MarketplaceInstallOutcome,
 } from "@/types";
 
 interface GitHubImportState {
@@ -66,7 +67,7 @@ interface MarketplaceState {
   syncRegistry: (registryId: string, forceRefresh?: boolean) => Promise<void>;
   loadSkills: (registryId: string, query?: string) => Promise<void>;
   loadPreviewSkills: (registryId: string) => Promise<MarketplaceSkill[]>;
-  installSkill: (skillId: string) => Promise<void>;
+  installSkill: (skillId: string) => Promise<MarketplaceInstallOutcome>;
   addRegistry: (name: string, sourceType: string, url: string) => Promise<SkillRegistry>;
   removeRegistry: (registryId: string) => Promise<void>;
   getNormalizedRegistryIdentity: (url: string) => string | null;
@@ -347,18 +348,22 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   installSkill: async (skillId: string) => {
     set((s) => ({ installingIds: new Set(s.installingIds).add(skillId) }));
     try {
-      await invoke("install_marketplace_skill", { skillId });
-      // Update the skill's is_installed status locally
+      const outcome = await invoke<MarketplaceInstallOutcome>("install_marketplace_skill", {
+        skillId,
+      });
+      // Update the skill's is_installed status locally (root skills are installed by the wizard)
+      const installed = outcome.status === "installed";
       set((s) => ({
-        skills: s.skills.map((sk) =>
-          sk.id === skillId ? { ...sk, is_installed: true } : sk
-        ),
+        skills: installed
+          ? s.skills.map((sk) => (sk.id === skillId ? { ...sk, is_installed: true } : sk))
+          : s.skills,
         installingIds: (() => {
           const next = new Set(s.installingIds);
           next.delete(skillId);
           return next;
         })(),
       }));
+      return outcome;
     } catch (err) {
       set((s) => {
         const next = new Set(s.installingIds);

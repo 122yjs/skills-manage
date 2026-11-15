@@ -600,3 +600,80 @@ describe("GitHubRepoImportWizard conflict and failure handling", () => {
     expect(screen.queryByText("新安装")).not.toBeInTheDocument();
   });
 });
+
+describe("GitHubRepoImportWizard root skill folder selection", () => {
+  const onImport = vi.fn();
+  const rootSkill: GitHubSkillPreview = {
+    sourcePath: ".",
+    skillId: "root-demo",
+    skillName: "Root Demo",
+    description: "Root skill",
+    rootDirectory: "/",
+    skillDirectoryName: "root-demo",
+    downloadUrl: "https://example.com/SKILL.md",
+    conflict: null,
+    subfolders: [
+      { name: ".git", defaultSelected: false },
+      { name: ".github", defaultSelected: false },
+      { name: "docs", defaultSelected: true },
+      { name: "other", defaultSelected: false },
+      { name: "scripts", defaultSelected: true },
+    ],
+  };
+  const folderBox = (name: string) =>
+    screen.getByRole("checkbox", {
+      name: zh.marketplace.githubImportFolderInclude.replace("{{name}}", name),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    onImport.mockResolvedValue(importResult);
+    useMarketplaceStore.setState((state) => ({
+      githubImport: {
+        ...state.githubImport,
+        importProgress: null,
+        importStartedAt: null,
+        skillMarkdown: { ".": { status: "ready", content: "# Root" } },
+        aiSummaries: {},
+      },
+    }));
+  });
+
+  it("preselects plain folders and sends only the chosen folders on import", async () => {
+    render(
+      <MemoryRouter>
+        <GitHubRepoImportWizard
+          open
+          onOpenChange={vi.fn()}
+          repoUrl="https://github.com/acme/root-demo"
+          onRepoUrlChange={vi.fn()}
+          preview={{ repo: conflictRepo, skills: [rootSkill] }}
+          previewError={null}
+          isPreviewLoading={false}
+          isImporting={false}
+          importResult={null}
+          onPreview={vi.fn()}
+          onImport={onImport}
+          onReset={vi.fn()}
+          launcherLabel="Marketplace"
+        />
+      </MemoryRouter>,
+    );
+
+    expect(folderBox("docs")).toBeChecked();
+    expect(folderBox("scripts")).toBeChecked();
+    expect(folderBox("other")).not.toBeChecked();
+    expect(folderBox(".git")).not.toBeChecked();
+    expect(folderBox(".github")).not.toBeChecked();
+
+    fireEvent.click(folderBox("scripts"));
+    fireEvent.click(screen.getByRole("button", { name: "检查导入内容" }));
+    await screen.findByTestId("github-import-confirm-summary");
+    fireEvent.click(screen.getByRole("button", { name: "导入" }));
+
+    await waitFor(() => expect(onImport).toHaveBeenCalled());
+    expect(onImport.mock.calls[0][0]).toEqual([
+      expect.objectContaining({ sourcePath: ".", includedFolders: ["docs"] }),
+    ]);
+  });
+});
