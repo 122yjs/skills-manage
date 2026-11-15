@@ -1438,9 +1438,68 @@ pub async fn read_skill_content(
         .map_err(|e| format!("Failed to read '{}': {}", skill.file_path, e))
 }
 
+/// 스킬 식별자(발견된 프로젝트 스킬 ID 포함)로 스킬 폴더를 찾고, 그 폴더 기준
+/// 상대 경로의 파일만 읽는다. 화면이 임의 경로를 넘겨 폴더 밖 파일을 읽지 못하게 한다.
+pub(crate) async fn read_skill_file_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: Option<&str>,
+    row_id: Option<&str>,
+    relative_path: &str,
+) -> Result<String, String> {
+    let root = match db::get_discovered_skill_by_id(pool, skill_id).await? {
+        Some(discovered) => discovered.dir_path,
+        None => {
+            get_skill_detail_with_row_impl(pool, skill_id, agent_id, row_id)
+                .await?
+                .dir_path
+        }
+    };
+    let relative = Path::new(relative_path);
+    if !relative
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    let root = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve skill folder '{}': {}", root, e))?;
+    let target = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve '{}': {}", relative_path, e))?;
+    if !target.starts_with(&root) {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    std::fs::read_to_string(&target)
+        .map_err(|e| format!("Failed to read '{}': {}", relative_path, e))
+}
+
 #[tauri::command]
-pub async fn read_file_by_path(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))
+pub async fn read_skill_file(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_id: Option<String>,
+    row_id: Option<String>,
+    relative_path: String,
+) -> Result<String, String> {
+    read_skill_file_impl(
+        &state.db,
+        &skill_id,
+        agent_id.as_deref(),
+        row_id.as_deref(),
+        &relative_path,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3388,24 +3447,81 @@ mod tests {
         );
     }
 
-    // ── read_file_by_path ──────────────────────────────────────────────────────
+    // ── read_skill_file ────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn test_read_file_by_path_success() {
-        let tmp = TempDir::new().unwrap();
-        let file_path = tmp.path().join("test-skill.md");
-        let content = "---\nname: Test\n---\n\n# Test Skill";
-        fs::write(&file_path, content).unwrap();
+    async fn central_skill_with_secret(tmp: &Path, pool: &SqlitePool) {
+        let skill_dir = tmp.join("central").join("my-skill");
+        fs::create_dir_all(skill_dir.join("docs")).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# My Skill").unwrap();
+        fs::write(skill_dir.join("docs").join("guide.md"), "guide").unwrap();
+        fs::write(tmp.join("secret.txt"), "secret").unwrap();
 
-        let result = read_file_by_path(file_path.to_string_lossy().into_owned()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content);
+        let mut skill = make_skill("my-skill", "My Skill", true);
+        skill.file_path = skill_dir.join("SKILL.md").to_string_lossy().into_owned();
+        skill.canonical_path = Some(skill_dir.to_string_lossy().into_owned());
+        db::upsert_skill(pool, &skill).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_read_file_by_path_not_found() {
-        let result = read_file_by_path("/nonexistent/file.md".to_string()).await;
-        assert!(result.is_err());
+    async fn test_read_skill_file_reads_files_inside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+
+        let skill_md = read_skill_file_impl(&pool, "my-skill", None, None, "SKILL.md").await;
+        let guide = read_skill_file_impl(&pool, "my-skill", None, None, "docs/guide.md").await;
+
+        assert_eq!(skill_md.unwrap(), "# My Skill");
+        assert_eq!(guide.unwrap(), "guide");
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_rejects_paths_outside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+        let secret = tmp.path().join("secret.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, tmp.path().join("central/my-skill/link.txt")).unwrap();
+
+        let absolute = secret.to_string_lossy().into_owned();
+        let mut attempts = vec!["../../secret.txt", "docs/../../../secret.txt", &absolute];
+        #[cfg(unix)]
+        attempts.push("link.txt");
+
+        for attempt in attempts {
+            let result = read_skill_file_impl(&pool, "my-skill", None, None, attempt).await;
+            assert!(result.is_err(), "'{attempt}' must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_reads_discovered_skill_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let skill_dir = tmp.path().join("project").join(".claude/skills/found");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Found").unwrap();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__found",
+            "found",
+            None,
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let content =
+            read_skill_file_impl(&pool, "claude-code__project__found", None, None, "SKILL.md")
+                .await;
+
+        assert_eq!(content.unwrap(), "# Found");
     }
 
     #[tokio::test]

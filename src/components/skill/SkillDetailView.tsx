@@ -424,6 +424,8 @@ function deriveDirPathFromFilePath(path: string): string {
  * route/shell concerns are handled outside.
  */
 export interface DiscoverMetadata {
+  /** discovered_skills 테이블의 ID. 파일 읽기 명령이 스킬 폴더를 찾는 데 쓴다. */
+  id: string;
   name: string;
   description?: string;
   platformName: string;
@@ -611,14 +613,17 @@ export function SkillDetailView({
     if (!filePath) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_file_by_path", { path: filePath });
+      const text = await invoke<string>("read_skill_file", {
+        skillId: discoverMetadata?.id,
+        relativePath: "SKILL.md",
+      });
       setFileContent(text);
     } catch {
       setFileContent(null);
     } finally {
       setFileIsLoading(false);
     }
-  }, [filePath]);
+  }, [filePath, discoverMetadata?.id]);
 
   useEffect(() => {
     if (isFileMode) {
@@ -707,7 +712,12 @@ export function SkillDetailView({
 
     let cancelled = false;
     setIsSelectedFileLoading(true);
-    invoke<string>("read_file_by_path", { path: selectedFilePath })
+    invoke<string>("read_skill_file", {
+      ...(isFileMode
+        ? { skillId: discoverMetadata?.id }
+        : { skillId: detail?.id, agentId, rowId: detail?.row_id }),
+      relativePath: selectedRelativePath,
+    })
       .then((text) => {
         if (!cancelled) {
           setSelectedFileContent(text);
@@ -727,7 +737,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath, skillFilePath]);
+  }, [selectedFilePath, selectedRelativePath, skillFilePath, isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
 
   // ── Derived values ───────────────────────────────────────────────────────
 
