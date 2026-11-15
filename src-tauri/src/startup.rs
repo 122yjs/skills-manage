@@ -10,12 +10,13 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::commands::{recovery, skill_duplicates, skill_origin, storage};
+use crate::commands::{recovery, settings, skill_duplicates, skill_origin, storage};
 use crate::db::{self, DbPool};
 use crate::path_utils::{
     app_data_dir, default_central_skills_dir, expand_home_path, legacy_central_skills_dir,
     path_to_string,
 };
+use crate::secrets;
 use crate::AppState;
 
 /// 마지막 시작 실패 원인. 정상이면 `None`이다.
@@ -74,6 +75,10 @@ async fn initialize_pool(
     db::init_database(pool)
         .await
         .map_err(|e| format!("데이터베이스 스키마를 초기화할 수 없습니다: {e}"))?;
+    // 이전 실패는 다음 실행에서 다시 시도하므로 시작을 막지 않는다.
+    if let Err(error) = settings::migrate_legacy_secrets_impl(pool, secrets::shared()).await {
+        eprintln!("Could not migrate legacy secrets: {error}");
+    }
     skill_duplicates::reclassify_copy_installations(pool)
         .await
         .map_err(|e| format!("기존 복사 설치 기록을 다시 분류할 수 없습니다: {e}"))?;
@@ -182,6 +187,32 @@ mod tests {
             .unwrap();
         assert_eq!(db::get_central_skills_dir(&pool).await.unwrap(), new_vault);
         assert!(new_vault.is_dir());
+    }
+
+    #[tokio::test]
+    async fn startup_moves_legacy_secrets_to_the_keychain_and_repeats_safely() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let default_central = data_dir.join("skills");
+        let legacy = temp.path().join("legacy");
+        let key = "ai_api_key__startup-test";
+        let pool = initialize_app(&data_dir, &default_central, &legacy, None)
+            .await
+            .unwrap();
+        db::set_setting(&pool, key, "sk-old").await.unwrap();
+        pool.close().await;
+
+        for _ in 0..2 {
+            let pool = initialize_app(&data_dir, &default_central, &legacy, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                db::get_setting(&pool, key).await.unwrap().as_deref(),
+                Some(secrets::CONFIGURED_MARKER)
+            );
+            assert_eq!(secrets::shared().get(key).as_deref(), Some("sk-old"));
+            pool.close().await;
+        }
     }
 
     #[tokio::test]

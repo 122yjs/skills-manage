@@ -621,6 +621,30 @@ describe("SettingsView", () => {
     });
   });
 
+  it("explains in the UI language why a platform with managed installs cannot be removed", async () => {
+    const removeCustomAgent = vi
+      .fn()
+      .mockRejectedValue("PLATFORM_HAS_MANAGED_INSTALLS: 이 플랫폼에 설치된 스킬이 있어");
+    setupMocks({
+      agents: [mockBuiltinAgent, mockCustomAgent],
+      removeCustomAgent,
+    });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除平台 ${mockCustomAgent.display_name}` })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(
+          "该平台上仍有应用安装的技能，无法删除。请先移除这些安装，再删除平台。"
+        ).length
+      ).toBeGreaterThan(0);
+    });
+  });
+
   it("triggers rescan after removing a platform", async () => {
     const removeCustomAgent = vi.fn().mockResolvedValue(undefined);
     const rescan = vi.fn().mockResolvedValue(undefined);

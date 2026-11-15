@@ -116,6 +116,8 @@ pub fn run() {
             commands::settings::set_setting,
             commands::settings::get_secret_status,
             commands::settings::set_secret,
+            commands::settings::has_legacy_secrets,
+            commands::settings::clear_legacy_secrets,
             commands::recovery::list_recovery_entries,
             commands::recovery::get_database_backup_directory,
             commands::recovery::restore_recovery_entry,
