@@ -957,6 +957,8 @@ async fn change_central_path_impl(
         return Err("Pending migration source is not the legacy Central path".to_string());
     }
     let recreate_universal = migration_state != MIGRATION_COMPLETED && current == legacy_path;
+    // 휴지통 항목의 원래 위치는 실제 경로(심볼릭 링크 해석 후)로 저장되므로 이전 전에 구해 둡니다.
+    let old_root = current.canonicalize().unwrap_or_else(|_| current.clone());
     // 파일과 DB 경로를 바꾸기 전에 WAL까지 포함한 일관된 DB 스냅샷을 남깁니다.
     recovery::snapshot_database(pool, "보관함 위치 변경 전 데이터베이스 백업").await?;
     let applied = apply_storage_move_impl(
@@ -967,21 +969,42 @@ async fn change_central_path_impl(
         recreate_universal,
         &managed_links,
     )?;
-    if let Err(error) = update_database_paths(
-        pool,
-        &current,
-        destination,
-        universal_path,
-        &skills,
-        recreate_universal,
-        &managed_links,
-    )
-    .await
-    {
+    let new_root = destination
+        .canonicalize()
+        .unwrap_or_else(|_| destination.to_path_buf());
+    let database_result = match recovery::retarget_vault_trash(pool, &old_root, &new_root).await {
+        Ok(()) => {
+            update_database_paths(
+                pool,
+                &current,
+                destination,
+                universal_path,
+                &skills,
+                recreate_universal,
+                &managed_links,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = database_result {
+        let _ = recovery::retarget_vault_trash(pool, &new_root, &old_root).await;
         let rollback = applied.rollback();
         return Err(error_with_rollback(error, rollback));
     }
-    applied.commit();
+    // 원래 위치의 백업은 휴지통 보관 기간 동안 남깁니다. 보존에 실패하면 지우지 않고 그대로 둡니다.
+    let backup_name = current.file_name().unwrap_or_default();
+    if recovery::backup_vault_after_move(
+        pool,
+        &applied.backup,
+        &new_root.join(backup_name),
+        "보관함 위치 변경 전 원본".to_string(),
+    )
+    .await
+    .is_ok()
+    {
+        applied.commit();
+    }
     Ok(StorageChangeResult {
         central_path: path_to_string(destination),
         skill_count: skills.len(),
@@ -1505,5 +1528,93 @@ mod tests {
             installations[0].installed_path,
             path_to_string(&source.join("demo"))
         );
+    }
+
+    /// 파일 기반 DB와 보관함(vault-a)에 스킬 하나, 휴지통 항목 하나(gone)를 만들어 둡니다.
+    async fn setup_vault_with_trash(
+        temp: &tempfile::TempDir,
+    ) -> (DbPool, PathBuf, PathBuf, recovery::RecoveryEntry) {
+        let root = temp.path().canonicalize().unwrap();
+        let source = root.join("vault-a");
+        write_skill(&source.join("demo"), "Demo");
+        write_skill(&source.join("gone"), "Gone");
+        let pool = db::create_pool(root.join("db.sqlite").to_str().unwrap())
+            .await
+            .unwrap();
+        db::init_database(&pool).await.unwrap();
+        db::set_setting(
+            &pool,
+            db::CENTRAL_SKILLS_PATH_SETTING,
+            &path_to_string(&source),
+        )
+        .await
+        .unwrap();
+        db::set_setting(
+            &pool,
+            db::CENTRAL_MIGRATION_STATE_SETTING,
+            MIGRATION_COMPLETED,
+        )
+        .await
+        .unwrap();
+        let entry = recovery::backup_vault_before_removal(
+            &pool,
+            &source.join("gone"),
+            "휴지통 테스트".to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        remove_path(&source.join("gone")).unwrap();
+        (pool, source, root.join("vault-b"), entry)
+    }
+
+    #[tokio::test]
+    async fn trash_entries_follow_path_change_and_restore_into_new_vault() {
+        let temp = tempdir().unwrap();
+        let (pool, _source, destination, entry) = setup_vault_with_trash(&temp).await;
+        let root = temp.path().canonicalize().unwrap();
+
+        change_central_path_impl(&pool, &destination, &root.join("legacy"), &root.join("u"))
+            .await
+            .unwrap();
+
+        let entries = recovery::list_recovery_entries_impl(&pool).await.unwrap();
+        let listed = entries.iter().find(|item| item.id == entry.id).unwrap();
+        assert_eq!(
+            listed.original_path,
+            path_to_string(&destination.join("gone"))
+        );
+        recovery::restore_recovery_entry_impl(&pool, &entry.id)
+            .await
+            .unwrap();
+        assert!(destination.join("gone/SKILL.md").exists());
+    }
+
+    #[tokio::test]
+    async fn source_backup_is_kept_as_trash_entry_after_path_change() {
+        let temp = tempdir().unwrap();
+        let (pool, source, destination, _entry) = setup_vault_with_trash(&temp).await;
+        let root = temp.path().canonicalize().unwrap();
+
+        change_central_path_impl(&pool, &destination, &root.join("legacy"), &root.join("u"))
+            .await
+            .unwrap();
+
+        assert!(!fs::read_dir(&root).unwrap().any(|item| item
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("skillsmanage-backup")));
+        let entries = recovery::list_recovery_entries_impl(&pool).await.unwrap();
+        let retained = entries
+            .iter()
+            .find(|item| item.original_path == path_to_string(&destination.join("vault-a")))
+            .unwrap();
+        assert!(retained.expires_at.is_some());
+        assert!(!source.exists());
+        recovery::restore_recovery_entry_impl(&pool, &retained.id)
+            .await
+            .unwrap();
+        assert!(destination.join("vault-a/demo/SKILL.md").exists());
     }
 }

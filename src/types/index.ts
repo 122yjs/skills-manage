@@ -462,6 +462,11 @@ export interface ScanDirectory {
 
 export type MigrationState = "pending" | "deferred" | "completed";
 
+export interface StartupStatus {
+  ready: boolean;
+  error: string | null;
+}
+
 export interface CentralVaultStatus {
   central_path: string;
   default_central_path: string;
