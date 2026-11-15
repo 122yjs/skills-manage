@@ -8,6 +8,7 @@ import { useCentralSkillsStore } from "@/stores/centralSkillsStore";
 import { useDiscoverStore } from "@/stores/discoverStore";
 import { useStorageStore } from "@/stores/storageStore";
 import { LegacyMigrationNotice } from "./LegacyMigrationNotice";
+import { LegacySecretsNotice } from "./LegacySecretsNotice";
 import { DevToolSetupDialog } from "@/components/settings/DevToolSetupDialog";
 import { useDevToolSetupStore } from "@/stores/devToolSetupStore";
 import { useSkillUsageStore } from "@/stores/skillUsageStore";
@@ -100,6 +101,7 @@ export function AppShell() {
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onSearchClick={() => setIsSearchOpen(true)} />
         <LegacyMigrationNotice onMigrated={handleGlobalRescan} />
+        <LegacySecretsNotice />
         <main ref={mainRef} className="flex-1 min-h-0 min-w-0 overflow-hidden">
           <Outlet />
         </main>

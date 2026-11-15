@@ -95,9 +95,12 @@ impl Secrets {
         }
     }
 
-    /// 키체인에 저장했으면 true, 키체인을 쓸 수 없어 메모리에만 두었으면 false.
+    /// 키체인에 저장하고 다시 읽어 같은 값임을 확인했으면 true,
+    /// 쓸 수 없거나 확인하지 못해 메모리에만 두었으면 false.
     pub fn set(&self, key: &str, value: &str) -> bool {
-        if self.keychain.set(key, value).is_ok() {
+        let stored = self.keychain.set(key, value).is_ok()
+            && matches!(self.keychain.get(key), Ok(Some(saved)) if saved == value);
+        if stored {
             let _ = self.memory.delete(key);
             true
         } else {

@@ -379,6 +379,11 @@
     "moving": "Moving...",
     "changed": "Moved the library and {{count}} skill(s)"
   },
+  "legacySecrets": {
+    "banner": "The OS keychain is not available here, so the AI API keys and GitHub token that an earlier version left as plain text in the database and its backups could not be moved to a safe place. If you delete them, you will need to enter those keys again.",
+    "clear": "Delete old values",
+    "later": "Later"
+  },
   "migration": {
     "title": "Separate your Skill Library",
     "description": "Copy {{count}} existing skill(s) from the shared path into a separate library while keeping them shared-installed.",

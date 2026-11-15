@@ -133,7 +133,7 @@ React 화면 (src/) ──Tauri IPC──▶ Rust 백엔드 (src-tauri/src/) ─
 - **다국어**: 한국어·영어·중국어를 지원한다. 화면에 보이는 문구는 `src/i18n/`의 번역 체계를 사용하고 세 언어를 함께 갱신한다. 프로젝트 지침을 한국어로 바꾸는 작업과 앱의 지원 언어 제거는 별개다.
 - **프런트엔드 테스트**: Vitest, jsdom, React Testing Library를 사용한다. 공통 준비 코드는 `src/test/setup.ts`에 있다. Tauri 호출은 기존 테스트의 가짜 구현(mock) 방식을 따른다.
 - **미사용 변수**: ESLint 설정은 `_`로 시작하는 인자와 변수의 미사용을 허용한다.
-- **비밀값**: AI API 키와 GitHub 토큰은 `src-tauri/src/secrets.rs`의 저장소(OS 키체인, 쓸 수 없으면 실행 중 메모리)에만 둔다. DB `settings`에는 설정 여부 표시만 남기고, 화면에는 `get_secret_status`/`set_secret`으로 설정 여부만 주고받는다. 일반 `get_setting`/`set_setting`은 비밀값 키를 거부한다(ADR-0003).
+- **비밀값**: AI API 키와 GitHub 토큰은 `src-tauri/src/secrets.rs`의 저장소(OS 키체인, 쓸 수 없으면 실행 중 메모리)에만 둔다. DB `settings`에는 설정 여부 표시만 남기고, 화면에는 `get_secret_status`/`set_secret`으로 설정 여부만 주고받는다. 일반 `get_setting`/`set_setting`은 비밀값 키를 거부한다(ADR-0003). 이전 버전이 DB에 남긴 평문 값은 시작 때(`startup.rs`) `settings::migrate_legacy_secrets_impl`이 키체인 저장을 다시 읽어 확인한 뒤에만 표시값으로 바꾸고 DB 백업의 비밀값 칸도 비운다. 키체인을 쓸 수 없으면 지우지 않고 `LegacySecretsNotice`가 지울지 묻는다.
 - **Rust DB 접근**: DB가 필요한 명령은 `State<AppState>`로 상태를 받는다. 빌드 시 DB 연결이 필요한 `sqlx::query_as!` 대신 기존의 `sqlx::query()`와 `Row::get()` 방식 등을 따른다.
 - **마켓플레이스**: 기존 저장소 탐색·머리말 해석과 `marketplace_skills` 캐시를 재사용한다. 동기화와 검색에는 `sync_registry`, `search_marketplace_skills` 등 기존 명령을 우선 확인한다.
 - **AI 설명**: 제공업체·키·모델·주소는 설정에서 읽는다. Anthropic/OpenAI 응답 형식과 `thinking` 블록 처리 등 기존 호환 동작을 유지한다.
