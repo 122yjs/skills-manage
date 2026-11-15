@@ -136,3 +136,17 @@ React 화면 (src/) ──Tauri IPC──▶ Rust 백엔드 (src-tauri/src/) ─
 - **마켓플레이스**: 기존 저장소 탐색·머리말 해석과 `marketplace_skills` 캐시를 재사용한다. 동기화와 검색에는 `sync_registry`, `search_marketplace_skills` 등 기존 명령을 우선 확인한다.
 - **AI 설명**: 제공업체·키·모델·주소는 설정에서 읽는다. Anthropic/OpenAI 응답 형식과 `thinking` 블록 처리 등 기존 호환 동작을 유지한다.
 - **설치·삭제 안전성**: 설치는 중앙 원본 확보 절차를 재사용한다. 삭제는 설치 대상, 공용 위치, 중앙 원본을 구분하고 기존 복구·출처 기록 처리를 확인한다.
+
+## Agent skills
+
+### Issue tracker
+
+이슈와 명세는 GitHub Issues(`122yjs/skills-manage`)에서 관리한다. `docs/agents/issue-tracker.md`를 본다.
+
+### Triage labels
+
+기본 분류 라벨 5개(`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`)를 그대로 쓴다. `docs/agents/triage-labels.md`를 본다.
+
+### Domain docs
+
+단일 맥락 구성이다. 루트 `GLOSSARY.md`와 `docs/adr/`를 쓴다. `docs/agents/domain.md`를 본다.
