@@ -650,6 +650,12 @@ export interface GitHubSkillConflict {
   proposedName: string;
 }
 
+/** 루트 스킬 옆의 최상위 폴더. `defaultSelected`가 미리보기의 기본 선택이다. */
+export interface GitHubSkillSubfolder {
+  name: string;
+  defaultSelected: boolean;
+}
+
 export interface GitHubSkillPreview {
   sourcePath: string;
   skillId: string;
@@ -659,6 +665,8 @@ export interface GitHubSkillPreview {
   skillDirectoryName: string;
   downloadUrl: string;
   conflict?: GitHubSkillConflict | null;
+  /** 루트 스킬(sourcePath ".")에만 있다. */
+  subfolders?: GitHubSkillSubfolder[];
 }
 
 export interface GitHubRepoPreview {
@@ -672,7 +680,14 @@ export interface GitHubSkillImportSelection {
   sourcePath: string;
   resolution: DuplicateResolution;
   renamedSkillId?: string | null;
+  /** 루트 스킬과 함께 설치할 최상위 폴더 이름. */
+  includedFolders?: string[];
 }
+
+/** 마켓플레이스 단건 설치 결과. 루트 스킬은 폴더 선택을 위해 가져오기 화면으로 넘어간다. */
+export type MarketplaceInstallOutcome =
+  | { status: "installed" }
+  | { status: "needsFolderSelection"; repoUrl: string };
 
 export interface ImportedGitHubSkillSummary {
   sourcePath: string;

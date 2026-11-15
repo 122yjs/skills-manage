@@ -667,3 +667,30 @@ describe("marketplaceStore", () => {
     expect(useMarketplaceStore.getState().githubImport.importFailure).toBeNull();
   });
 });
+
+describe("marketplaceStore single install", () => {
+  it("leaves a root skill uninstalled and returns the folder selection request", async () => {
+    mockInvoke.mockReset();
+    useMarketplaceStore.setState({
+      skills: [
+        {
+          id: "r::root",
+          registry_id: "r",
+          name: "root",
+          description: null,
+          download_url: "https://raw.githubusercontent.com/acme/root/main/SKILL.md",
+          is_installed: false,
+          synced_at: "2026-01-01T00:00:00Z",
+        },
+      ] as never,
+      installingIds: new Set(),
+    });
+    const outcome = { status: "needsFolderSelection", repoUrl: "https://github.com/acme/root" };
+    mockInvoke.mockResolvedValueOnce(outcome);
+
+    await expect(useMarketplaceStore.getState().installSkill("r::root")).resolves.toEqual(outcome);
+
+    expect(useMarketplaceStore.getState().skills[0].is_installed).toBe(false);
+    expect(useMarketplaceStore.getState().installingIds.size).toBe(0);
+  });
+});

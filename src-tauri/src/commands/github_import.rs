@@ -97,6 +97,14 @@ pub struct GitHubSkillConflict {
     pub existing_path: String,
 }
 
+/// 루트 스킬에 포함할 수 있는 최상위 하위 폴더. 미리보기에서 사용자가 고른다.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSkillSubfolder {
+    pub name: String,
+    pub default_selected: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubSkillPreview {
@@ -108,6 +116,8 @@ pub struct GitHubSkillPreview {
     pub skill_directory_name: String,
     pub download_url: String,
     pub conflict: Option<GitHubSkillConflict>,
+    /// 루트 스킬(`source_path == "."`)만 채워진다.
+    pub subfolders: Vec<GitHubSkillSubfolder>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -123,6 +133,9 @@ pub struct GitHubSkillImportSelection {
     pub source_path: String,
     pub resolution: DuplicateResolution,
     pub renamed_skill_id: Option<String>,
+    /// 루트 스킬에 함께 설치할 최상위 하위 폴더 이름. 비어 있으면 루트 파일만 설치한다.
+    #[serde(default)]
+    pub included_folders: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -176,6 +189,13 @@ pub enum GitHubImportError {
 impl GitHubImportError {
     fn plain(message: impl Into<String>) -> Self {
         Self::Message(message.into())
+    }
+
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Message(message) => message,
+            Self::Failure(failure) => failure.message,
+        }
     }
 }
 
@@ -384,9 +404,11 @@ async fn preview_github_repo_import_impl(
     let auth = github_direct_auth_from_settings(pool).await?;
     let mirror = github_mirror_enabled(pool).await?;
     let repo = resolve_repo_ref(repo_url, auth.as_deref(), mirror).await?;
-    let candidates = fetch_repo_skill_candidates(&repo, auth.as_deref(), mirror).await?;
+    let snapshot =
+        download_repo_snapshot(&github_client()?, &repo, auth.as_deref(), mirror).await?;
+    let candidates = build_repo_skill_candidates_from_snapshot(&repo, &snapshot)?;
     let central_root = central_skills_root(pool).await?;
-    let skills = build_preview_skills(pool, &central_root, &candidates).await?;
+    let skills = build_preview_skills(pool, &central_root, &candidates, &snapshot).await?;
 
     if skills.is_empty() {
         return Err(
@@ -468,12 +490,12 @@ async fn import_github_repo_skills_impl(
 /// 이미 내려받은 저장소 내용으로 설치만 수행하는 요청. 테스트가 네트워크 없이
 /// 실제 설치 경로를 실행할 수 있도록 분리했다.
 #[derive(Debug, Clone)]
-struct RepoSnapshotImportRequest {
-    repo: GitHubRepoRef,
-    commit_oid: Option<String>,
-    snapshot: GitHubRepoSnapshot,
-    candidates: Vec<RemoteSkillCandidate>,
-    selections: Vec<GitHubSkillImportSelection>,
+pub(crate) struct RepoSnapshotImportRequest {
+    pub(crate) repo: GitHubRepoRef,
+    pub(crate) commit_oid: Option<String>,
+    pub(crate) snapshot: GitHubRepoSnapshot,
+    pub(crate) candidates: Vec<RemoteSkillCandidate>,
+    pub(crate) selections: Vec<GitHubSkillImportSelection>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +506,7 @@ struct StagedImport {
     target_dir: PathBuf,
     /// 기존 중앙 레코드가 대상을 소유해 교체할 수 있는지 여부.
     owned_target: bool,
+    included_folders: Vec<String>,
     source_files: Vec<SnapshotSourceFile>,
 }
 
@@ -537,7 +560,7 @@ impl ImportBatchProgress {
 /// 첫 쓰기 전에 모든 대상 경로를 검증한다. 각 스킬은 대상 옆의 스테이징
 /// 디렉터리에 먼저 쓰고 나서 교체하므로, 실패해도 반쯤 쓰인 스킬이 남지 않는다.
 /// 뒤 스킬이 실패해도 앞서 완료된 스킬은 되돌리지 않고 그대로 보고한다.
-async fn install_repo_skills_from_snapshot(
+pub(crate) async fn install_repo_skills_from_snapshot(
     pool: &DbPool,
     request: RepoSnapshotImportRequest,
     app: Option<&AppHandle>,
@@ -582,17 +605,19 @@ async fn install_repo_skills_from_snapshot(
     }
 
     for op in &mut staging_ops {
-        op.source_files =
-            collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path).map_err(
-                |message| {
-                    progress.blocked(
-                        message,
-                        Some(op.candidate.source_path.as_str()),
-                        Some(op.final_skill_id.as_str()),
-                        Some(op.target_dir.clone()),
-                    )
-                },
-            )?;
+        let collected = if op.candidate.source_path == "." {
+            collect_root_skill_files(&request.snapshot, &op.included_folders)
+        } else {
+            collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path)
+        };
+        op.source_files = collected.map_err(|message| {
+            progress.blocked(
+                message,
+                Some(op.candidate.source_path.as_str()),
+                Some(op.final_skill_id.as_str()),
+                Some(op.target_dir.clone()),
+            )
+        })?;
     }
 
     let total_files = staging_ops
@@ -925,6 +950,7 @@ async fn stage_import_target(
         resolution: selection.resolution.clone(),
         target_dir,
         owned_target,
+        included_folders: selection.included_folders.clone(),
         source_files: Vec::new(),
     })
 }
@@ -1053,6 +1079,7 @@ async fn build_preview_skills(
     pool: &DbPool,
     central_root: &Path,
     candidates: &[RemoteSkillCandidate],
+    snapshot: &GitHubRepoSnapshot,
 ) -> Result<Vec<GitHubSkillPreview>, String> {
     let mut skills = Vec::with_capacity(candidates.len());
     for candidate in candidates {
@@ -1076,9 +1103,71 @@ async fn build_preview_skills(
             skill_directory_name: candidate.skill_directory_name.clone(),
             download_url: candidate.download_url.clone(),
             conflict,
+            subfolders: if candidate.source_path == "." {
+                root_skill_subfolders(snapshot)
+            } else {
+                Vec::new()
+            },
         });
     }
     Ok(skills)
+}
+
+/// 루트 스킬 옆의 최상위 폴더 목록. 자기 SKILL.md가 있는 폴더(다른 스킬)와
+/// `.git`·`.github`는 기본으로 제외하고 나머지는 기본으로 포함한다.
+fn root_skill_subfolders(snapshot: &GitHubRepoSnapshot) -> Vec<GitHubSkillSubfolder> {
+    let mut folders: std::collections::BTreeMap<&str, bool> = std::collections::BTreeMap::new();
+    for path in snapshot.files.keys() {
+        let Some((folder, rest)) = path.split_once('/') else {
+            continue;
+        };
+        let has_skill_md = rest
+            .rsplit('/')
+            .next()
+            .is_some_and(|file| file.eq_ignore_ascii_case("SKILL.md"));
+        let entry = folders.entry(folder).or_insert(true);
+        *entry &= !has_skill_md && folder != ".git" && folder != ".github";
+    }
+    folders
+        .into_iter()
+        .map(|(name, default_selected)| GitHubSkillSubfolder {
+            name: name.to_string(),
+            default_selected,
+        })
+        .collect()
+}
+
+/// 루트 스킬의 파일에 선택한 최상위 폴더의 파일을 더한다. 스냅샷에 없는 폴더나
+/// 폴더 하나가 아닌 이름은 거부해 선택하지 않은 경로가 섞이지 않게 한다.
+fn collect_root_skill_files(
+    snapshot: &GitHubRepoSnapshot,
+    included_folders: &[String],
+) -> Result<Vec<SnapshotSourceFile>, String> {
+    let known = root_skill_subfolders(snapshot);
+    let mut files = collect_snapshot_source_files(snapshot, ".")?;
+    for folder in included_folders {
+        if !known.iter().any(|known| &known.name == folder) {
+            return Err(format!(
+                "Folder '{}' is not a top-level folder of this repository.",
+                folder
+            ));
+        }
+        let prefix = format!("{folder}/");
+        for (path, file) in snapshot
+            .files
+            .iter()
+            .filter(|(path, _)| path.starts_with(&prefix))
+        {
+            files.push(SnapshotSourceFile {
+                repo_path: path.clone(),
+                relative_path: path.clone(),
+                byte_len: file.bytes.len(),
+            });
+        }
+    }
+    files.sort_by(|left, right| left.repo_path.cmp(&right.repo_path));
+    files.dedup_by(|left, right| left.repo_path == right.repo_path);
+    Ok(files)
 }
 
 /// 중앙 레코드가 있어도 실제 대상 자리까지 확인한다. 레코드가 소유하지 않은
@@ -1264,7 +1353,7 @@ struct GitHubAuth {
 fn github_cli_path() -> Option<PathBuf> {
     // 테스트가 개발자 PC의 실제 GitHub CLI를 실행하지 않게 한다.
     // CLI 동작은 resolve_github_auth에 가짜 CLI 경로를 넘겨 시험한다.
-    if cfg!(test) {
+    if cfg!(any(test, feature = "test-isolation")) {
         return None;
     }
     let name = if cfg!(windows) { "gh.exe" } else { "gh" };
@@ -2243,6 +2332,7 @@ mod tests {
             source_path: source_path.to_string(),
             resolution,
             renamed_skill_id: None,
+            included_folders: Vec::new(),
         }
     }
 
@@ -2254,6 +2344,7 @@ mod tests {
             source_path: source_path.to_string(),
             resolution: DuplicateResolution::Rename,
             renamed_skill_id: Some(renamed_skill_id.to_string()),
+            included_folders: Vec::new(),
         }
     }
 
@@ -2668,6 +2759,98 @@ mod tests {
         }
     }
 
+    fn root_skill_with_folders_snapshot() -> GitHubRepoSnapshot {
+        repo_snapshot(&[
+            ("SKILL.md", sample_frontmatter("root-demo", "root skill")),
+            ("README.md", "# repo\n".to_string()),
+            ("docs/guide.md", "guide\n".to_string()),
+            ("scripts/run.sh", "echo hi\n".to_string()),
+            (".github/workflows/ci.yml", "on: push\n".to_string()),
+            (".git/config", "[core]\n".to_string()),
+            (
+                "other/SKILL.md",
+                sample_frontmatter("other", "another skill"),
+            ),
+            ("other/notes.md", "notes\n".to_string()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn root_skill_preview_lists_folders_with_safe_defaults() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let snapshot = root_skill_with_folders_snapshot();
+        let candidates = build_repo_skill_candidates_from_snapshot(&import_repo(), &snapshot)
+            .expect("candidates");
+
+        let skills = build_preview_skills(&pool, central_root.path(), &candidates, &snapshot)
+            .await
+            .expect("preview skills");
+
+        let folders = |source_path: &str| {
+            skills
+                .iter()
+                .find(|skill| skill.source_path == source_path)
+                .expect("skill")
+                .subfolders
+                .iter()
+                .map(|folder| (folder.name.as_str(), folder.default_selected))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            folders("."),
+            vec![
+                (".git", false),
+                (".github", false),
+                ("docs", true),
+                ("other", false),
+                ("scripts", true),
+            ]
+        );
+        assert!(folders("other").is_empty());
+    }
+
+    #[tokio::test]
+    async fn root_skill_import_installs_only_selected_folders() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let mut selection = import_selection(".", DuplicateResolution::Overwrite);
+        selection.included_folders = vec!["docs".to_string()];
+
+        install_snapshot(&pool, root_skill_with_folders_snapshot(), vec![selection])
+            .await
+            .expect("import");
+
+        let target = central_root.path().join("skills");
+        assert!(target.join("SKILL.md").is_file());
+        assert!(target.join("README.md").is_file());
+        assert!(target.join("docs/guide.md").is_file());
+        for excluded in ["scripts", ".github", ".git", "other"] {
+            assert!(
+                !target.join(excluded).exists(),
+                "{excluded} must not be installed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn root_skill_import_rejects_unknown_or_escaping_folders() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        for folder in ["missing", "../escape", "docs/sub"] {
+            let mut selection = import_selection(".", DuplicateResolution::Overwrite);
+            selection.included_folders = vec![folder.to_string()];
+
+            let error =
+                install_snapshot(&pool, root_skill_with_folders_snapshot(), vec![selection])
+                    .await
+                    .expect_err("invalid folder must be blocked");
+
+            assert_eq!(import_failure(error).code, GitHubImportFailureCode::Blocked);
+        }
+        assert!(central_entries(central_root.path()).is_empty());
+    }
+
     #[tokio::test]
     async fn preview_marks_canonical_conflicts_without_writing() {
         let pool = setup_test_db().await;
@@ -2713,9 +2896,14 @@ mod tests {
             .expect("candidates");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("preview skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("preview skills"),
         };
 
         assert!(!preview.skills.is_empty());
@@ -2870,6 +3058,7 @@ mod tests {
                 source_path: "skills/private-skill".to_string(),
                 resolution: DuplicateResolution::Overwrite,
                 renamed_skill_id: None,
+                included_folders: Vec::new(),
             }],
             None,
         )
@@ -2918,9 +3107,14 @@ mod tests {
         let repo = import_repo();
         let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
             .expect("candidates");
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
 
         let commit = preview
             .iter()
@@ -2967,9 +3161,14 @@ mod tests {
             &sample_frontmatter("Agent Planner", "existing"),
         )
         .await;
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "agent-planner")
@@ -2995,9 +3194,14 @@ mod tests {
         std::fs::create_dir_all(&mismatched_dir).expect("mkdir");
         std::fs::write(mismatched_dir.join("SKILL.md"), "mismatched").expect("write");
 
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "commit")
@@ -3034,9 +3238,14 @@ mod tests {
         let repo = import_repo();
         let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
             .expect("candidates");
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "agent-planner")
@@ -3568,9 +3777,14 @@ mod tests {
         let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("skills"),
         };
 
         assert!(preview
@@ -3618,9 +3832,14 @@ mod tests {
         let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("preview skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("preview skills"),
         };
 
         assert!(preview

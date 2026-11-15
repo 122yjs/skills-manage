@@ -42,6 +42,12 @@ keyring = "4"
 [target.'cfg(target_os = "macos")'.dependencies]
 swift-rs = "1"
 
+[features]
+# 켜면 개발자 PC의 `gh`와 OS 키체인을 쓰지 않는다. `cfg(test)`가 꺼진 통합 테스트용이다.
+test-isolation = []
+
 [dev-dependencies]
+# 자기 자신을 개발 의존성으로 넣어 `cargo test`가 통합 테스트에 test-isolation을 자동으로 켜게 한다.
+skills-manage = { path = ".", features = ["test-isolation"] }
 tokio = { version = "1", features = ["full"] }
 tempfile = "3"
