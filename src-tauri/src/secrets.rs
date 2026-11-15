@@ -133,7 +133,7 @@ impl Secrets {
 /// 앱 전체가 공유하는 비밀값 저장소. 테스트 빌드는 실제 키체인 대신 메모리 구현을 쓴다.
 pub fn shared() -> &'static Secrets {
     static SHARED: LazyLock<Secrets> = LazyLock::new(|| {
-        if cfg!(test) {
+        if cfg!(any(test, feature = "test-isolation")) {
             Secrets::new(Arc::new(MemoryStore::default()))
         } else {
             Secrets::new(Arc::new(KeychainStore))
