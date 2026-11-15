@@ -151,7 +151,12 @@ fn is_managed_installation(
     None
 }
 
-fn unsupported_reason(agent: &Agent, source_kind: Option<&str>) -> String {
+fn unsupported_reason(agent: &Agent, skill: &db::SkillForAgent) -> String {
+    let source_kind = skill.source_kind.as_deref();
+    if !skill.is_managed {
+        return "앱이 관리하지 않는 폴더입니다. 가져오기 전에는 비활성으로 바꾸거나 삭제할 수 없습니다."
+            .to_string();
+    }
     if matches!(agent.id.as_str(), "claude-code" | "codebuddy") && source_kind == Some("plugin") {
         return format!(
             "{}의 skillOverrides는 플러그인 스킬에 적용되지 않습니다. 플러그인 관리에서 끄거나 삭제해야 합니다.",
@@ -167,6 +172,10 @@ fn unsupported_reason(agent: &Agent, source_kind: Option<&str>) -> String {
 fn adapter_for(agent: &Agent, skill: &db::SkillForAgent, managed: bool) -> Adapter {
     if managed {
         return Adapter::ManagedInstallation;
+    }
+    // 관찰 항목은 플랫폼 설정으로도 끄거나 지우지 않는다.
+    if !skill.is_managed {
+        return Adapter::Unsupported;
     }
     match agent.id.as_str() {
         "claude-code" if skill.source_kind.as_deref() != Some("plugin") => {
@@ -1628,7 +1637,7 @@ fn make_status(
         }
     };
     let base_reason = match (&adapter, &state_result) {
-        (Adapter::Unsupported, _) => Some(unsupported_reason(agent, skill.source_kind.as_deref())),
+        (Adapter::Unsupported, _) => Some(unsupported_reason(agent, &skill)),
         (_, Err(error)) => Some(error.clone()),
         _ => None,
     };
@@ -1904,6 +1913,7 @@ async fn get_platform_skill_controls_impl_at_path(
                 source_root: None,
                 source_label: None,
                 is_read_only: false,
+                is_managed: true,
                 conflict_group: None,
                 conflict_count: 0,
             });
@@ -2088,7 +2098,7 @@ async fn execute_external_action(
 ) -> Result<(), String> {
     let adapter = adapter_for(agent, skill, false);
     if adapter == Adapter::Unsupported {
-        return Err(unsupported_reason(agent, skill.source_kind.as_deref()));
+        return Err(unsupported_reason(agent, skill));
     }
     let source_path = if adapter == Adapter::CodexSkillsConfig {
         codex_source_path(skill)
@@ -3201,6 +3211,7 @@ mod tests {
             source_root: Some(skill_dir.to_string_lossy().into_owned()),
             source_label: None,
             is_read_only: true,
+            is_managed: true,
             conflict_group: None,
             conflict_count: 0,
         }

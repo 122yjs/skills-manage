@@ -534,6 +534,11 @@ export function CentralSkillsView() {
     return agentDisplayNames([...skill.linked_agents, ...(skill.read_only_agents ?? [])]);
   }
 
+  /** 삭제해도 남는 관찰 항목(앱이 관리하지 않는 같은 이름 폴더)의 플랫폼 이름. */
+  function observedAgentNames(skills: SkillWithLinks[]): string[] {
+    return agentDisplayNames([...new Set(skills.flatMap((skill) => skill.observed_agents ?? []))]);
+  }
+
   const sortFieldOptions: Array<{ value: SortField; label: string }> = [
     { value: "name", label: t("central.sortByName") },
     { value: "createdAt", label: t("central.sortByCreatedAt") },
@@ -609,7 +614,11 @@ export function CentralSkillsView() {
   }
 
   function handleDeleteClick(skill: SkillWithLinks) {
-    if (skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0) {
+    if (
+      skill.linked_agents.length > 0 ||
+      (skill.read_only_agents?.length ?? 0) > 0 ||
+      (skill.observed_agents?.length ?? 0) > 0
+    ) {
       setDeleteTargetSkill(skill);
       return;
     }
@@ -927,14 +936,19 @@ export function CentralSkillsView() {
                       onDeleteFromCentral={() => handleDeleteClick(skill)}
                       deleteFromCentralLabel={t("central.deleteFromCentralLabel", { name: skill.name })}
                       deleteFromCentralRequiresDialog={
-                        skill.linked_agents.length > 0 || (skill.read_only_agents?.length ?? 0) > 0
+                        skill.linked_agents.length > 0 ||
+                        (skill.read_only_agents?.length ?? 0) > 0 ||
+                        (skill.observed_agents?.length ?? 0) > 0
                       }
                       isLoading={deletingSkillId === skill.id}
                       detailButtonRef={(node) => setDetailButtonRef(skill.id, node)}
                       platformIcons={{
                         agents,
                         linkedAgents: skill.linked_agents,
-                        readOnlyAgents: skill.read_only_agents ?? [],
+                        readOnlyAgents: [
+                          ...(skill.read_only_agents ?? []),
+                          ...(skill.observed_agents ?? []),
+                        ],
                         usageByAgent: Object.fromEntries(
                           usageStatuses.flatMap((status) => {
                             const usage = status.skills.find(
@@ -1090,12 +1104,19 @@ export function CentralSkillsView() {
               {t("central.deleteConfirmTitle", { name: deleteTargetSkill?.name ?? "" })}
             </DialogTitle>
             <DialogDescription>
-              {deleteTargetSkill
+              {deleteTargetSkill && linkedAgentNames(deleteTargetSkill).length > 0
                 ? t("central.deleteLinkedWarning", {
                     platforms: linkedAgentNames(deleteTargetSkill).join(", "),
                   })
                 : ""}
             </DialogDescription>
+            {deleteTargetSkill && observedAgentNames([deleteTargetSkill]).length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {t("central.deleteObservedWarning", {
+                  platforms: observedAgentNames([deleteTargetSkill]).join(", "),
+                })}
+              </p>
+            )}
           </DialogHeader>
           <DialogFooter>
             <Button
@@ -1184,6 +1205,17 @@ export function CentralSkillsView() {
                     ))}
                   </div>
                 </div>
+
+                {observedAgentNames(bundleDeletePreview.skills).length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-muted-foreground">
+                      {t("central.deleteBundleObservedLabel")}
+                    </div>
+                    <div className="mt-1 text-muted-foreground">
+                      {observedAgentNames(bundleDeletePreview.skills).join(", ")}
+                    </div>
+                  </div>
+                )}
 
                 {bundleDeletePreview.affectedAgents.length > 0 && (
                   <div>
