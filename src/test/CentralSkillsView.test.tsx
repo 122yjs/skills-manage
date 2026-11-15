@@ -25,6 +25,10 @@ vi.mock("../stores/skillStore", () => ({
 
 vi.mock("../stores/marketplaceStore", () => ({
   useMarketplaceStore: vi.fn(),
+  githubImportAiSummaryKey: (
+    repo: { owner: string; repo: string },
+    sourcePath: string,
+  ) => `${repo.owner}/${repo.repo}:${sourcePath}`,
   toGitHubImportFailure: (error: unknown) =>
     error && typeof error === "object" && "code" in error ? error : null,
 }));
@@ -567,6 +571,23 @@ describe("CentralSkillsView", () => {
         cascadeUninstall: true,
       });
     });
+  });
+
+  it("shows which same-name folders remain when cascade deleting a skill", async () => {
+    renderCentralSkillsView({
+      skills: [{ ...mockSkills[0], observed_agents: ["cursor"] }],
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从技能仓库删除 frontend-design 原件/i,
+      })
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /将 frontend-design 移到回收站/i,
+    });
+    expect(dialog).toHaveTextContent(/应用并未管理它，删除后仍会保留：Cursor/);
   });
 
   it("renders central skill bundles above the skill list", () => {

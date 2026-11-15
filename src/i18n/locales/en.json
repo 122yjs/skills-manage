@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "symlink",
     "sourceCopyLabel": "copy",
     "notFound": "Platform not found",
+    "unreadableTitle": "Some folders could not be read, so existing records were kept",
+    "unreadableHint": "Check the folder permissions and disk connection, then rescan.",
     "searchSkillLabel": "View skill {{name}}",
     "sourceFilterTabsLabel": "Claude source filters",
     "sourceFilter": {
@@ -238,7 +240,8 @@
       "all": "All",
       "platform": "Platform install",
       "universal": "Shared install"
-    }
+    },
+    "unmanaged": "Not managed by the app"
   },
   "skillOrigin": {
     "confirmUpdate": "Back up and update to {{commit}}?",
@@ -390,7 +393,11 @@
     "conflicts": "{{count}} conflict(s) prevent migration.",
     "later": "Later",
     "start": "Start migration",
-    "migrating": "Migrating..."
+    "migrating": "Migrating...",
+    "linkedSkills": "{{count}} linked skill(s)",
+    "linkedSkillsResult": "They stay as links pointing to the same targets after the move. The original folders are not changed.",
+    "unrecognizedItems": "{{count}} item(s) not recognized as skills",
+    "unrecognizedItemsResult": "They are moved into the vault, and a link to each stays in the shared folder so it remains visible."
   },
   "sharedDelete": {
     "title": "Delete shared installs and linked shortcuts?",
@@ -525,7 +532,9 @@
     "sortAscending": "Asc",
     "sortDescending": "Desc",
     "sortByNewest": "Newest",
-    "sortByOldest": "Oldest"
+    "sortByOldest": "Oldest",
+    "deleteObservedWarning": "These platforms have a folder with the same name that the app does not manage, so it stays after deletion: {{platforms}}",
+    "deleteBundleObservedLabel": "Folders that stay (not managed by the app)"
   },
   "centralBundleDrawer": {
     "titleFallback": "Bundle detail",
@@ -633,7 +642,8 @@
     "readOnlyDesc": "Read-only observed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
     "userManagedDesc": "This Claude user copy keeps the normal install-state and collection-management controls.",
     "readOnlyInstallBlocked": "Install and uninstall are unavailable for read-only observed copies.",
-    "readOnlyCollectionsBlocked": "Collection management is unavailable for read-only observed copies."
+    "readOnlyCollectionsBlocked": "Collection management is unavailable for read-only observed copies.",
+    "unmanagedDesc": "This folder was placed here by you, so the app does not manage it. It is never removed, paused, or overwritten, and its files stay as they are."
   },
   "collection": {
     "edit": "Edit",
@@ -813,6 +823,9 @@
       "intl": "International"
     },
     "aiApiKeyLabel": "API Key",
+    "secretSavedPlaceholder": "Saved · enter a new value to replace it",
+    "secretKeychainUnavailable": "The OS keychain is not available here, so secrets are not written to disk and are kept in memory only while the app is running. You will need to enter them again after restarting the app.",
+    "aiApiKeyClear": "Clear key",
     "aiModelLabel": "Model",
     "aiModelPlaceholder": "Model name",
     "aiModelCustom": "Custom",

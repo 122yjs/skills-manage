@@ -152,7 +152,7 @@ pub async fn create_pool(db_path: &str) -> Result<DbPool, String> {
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 /// 테이블이나 열을 변경할 때 함께 올려서 변경 직전 백업을 남긴다.
-pub const DATABASE_SCHEMA_VERSION: i64 = 2;
+pub const DATABASE_SCHEMA_VERSION: i64 = 3;
 
 /// Initialize all database tables (idempotent) and seed built-in agents.
 pub async fn init_database(pool: &DbPool) -> Result<(), String> {
@@ -189,6 +189,7 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
             link_type      TEXT NOT NULL,
             symlink_target TEXT,
             created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            is_managed     BOOLEAN NOT NULL DEFAULT 1,
             PRIMARY KEY (skill_id, agent_id)
         )",
     )
@@ -306,6 +307,16 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
     }
+
+    // 앱이 만든 관리 설치(1)와 플랫폼 폴더에서 발견만 한 관찰 항목(0)을 구분한다 (ADR-0002).
+    // 기존 기록은 관리 설치로 두고, 복사 설치는 시작할 때 한 번 보관함 원본과 비교해 다시 분류한다.
+    ensure_column(
+        pool,
+        "skill_installations",
+        "is_managed",
+        "ALTER TABLE skill_installations ADD COLUMN is_managed BOOLEAN NOT NULL DEFAULT 1",
+    )
+    .await?;
 
     // agents table
     sqlx::query(
@@ -1500,6 +1511,8 @@ pub struct SkillForAgent {
     pub source_root: Option<String>,
     pub source_label: Option<String>,
     pub is_read_only: bool,
+    /// `false`면 앱이 관리하지 않는 관찰 항목이다. 이때 `is_read_only`도 켜져 있다.
+    pub is_managed: bool,
     pub conflict_group: Option<String>,
     pub conflict_count: i64,
 }
@@ -1519,6 +1532,7 @@ fn observation_to_skill_for_agent(observation: AgentSkillObservation) -> SkillFo
         source_root: Some(observation.source_root),
         source_label: observation.source_label,
         is_read_only: observation.is_read_only,
+        is_managed: true,
         conflict_group: None,
         conflict_count: 0,
     }
@@ -1545,6 +1559,12 @@ pub async fn get_skills_for_agent(
                     .or_insert(0) += 1;
             }
 
+            let unmanaged_paths: HashSet<String> =
+                get_unmanaged_installations_by_agent(pool, agent_id)
+                    .await?
+                    .into_iter()
+                    .map(|installation| installation.installed_path)
+                    .collect();
             return Ok(observations
                 .into_iter()
                 .map(|observation| {
@@ -1553,6 +1573,10 @@ pub async fn get_skills_for_agent(
                         .copied()
                         .unwrap_or(0);
                     let mut skill = observation_to_skill_for_agent(observation);
+                    if unmanaged_paths.contains(&skill.dir_path) {
+                        skill.is_managed = false;
+                        skill.is_read_only = true;
+                    }
                     if conflict_count > 1 {
                         skill.conflict_group = Some(claude_conflict_group(agent_id, &skill.id));
                         skill.conflict_count = conflict_count;
@@ -1568,15 +1592,17 @@ pub async fn get_skills_for_agent(
                 s.id AS row_id,
                 s.name,
                 s.description,
-                s.file_path,
+                CASE WHEN si.is_managed = 1 THEN s.file_path
+                     ELSE si.installed_path || '/SKILL.md' END AS file_path,
                 si.installed_path AS dir_path,
                 si.link_type,
                 si.symlink_target,
-                s.is_central,
+                s.is_central AND si.is_managed AS is_central,
                 NULL AS source_kind,
                 NULL AS source_root,
                 NULL AS source_label,
-                0 AS is_read_only,
+                NOT si.is_managed AS is_read_only,
+                si.is_managed AS is_managed,
                 NULL AS conflict_group,
                 0 AS conflict_count
          FROM skills s
@@ -1932,14 +1958,15 @@ pub async fn delete_skill_description_translations(
 
 // ─── Skill Installations ──────────────────────────────────────────────────────
 
-/// 활성 설치 한 건을 반환한다.
+/// 활성 관리 설치 한 건을 반환한다. 관찰 항목은 포함하지 않는다.
 pub async fn get_skill_installation(
     pool: &DbPool,
     skill_id: &str,
     agent_id: &str,
 ) -> Result<Option<SkillInstallation>, String> {
     sqlx::query_as::<_, SkillInstallation>(
-        "SELECT * FROM skill_installations WHERE skill_id = ? AND agent_id = ?",
+        "SELECT * FROM skill_installations
+         WHERE skill_id = ? AND agent_id = ? AND is_managed = 1",
     )
     .bind(skill_id)
     .bind(agent_id)
@@ -1948,13 +1975,14 @@ pub async fn get_skill_installation(
     .map_err(|e| e.to_string())
 }
 
-/// 플랫폼별 활성 설치를 반환한다.
+/// 플랫폼별 활성 관리 설치를 반환한다. 관찰 항목은 포함하지 않는다.
 pub async fn get_skill_installations_by_agent(
     pool: &DbPool,
     agent_id: &str,
 ) -> Result<Vec<SkillInstallation>, String> {
     sqlx::query_as::<_, SkillInstallation>(
-        "SELECT * FROM skill_installations WHERE agent_id = ? ORDER BY skill_id",
+        "SELECT * FROM skill_installations
+         WHERE agent_id = ? AND is_managed = 1 ORDER BY skill_id",
     )
     .bind(agent_id)
     .fetch_all(pool)
@@ -2060,7 +2088,7 @@ pub async fn delete_paused_installation(
         .map_err(|e| e.to_string())
 }
 
-/// Insert or update a skill installation record.
+/// 앱의 설치·가져오기·복원 동작이 만든 관리 설치를 기록한다.
 ///
 /// On conflict (same skill_id + agent_id), updates the mutable fields
 /// (installed_path, link_type, symlink_target) but **preserves the original
@@ -2070,11 +2098,39 @@ pub async fn upsert_skill_installation(
     pool: &DbPool,
     installation: &SkillInstallation,
 ) -> Result<(), String> {
+    upsert_installation_row(pool, installation, true, true).await
+}
+
+/// 스캐너가 플랫폼 폴더에서 발견한 항목을 기록한다. 일반 폴더(`copy`)는 관찰 항목이다.
+///
+/// 같은 경로·같은 방식으로 이미 기록된 항목은 관리 여부를 그대로 둔다. 경로나 방식이
+/// 달라졌다면 다른 폴더이므로 새로 분류한다.
+pub async fn upsert_scanned_installation(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+) -> Result<(), String> {
+    let managed = installation.link_type != "copy";
+    upsert_installation_row(pool, installation, managed, false).await
+}
+
+async fn upsert_installation_row(
+    pool: &DbPool,
+    installation: &SkillInstallation,
+    managed: bool,
+    overwrite_managed: bool,
+) -> Result<(), String> {
     sqlx::query(
         "INSERT INTO skill_installations
-         (skill_id, agent_id, installed_path, link_type, symlink_target, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+         (skill_id, agent_id, installed_path, link_type, symlink_target, created_at, is_managed)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(skill_id, agent_id) DO UPDATE SET
+           is_managed     = CASE
+                              WHEN ?8 THEN excluded.is_managed
+                              WHEN skill_installations.installed_path = excluded.installed_path
+                                   AND skill_installations.link_type = excluded.link_type
+                                THEN skill_installations.is_managed
+                              ELSE excluded.is_managed
+                            END,
            installed_path = excluded.installed_path,
            link_type      = excluded.link_type,
            symlink_target = excluded.symlink_target",
@@ -2085,6 +2141,8 @@ pub async fn upsert_skill_installation(
     .bind(&installation.link_type)
     .bind(&installation.symlink_target)
     .bind(&installation.created_at)
+    .bind(managed)
+    .bind(overwrite_managed)
     .execute(pool)
     .await
     .map(|_| ())
@@ -2239,26 +2297,82 @@ pub async fn delete_skills_not_in_scope(
         .map_err(|e| e.to_string())
 }
 
-/// Retrieve all installation records for a given skill.
+/// 한 스킬의 관리 설치를 반환한다. 제거·비활성·연쇄 삭제는 이 목록만 대상으로 한다.
+/// 관찰 항목은 [`get_unmanaged_installations`]로 따로 조회한다.
 pub async fn get_skill_installations(
     pool: &DbPool,
     skill_id: &str,
 ) -> Result<Vec<SkillInstallation>, String> {
-    sqlx::query_as::<_, SkillInstallation>("SELECT * FROM skill_installations WHERE skill_id = ?")
-        .bind(skill_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations WHERE skill_id = ? AND is_managed = 1",
+    )
+    .bind(skill_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// All active managed installations across every platform.
 pub async fn get_all_skill_installations(pool: &DbPool) -> Result<Vec<SkillInstallation>, String> {
     sqlx::query_as::<_, SkillInstallation>(
-        "SELECT * FROM skill_installations ORDER BY agent_id, skill_id",
+        "SELECT * FROM skill_installations WHERE is_managed = 1 ORDER BY agent_id, skill_id",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())
+}
+
+/// 한 스킬의 관찰 항목(앱이 관리하지 않는 플랫폼 폴더)을 반환한다.
+pub async fn get_unmanaged_installations(
+    pool: &DbPool,
+    skill_id: &str,
+) -> Result<Vec<SkillInstallation>, String> {
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations
+         WHERE skill_id = ? AND is_managed = 0 ORDER BY agent_id",
+    )
+    .bind(skill_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 한 플랫폼의 관찰 항목을 반환한다.
+pub async fn get_unmanaged_installations_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<Vec<SkillInstallation>, String> {
+    sqlx::query_as::<_, SkillInstallation>(
+        "SELECT * FROM skill_installations
+         WHERE agent_id = ? AND is_managed = 0 ORDER BY skill_id",
+    )
+    .bind(agent_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 관찰 항목에는 제거·비활성 같은 관리 동작을 적용하지 않는다.
+pub async fn ensure_installation_managed(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: &str,
+) -> Result<(), String> {
+    let unmanaged: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM skill_installations
+         WHERE skill_id = ? AND agent_id = ? AND is_managed = 0",
+    )
+    .bind(skill_id)
+    .bind(agent_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if unmanaged > 0 {
+        return Err(format!(
+            "앱이 관리하지 않는 폴더라 변경하지 않습니다: {skill_id}. 가져오기 전에는 제거하거나 비활성으로 바꿀 수 없습니다"
+        ));
+    }
+    Ok(())
 }
 
 /// All paused installations across every platform.

@@ -12,6 +12,12 @@ export interface AgentWithStatus {
   is_enabled: boolean;
 }
 
+/** 비밀값 자체가 아니라 설정 여부와 OS 키체인 사용 가능 여부만 담는다. */
+export interface SecretStatus {
+  configured: boolean;
+  keychainAvailable: boolean;
+}
+
 export interface CustomAgentConfig {
   id?: string;
   display_name: string;
@@ -36,6 +42,13 @@ export interface ScanResult {
   total_skills: number;
   agents_scanned: number;
   skills_by_agent: Record<string, number>;
+  unreadable_roots?: UnreadableRoot[];
+}
+
+/** 폴더는 있지만 권한·입출력 문제로 읽지 못한 플랫폼 스킬 폴더. */
+export interface UnreadableRoot {
+  agent_id: string;
+  path: string;
 }
 
 export type ClaudeSourceKind = "user" | "plugin" | "compatibility" | "unmanaged";
@@ -54,6 +67,8 @@ export interface ScannedSkill {
   source_root?: string | null;
   source_label?: string | null;
   is_read_only?: boolean;
+  /** `false`면 앱이 관리하지 않는 관찰 항목이다. */
+  is_managed?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
 }
@@ -89,6 +104,8 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   source_root?: string | null;
   source_label?: string | null;
   is_read_only?: boolean;
+  /** `false`면 앱이 관리하지 않는 관찰 항목이다. */
+  is_managed?: boolean;
   /** 공유 원본의 GitHub 연결·업데이트 가능 여부. 플랫폼 설치 제어와 구분한다. */
   can_manage_origin?: boolean;
   conflict_group?: string | null;
@@ -224,6 +241,8 @@ export interface SkillWithLinks {
   linked_agents: string[];
   /** Agent IDs that can see this skill through a read-only compatibility root. */
   read_only_agents?: string[];
+  /** 같은 이름의 폴더가 있지만 앱이 관리하지 않는 플랫폼. 삭제해도 남는다. */
+  observed_agents?: string[];
   available_sources?: Record<string, string[]>;
   /** GitHub repository origin recorded when this skill was imported. */
   origin?: GitHubSkillOriginSummary | null;
@@ -483,6 +502,8 @@ export interface StoragePreview {
   current_path: string;
   new_path: string;
   skill_count: number;
+  linked_skills: string[];
+  unrecognized_items: string[];
   conflicts: string[];
   can_proceed: boolean;
 }

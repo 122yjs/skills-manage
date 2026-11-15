@@ -1584,7 +1584,7 @@ pub async fn test_ai_connection(
 
     let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
         Some(k) => k,
-        None => get_provider_setting(&state.db, "ai_api_key")
+        None => get_provider_secret(&state.db, "ai_api_key")
             .await
             .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?,
     };
@@ -1679,7 +1679,7 @@ pub async fn list_ai_models(
     let api_key = match req.api_key {
         Some(k) if !k.trim().is_empty() => Some(k),
         Some(_) => None,
-        None => get_provider_setting(&state.db, "ai_api_key").await,
+        None => get_provider_secret(&state.db, "ai_api_key").await,
     };
 
     let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
@@ -2015,6 +2015,16 @@ async fn get_ai_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// 활성 제공업체의 비밀값(API 키)을 DB가 아니라 OS 키체인에서 읽는다.
+async fn get_provider_secret(pool: &crate::db::DbPool, key: &str) -> Option<String> {
+    let provider = get_ai_setting(pool, "ai_provider")
+        .await
+        .unwrap_or_default();
+    crate::secrets::shared()
+        .get(&format!("{}__{}", key, provider))
+        .filter(|v| !v.trim().is_empty())
+}
+
 async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
     let provider = get_ai_setting(pool, "ai_provider")
         .await
@@ -2306,7 +2316,7 @@ async fn do_explain_skill_stream(
     content: &str,
     lang: &str,
 ) -> Result<(), String> {
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
 
@@ -2583,7 +2593,7 @@ pub(crate) async fn translate_skill_description_impl(
         return Err("번역할 설명이 비어 있습니다.".to_string());
     }
 
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
     let api_url = get_provider_setting(pool, "ai_api_url")
@@ -2855,8 +2865,8 @@ mod tests {
         db::set_setting(pool, "ai_provider", "translation-test")
             .await
             .expect("set active provider");
+        crate::secrets::shared().set("ai_api_key__translation-test", "secret-key");
         for (key, value) in [
-            ("ai_api_key__translation-test", "secret-key"),
             ("ai_api_url__translation-test", api_url),
             ("ai_model__translation-test", "translation-model"),
             ("ai_protocol__translation-test", protocol),

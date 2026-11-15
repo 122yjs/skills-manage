@@ -107,6 +107,17 @@ function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   );
 }
 
+function UnmanagedSourceBadge() {
+  const { t } = useTranslation();
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
+      <Lock className="size-3 shrink-0" />
+      {t("platform.unmanaged")}
+    </span>
+  );
+}
+
 function ReadOnlySourceBadge() {
   const { t, i18n } = useTranslation();
 
@@ -424,6 +435,8 @@ function deriveDirPathFromFilePath(path: string): string {
  * route/shell concerns are handled outside.
  */
 export interface DiscoverMetadata {
+  /** discovered_skills 테이블의 ID. 파일 읽기 명령이 스킬 폴더를 찾는 데 쓴다. */
+  id: string;
   name: string;
   description?: string;
   platformName: string;
@@ -611,14 +624,17 @@ export function SkillDetailView({
     if (!filePath) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_file_by_path", { path: filePath });
+      const text = await invoke<string>("read_skill_file", {
+        skillId: discoverMetadata?.id,
+        relativePath: "SKILL.md",
+      });
       setFileContent(text);
     } catch {
       setFileContent(null);
     } finally {
       setFileIsLoading(false);
     }
-  }, [filePath]);
+  }, [filePath, discoverMetadata?.id]);
 
   useEffect(() => {
     if (isFileMode) {
@@ -707,7 +723,12 @@ export function SkillDetailView({
 
     let cancelled = false;
     setIsSelectedFileLoading(true);
-    invoke<string>("read_file_by_path", { path: selectedFilePath })
+    invoke<string>("read_skill_file", {
+      ...(isFileMode
+        ? { skillId: discoverMetadata?.id }
+        : { skillId: detail?.id, agentId, rowId: detail?.row_id }),
+      relativePath: selectedRelativePath,
+    })
       .then((text) => {
         if (!cancelled) {
           setSelectedFileContent(text);
@@ -727,7 +748,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath, skillFilePath]);
+  }, [selectedFilePath, selectedRelativePath, skillFilePath, isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
 
   // ── Derived values ───────────────────────────────────────────────────────
 
@@ -1406,9 +1427,14 @@ export function SkillDetailView({
                           {detail.source_kind && (
                             <SourceOriginBadge originKind={detail.source_kind} />
                           )}
-                          {detail.is_read_only && !detail.can_manage_origin && <ReadOnlySourceBadge />}
+                          {detail.is_managed === false && <UnmanagedSourceBadge />}
+                          {detail.is_read_only && !detail.can_manage_origin && detail.is_managed !== false && <ReadOnlySourceBadge />}
                         </div>
-                        {detail.is_read_only && detail.can_manage_origin ? (
+                        {detail.is_managed === false ? (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t("detail.unmanagedDesc")}
+                          </p>
+                        ) : detail.is_read_only && detail.can_manage_origin ? (
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.sharedOriginDesc")}
                           </p>

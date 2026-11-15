@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "符号链接",
     "sourceCopyLabel": "复制安装",
     "notFound": "未找到平台",
+    "unreadableTitle": "部分文件夹无法读取，已保留原有记录",
+    "unreadableHint": "请检查文件夹读取权限和磁盘连接状态，然后重新扫描。",
     "searchSkillLabel": "查看技能 {{name}}",
     "sourceFilterTabsLabel": "Claude 来源筛选",
     "sourceFilter": {
@@ -238,7 +240,8 @@
       "all": "全部",
       "platform": "平台专用安装",
       "universal": "共享安装"
-    }
+    },
+    "unmanaged": "应用未管理"
   },
   "skillOrigin": {
     "confirmUpdate": "备份并更新至 {{commit}}？",
@@ -390,7 +393,11 @@
     "conflicts": "存在 {{count}} 个冲突，暂时无法迁移。",
     "later": "稍后处理",
     "start": "开始迁移",
-    "migrating": "正在迁移..."
+    "migrating": "正在迁移...",
+    "linkedSkills": "{{count}} 个以链接连接的技能",
+    "linkedSkillsResult": "迁移后仍保持为指向同一目标的链接，原始文件夹不会被修改。",
+    "unrecognizedItems": "{{count}} 个未被识别为技能的项目",
+    "unrecognizedItemsResult": "它们会被移入技能库，共享文件夹中会保留指向它们的链接，因此仍然可见。"
   },
   "sharedDelete": {
     "title": "删除共享安装及关联快捷链接？",
@@ -525,7 +532,9 @@
     "sortAscending": "正排",
     "sortDescending": "倒排",
     "sortByNewest": "最新",
-    "sortByOldest": "最早"
+    "sortByOldest": "最早",
+    "deleteObservedWarning": "以下平台有同名文件夹，但应用并未管理它，删除后仍会保留：{{platforms}}",
+    "deleteBundleObservedLabel": "删除后仍保留的文件夹（应用未管理）"
   },
   "centralBundleDrawer": {
     "titleFallback": "套件详情",
@@ -633,7 +642,8 @@
     "readOnlyDesc": "只读观测副本仅供查看，不能在这里安装、卸载或调整技能集。",
     "userManagedDesc": "此 Claude 用户副本会保留正常的安装状态与技能集管理能力。",
     "readOnlyInstallBlocked": "只读观测副本不可安装或卸载。",
-    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。"
+    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。",
+    "unmanagedDesc": "这是你自己放入的文件夹，应用不会管理它。它不会被移除、停用或覆盖，文件保持原样。"
   },
   "collection": {
     "edit": "编辑",
@@ -813,6 +823,9 @@
       "intl": "国际"
     },
     "aiApiKeyLabel": "API Key",
+    "secretSavedPlaceholder": "已保存 · 输入新值即可替换",
+    "secretKeychainUnavailable": "此环境无法使用系统钥匙串，因此不会把密钥写入文件，只在应用运行期间保存在内存中。重新打开应用后需要再次输入。",
+    "aiApiKeyClear": "清除密钥",
     "aiModelLabel": "模型",
     "aiModelPlaceholder": "模型名称",
     "aiModelCustom": "自定义",

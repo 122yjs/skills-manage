@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::commands::{recovery, skill_origin, storage};
+use crate::commands::{recovery, skill_duplicates, skill_origin, storage};
 use crate::db::{self, DbPool};
 use crate::path_utils::{
     app_data_dir, default_central_skills_dir, expand_home_path, legacy_central_skills_dir,
@@ -74,6 +74,9 @@ async fn initialize_pool(
     db::init_database(pool)
         .await
         .map_err(|e| format!("데이터베이스 스키마를 초기화할 수 없습니다: {e}"))?;
+    skill_duplicates::reclassify_copy_installations(pool)
+        .await
+        .map_err(|e| format!("기존 복사 설치 기록을 다시 분류할 수 없습니다: {e}"))?;
     skill_origin::reconcile_incomplete_updates(pool)
         .await
         .map_err(|e| format!("중단된 스킬 업데이트를 정리할 수 없습니다: {e}"))?;

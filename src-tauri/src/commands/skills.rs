@@ -36,6 +36,8 @@ pub struct SkillWithLinks {
     pub linked_agents: Vec<String>,
     /// Agent IDs that observe this skill from a shared/read-only compatibility root.
     pub read_only_agents: Vec<String>,
+    /// 같은 이름의 폴더가 있지만 앱이 관리하지 않는 플랫폼(관찰 항목). 삭제해도 남는다.
+    pub observed_agents: Vec<String>,
     /// 설치 대화상자에서 추가 설치가 필요 없는 출처를 보여준다.
     pub available_sources: BTreeMap<String, Vec<String>>,
     /// 이 스킬의 실제 폴더에 연결된 GitHub 출처. 카드 배지용 요약이며 전체
@@ -75,6 +77,8 @@ pub struct SkillDetail {
     pub source_root: Option<String>,
     pub source_label: Option<String>,
     pub is_read_only: bool,
+    /// `false`면 앱이 관리하지 않는 관찰 항목이다. 이때 `is_read_only`도 켜져 있다.
+    pub is_managed: bool,
     /// 플랫폼 설치 제어와 별개로, 실제 관리 원본의 GitHub 정보를 변경할 수 있는지 여부입니다.
     pub can_manage_origin: bool,
     pub conflict_group: Option<String>,
@@ -697,12 +701,17 @@ async fn get_observation_detail(
     };
 
     let manageable_skill = db::get_skill_by_id(pool, &observation.skill_id).await?;
-    let installations = if observation.is_read_only {
+    let is_managed = !db::get_unmanaged_installations(pool, &observation.skill_id)
+        .await?
+        .iter()
+        .any(|item| item.agent_id == agent_id && item.installed_path == observation.dir_path);
+    let is_read_only = observation.is_read_only || !is_managed;
+    let installations = if is_read_only {
         Vec::new()
     } else {
         installation_details(db::get_skill_installations(pool, &observation.skill_id).await?)
     };
-    let collections = if observation.is_read_only {
+    let collections = if is_read_only {
         Vec::new()
     } else {
         db::get_skill_collections(pool, &observation.skill_id).await?
@@ -710,7 +719,7 @@ async fn get_observation_detail(
     let (conflict_group, conflict_count) =
         observation_conflict_metadata(agent_id, &observation.skill_id, &conflict_counts);
 
-    let can_manage_origin = !observation.is_read_only
+    let can_manage_origin = !is_read_only
         || super::skill_origin::can_manage_observed_origin(
             pool,
             &observation.skill_id,
@@ -730,7 +739,7 @@ async fn get_observation_detail(
         }),
         file_path: observation.file_path,
         dir_path: observation.dir_path,
-        canonical_path: if observation.is_read_only {
+        canonical_path: if is_read_only {
             None
         } else {
             manageable_skill
@@ -749,7 +758,8 @@ async fn get_observation_detail(
         source_kind: Some(observation.source_kind),
         source_root: Some(observation.source_root),
         source_label: observation.source_label,
-        is_read_only: observation.is_read_only,
+        is_read_only,
+        is_managed,
         can_manage_origin,
         conflict_group,
         conflict_count,
@@ -777,6 +787,39 @@ pub(crate) async fn get_skill_detail_with_row_impl(
     let skill = db::get_skill_by_id(pool, skill_id)
         .await?
         .ok_or_else(|| format!("Skill '{}' not found", skill_id))?;
+
+    // 관찰 항목은 보관함 정보 대신 그 플랫폼 폴더의 내용을 읽기 전용으로 보여 준다.
+    if let Some(item) = db::get_unmanaged_installations(pool, skill_id)
+        .await?
+        .into_iter()
+        .find(|item| Some(item.agent_id.as_str()) == agent_id)
+    {
+        let file_path = Path::new(&item.installed_path).join("SKILL.md");
+        let info = super::scanner::parse_skill_md(&file_path);
+        return Ok(SkillDetail {
+            row_id: skill.id.clone(),
+            id: skill.id,
+            name: info.as_ref().map_or(skill.name, |info| info.name.clone()),
+            description: info.and_then(|info| info.description).or(skill.description),
+            file_path: file_path.to_string_lossy().into_owned(),
+            dir_path: item.installed_path,
+            canonical_path: None,
+            is_central: false,
+            source: Some(item.link_type),
+            scanned_at: skill.scanned_at,
+            source_kind: None,
+            source_root: None,
+            source_label: None,
+            is_read_only: true,
+            is_managed: false,
+            can_manage_origin: false,
+            conflict_group: None,
+            conflict_count: 0,
+            read_only_agents: Vec::new(),
+            installations: Vec::new(),
+            collections: Vec::new(),
+        });
+    }
 
     let row_id = skill.id.clone();
     let raw_installations = db::get_skill_installations(pool, skill_id).await?;
@@ -827,6 +870,7 @@ pub(crate) async fn get_skill_detail_with_row_impl(
         source_root: None,
         source_label: None,
         is_read_only: false,
+        is_managed: true,
         can_manage_origin: true,
         conflict_group: None,
         conflict_count: 0,
@@ -918,6 +962,11 @@ async fn skill_with_links(
         .map(|installation| installation.agent_id)
         .collect();
     let read_only_agents = read_only_agent_ids_for_skill(pool, &skill.id, skill.is_central).await?;
+    let observed_agents = db::get_unmanaged_installations(pool, &skill.id)
+        .await?
+        .into_iter()
+        .map(|installation| installation.agent_id)
+        .collect();
     let (created_at, updated_at) = skill_filesystem_timestamps(&skill);
 
     let mut available_sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -946,6 +995,7 @@ async fn skill_with_links(
         updated_at,
         linked_agents,
         read_only_agents,
+        observed_agents,
         available_sources,
         origin,
     })
@@ -1438,9 +1488,68 @@ pub async fn read_skill_content(
         .map_err(|e| format!("Failed to read '{}': {}", skill.file_path, e))
 }
 
+/// 스킬 식별자(발견된 프로젝트 스킬 ID 포함)로 스킬 폴더를 찾고, 그 폴더 기준
+/// 상대 경로의 파일만 읽는다. 화면이 임의 경로를 넘겨 폴더 밖 파일을 읽지 못하게 한다.
+pub(crate) async fn read_skill_file_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: Option<&str>,
+    row_id: Option<&str>,
+    relative_path: &str,
+) -> Result<String, String> {
+    let root = match db::get_discovered_skill_by_id(pool, skill_id).await? {
+        Some(discovered) => discovered.dir_path,
+        None => {
+            get_skill_detail_with_row_impl(pool, skill_id, agent_id, row_id)
+                .await?
+                .dir_path
+        }
+    };
+    let relative = Path::new(relative_path);
+    if !relative
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    let root = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve skill folder '{}': {}", root, e))?;
+    let target = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve '{}': {}", relative_path, e))?;
+    if !target.starts_with(&root) {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    std::fs::read_to_string(&target)
+        .map_err(|e| format!("Failed to read '{}': {}", relative_path, e))
+}
+
 #[tauri::command]
-pub async fn read_file_by_path(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))
+pub async fn read_skill_file(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_id: Option<String>,
+    row_id: Option<String>,
+    relative_path: String,
+) -> Result<String, String> {
+    read_skill_file_impl(
+        &state.db,
+        &skill_id,
+        agent_id.as_deref(),
+        row_id.as_deref(),
+        &relative_path,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -3388,24 +3497,81 @@ mod tests {
         );
     }
 
-    // ── read_file_by_path ──────────────────────────────────────────────────────
+    // ── read_skill_file ────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn test_read_file_by_path_success() {
-        let tmp = TempDir::new().unwrap();
-        let file_path = tmp.path().join("test-skill.md");
-        let content = "---\nname: Test\n---\n\n# Test Skill";
-        fs::write(&file_path, content).unwrap();
+    async fn central_skill_with_secret(tmp: &Path, pool: &SqlitePool) {
+        let skill_dir = tmp.join("central").join("my-skill");
+        fs::create_dir_all(skill_dir.join("docs")).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# My Skill").unwrap();
+        fs::write(skill_dir.join("docs").join("guide.md"), "guide").unwrap();
+        fs::write(tmp.join("secret.txt"), "secret").unwrap();
 
-        let result = read_file_by_path(file_path.to_string_lossy().into_owned()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content);
+        let mut skill = make_skill("my-skill", "My Skill", true);
+        skill.file_path = skill_dir.join("SKILL.md").to_string_lossy().into_owned();
+        skill.canonical_path = Some(skill_dir.to_string_lossy().into_owned());
+        db::upsert_skill(pool, &skill).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_read_file_by_path_not_found() {
-        let result = read_file_by_path("/nonexistent/file.md".to_string()).await;
-        assert!(result.is_err());
+    async fn test_read_skill_file_reads_files_inside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+
+        let skill_md = read_skill_file_impl(&pool, "my-skill", None, None, "SKILL.md").await;
+        let guide = read_skill_file_impl(&pool, "my-skill", None, None, "docs/guide.md").await;
+
+        assert_eq!(skill_md.unwrap(), "# My Skill");
+        assert_eq!(guide.unwrap(), "guide");
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_rejects_paths_outside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+        let secret = tmp.path().join("secret.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, tmp.path().join("central/my-skill/link.txt")).unwrap();
+
+        let absolute = secret.to_string_lossy().into_owned();
+        let mut attempts = vec!["../../secret.txt", "docs/../../../secret.txt", &absolute];
+        #[cfg(unix)]
+        attempts.push("link.txt");
+
+        for attempt in attempts {
+            let result = read_skill_file_impl(&pool, "my-skill", None, None, attempt).await;
+            assert!(result.is_err(), "'{attempt}' must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_reads_discovered_skill_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let skill_dir = tmp.path().join("project").join(".claude/skills/found");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Found").unwrap();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__found",
+            "found",
+            None,
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let content =
+            read_skill_file_impl(&pool, "claude-code__project__found", None, None, "SKILL.md")
+                .await;
+
+        assert_eq!(content.unwrap(), "# Found");
     }
 
     #[tokio::test]

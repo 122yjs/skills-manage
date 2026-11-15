@@ -268,6 +268,21 @@ describe("loadDashboardSnapshot", () => {
     expect(JSON.stringify(snapshot)).not.toContain("api-secret-value");
   });
 
+  it("키체인 저장 뒤 DB에 남는 표시만으로 비밀값 설정 여부를 정확히 보여 준다", () => {
+    // 앱은 키체인에 저장하면 'keychain' 표시만, 지우거나 키체인이 없으면 빈 값을 남긴다.
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      UPDATE settings SET value = 'keychain' WHERE key = 'github_pat';
+      UPDATE settings SET value = '' WHERE key = 'ai_api_key__chatgpt';
+    `);
+    database.close();
+
+    const { settings } = loadDashboardSnapshot(databasePath, { home: testDirectory });
+
+    expect(settings.githubPatConfigured).toBe(true);
+    expect(settings.aiApiKeyConfigured).toBe(false);
+  });
+
   it("Obsidian 레지스트리에서 볼트를 읽어 스킬 수를 센다", () => {
     const vaultDir = join(testDirectory, "MyVault");
     mkdirSync(join(vaultDir, ".obsidian"), { recursive: true });
