@@ -10,17 +10,18 @@
 
 ## 项目简介
 
-`skills-manage` 遵循 [Agent Skills](https://github.com/anthropics/agent-skills) 的开放模式，使用 `~/.agents/skills/` 作为中央 canonical 目录，再通过符号链接把 skill 安装到各个平台，让同一份 skill 成为多个 AI coding 工具的单一事实来源。
+`skills-manage` 遵循 [Agent Skills](https://github.com/anthropics/agent-skills) 的开放模式。中央技能库（“Skill Vault”）默认位于 `~/.skillsmanage/skills/`，可在 Settings 中更改位置；支持共享位置的平台读取 `~/.agents/skills/`。平台安装是指向中央原件的符号链接（或副本），因此同一份 skill 可以驱动多个 AI coding 工具。
 
 ## 核心能力
 
 - 中央技能库与按平台安装、卸载工作流。
+- Claude Code 可在同一个平台视图中显示原生 skills 和只读的 marketplace 插件 skills。
 - 完整技能详情视图，支持 Markdown 预览、原始源码查看和 AI 解释生成。
 - 通过技能集合整理和批量安装 skills。
-- 支持扫描本地项目级 skill 库的 Discover 能力。
+- 支持扫描本地项目级 skill 库的 Discover 能力，包括 Obsidian 侧边栏中的 vault skills 分类（`.skills/`、`.agents/skills/`、`.claude/skills/`）。
 - 支持 marketplace 浏览，以及带鉴权请求和重试回退的 GitHub 仓库导入。
 - 通过延迟查询、懒加载索引和虚拟列表提升大规模 skill 库搜索体验。
-- 提供中英文界面、Catppuccin 主题、强调色、首次引导和响应式导航。
+- 提供韩语、英语、中文三种界面语言，以及 Catppuccin 主题、强调色、首次引导和响应式导航。
 
 ## 项目截图
 
@@ -75,36 +76,78 @@ xattr -dr com.apple.quarantine "/Applications/skills-manage.app"
 
 ## 支持的平台
 
-| 类别 | 平台 | Skills 目录 |
-|------|------|------------|
+下表列出各平台内置的全局（用户级）skills 目录默认值。路径可在 Settings 中更改，也可以在那里添加自定义平台。
+
+| 类别 | 平台 | 全局 Skills 目录 |
+|------|------|------------------|
 | Coding | Claude Code | `~/.claude/skills/` |
-| Coding | Codex CLI | `~/.agents/skills/` |
+| Coding | Codex CLI | `~/.codex/skills/` |
 | Coding | Cursor | `~/.cursor/skills/` |
-| Coding | Gemini CLI | `~/.gemini/skills/` |
+| Coding | Antigravity | `~/.gemini/config/skills/` |
+| Coding | AGY CLI | `~/.gemini/config/skills/` |
+| Coding | Cline | `~/.agents/skills/` |
+| Coding | Deep Agents | `~/.agents/skills/` |
+| Coding | Dexto | `~/.agents/skills/` |
+| Coding | Firebender | `~/.agents/skills/` |
+| Coding | Kimi Code CLI | `~/.agents/skills/` |
+| Coding | Warp | `~/.agents/skills/` |
+| Coding | AiderDesk | `~/.aider-desk/skills/` |
 | Coding | Trae | `~/.trae/skills/` |
+| Coding | Trae CN | `~/.trae-cn/skills/` |
 | Coding | Factory Droid | `~/.factory/skills/` |
 | Coding | Junie | `~/.junie/skills/` |
-| Coding | Qwen | `~/.qwen/skills/` |
-| Coding | Trae CN | `~/.trae-cn/skills/` |
-| Coding | Windsurf | `~/.windsurf/skills/` |
+| Coding | Qwen Code | `~/.qwen/skills/` |
+| Coding | Windsurf | `~/.codeium/windsurf/skills/` |
 | Coding | Qoder | `~/.qoder/skills/` |
 | Coding | Augment | `~/.augment/skills/` |
 | Coding | OpenCode | `~/.opencode/skills/` |
-| Coding | KiloCode | `~/.kilocode/skills/` |
+| Coding | Kilo Code | `~/.kilocode/skills/` |
 | Coding | OB1 | `~/.ob1/skills/` |
 | Coding | Amp | `~/.amp/skills/` |
-| Coding | Kiro | `~/.kiro/skills/` |
+| Coding | Kiro CLI | `~/.kiro/skills/` |
 | Coding | CodeBuddy | `~/.codebuddy/skills/` |
-| Coding | Hermes | `~/.hermes/skills/` |
-| Coding | Copilot | `~/.copilot/skills/` |
+| Coding | IBM Bob | `~/.bob/skills/` |
+| Coding | CodeArts Agent | `~/.codeartsdoer/skills/` |
+| Coding | Codemaker | `~/.codemaker/skills/` |
+| Coding | Code Studio | `~/.codestudio/skills/` |
+| Coding | Command Code | `~/.commandcode/skills/` |
+| Coding | Continue | `~/.continue/skills/` |
+| Coding | Cortex Code | `~/.snowflake/cortex/skills/` |
+| Coding | Crush | `~/.config/crush/skills/` |
+| Coding | Devin for Terminal | `~/.config/devin/skills/` |
+| Coding | ForgeCode | `~/.forge/skills/` |
+| Coding | Goose | `~/.config/goose/skills/` |
+| Coding | iFlow CLI | `~/.iflow/skills/` |
+| Coding | Kode | `~/.kode/skills/` |
+| Coding | MCPJam | `~/.mcpjam/skills/` |
+| Coding | Mistral Vibe | `~/.vibe/skills/` |
+| Coding | Mux | `~/.mux/skills/` |
+| Coding | OpenHands | `~/.openhands/skills/` |
+| Coding | Pi | `~/.pi/agent/skills/` |
+| Coding | Oh My Pi | `~/.omp/agent/skills/` |
+| Coding | Rovo Dev | `~/.rovodev/skills/` |
+| Coding | Roo Code | `~/.roo/skills/` |
+| Coding | Tabnine CLI | `~/.tabnine/agent/skills/` |
+| Coding | Zencoder | `~/.zencoder/skills/` |
+| Coding | Neovate | `~/.neovate/skills/` |
+| Coding | Pochi | `~/.pochi/skills/` |
+| Coding | AdaL | `~/.adal/skills/` |
+| Coding | GitHub Copilot | `~/.copilot/skills/` |
 | Coding | Aider | `~/.aider/skills/` |
+| Lobster | Hermes | `~/.hermes/skills/` |
 | Lobster | OpenClaw（开爪） | `~/.openclaw/skills/` |
 | Lobster | QClaw（千爪） | `~/.qclaw/skills/` |
 | Lobster | EasyClaw（简爪） | `~/.easyclaw/skills/` |
-| Lobster | EasyClaw V2 | `~/.easyclaw-20260322-01/skills/` |
 | Lobster | AutoClaw | `~/.openclaw-autoclaw/skills/` |
 | Lobster | WorkBuddy（打工搭子） | `~/.workbuddy/skills-marketplace/skills/` |
-| Central | 中央技能库 | `~/.agents/skills/` |
+| Shared | Universal (.agents) | `~/.agents/skills/` |
+| Central | Skill Vault（中央技能库） | `~/.skillsmanage/skills/` |
+
+> 说明：
+>
+> - 共享位置 `~/.agents/skills/` 是多个工具共同读取的同一个安装目标（Cline、Deep Agents、Dexto、Firebender、Kimi Code CLI、Warp 等），与中央技能库 `~/.skillsmanage/skills/` 不同。
+> - Codex CLI 也会读取共享的 `~/.agents/skills/`，项目级 skills 使用 `$CWD/.agents/skills/`；其全局路径为 `~/.codex/skills/`，以便与共享安装区分。
+> - Claude Code 还会在 Claude 视图中把 `~/.claude/plugins/marketplaces/*` 下的 marketplace 插件目录显示为只读行。这些条目仅用于展示，不会像 `~/.claude/skills/` 中的原生 skills 那样被管理。
 
 也可以在 Settings 中添加自定义平台。
 
@@ -121,7 +164,7 @@ xattr -dr com.apple.quarantine "/Applications/skills-manage.app"
 | 层 | 技术 |
 |----|------|
 | 桌面框架 | Tauri v2 |
-| 前端 | React 19、TypeScript、Tailwind CSS 4 |
+| 前端 | React 18、TypeScript、Tailwind CSS 4 |
 | UI 组件 | shadcn/ui、Lucide icons |
 | 状态管理 | Zustand |
 | Markdown | react-markdown |
@@ -173,7 +216,8 @@ pnpm test
 pnpm typecheck
 pnpm lint
 cd src-tauri && cargo test
-cd src-tauri && cargo clippy -- -D warnings
+cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd src-tauri && cargo fmt --check
 ```
 
 ## 项目结构
