@@ -1506,10 +1506,15 @@ pub async fn import_discovered_skill_to_central(
     state: State<'_, AppState>,
     discovered_skill_id: String,
 ) -> Result<ImportResult, String> {
-    let pool = &state.db;
+    import_discovered_skill_to_central_from_pool(&state.db, &discovered_skill_id).await
+}
 
+async fn import_discovered_skill_to_central_from_pool(
+    pool: &DbPool,
+    discovered_skill_id: &str,
+) -> Result<ImportResult, String> {
     // Look up the discovered skill.
-    let skill = db::get_discovered_skill_by_id(pool, &discovered_skill_id)
+    let skill = db::get_discovered_skill_by_id(pool, discovered_skill_id)
         .await?
         .ok_or_else(|| format!("Discovered skill '{}' not found", discovered_skill_id))?;
 
@@ -1558,7 +1563,7 @@ pub async fn import_discovered_skill_to_central(
     }
 
     // Remove the discovered skill record since it's now centralized.
-    db::delete_discovered_skill(pool, &discovered_skill_id).await?;
+    db::delete_discovered_skill(pool, discovered_skill_id).await?;
 
     Ok(ImportResult {
         skill_id: skill_dir_name,
@@ -2847,14 +2852,9 @@ mod tests {
         .await
         .unwrap();
 
-        // Set HOME to tmp so import_discovered_skill_to_central finds the right dir.
-        // We'll call the impl directly instead.
-        let result = import_discovered_skill_to_central_impl(
-            &pool,
-            "claude-code__project__my-skill",
-            &central_dir,
-        )
-        .await;
+        let result =
+            import_discovered_skill_to_central_from_pool(&pool, "claude-code__project__my-skill")
+                .await;
 
         assert!(result.is_ok(), "import should succeed: {:?}", result);
 
@@ -2874,64 +2874,6 @@ mod tests {
             record.is_none(),
             "discovered skill record should be removed"
         );
-    }
-
-    /// Implementation of import_discovered_skill_to_central that accepts a custom central_dir
-    /// for testing (avoids depending on $HOME).
-    async fn import_discovered_skill_to_central_impl(
-        pool: &DbPool,
-        discovered_skill_id: &str,
-        central_dir: &Path,
-    ) -> Result<ImportResult, String> {
-        let skill = db::get_discovered_skill_by_id(pool, discovered_skill_id)
-            .await?
-            .ok_or_else(|| format!("Discovered skill '{}' not found", discovered_skill_id))?;
-
-        let skill_dir_name = Path::new(&skill.dir_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| "Cannot extract skill directory name".to_string())?
-            .to_string();
-
-        let target_dir = central_dir.join(&skill_dir_name);
-
-        if target_dir.exists() {
-            return Err(format!(
-                "A skill named '{}' already exists in central skills",
-                skill_dir_name
-            ));
-        }
-
-        std::fs::create_dir_all(central_dir)
-            .map_err(|e| format!("Failed to create central dir: {}", e))?;
-
-        super::super::linker::copy_dir_all(Path::new(&skill.dir_path), &target_dir)?;
-
-        let skill_md_path = target_dir.join("SKILL.md");
-        let info = super::super::scanner::parse_skill_md(&skill_md_path);
-
-        if let Some(skill_info) = info {
-            let now = Utc::now().to_rfc3339();
-            let db_skill = db::Skill {
-                id: skill_dir_name.clone(),
-                name: skill_info.name,
-                description: skill_info.description,
-                file_path: skill_md_path.to_string_lossy().into_owned(),
-                canonical_path: Some(target_dir.to_string_lossy().into_owned()),
-                is_central: true,
-                source: Some("copy".to_string()),
-                content: None,
-                scanned_at: now,
-            };
-            db::upsert_skill(pool, &db_skill).await?;
-        }
-
-        db::delete_discovered_skill(pool, discovered_skill_id).await?;
-
-        Ok(ImportResult {
-            skill_id: skill_dir_name,
-            target: "central".to_string(),
-        })
     }
 
     // ── Additional tests ──────────────────────────────────────────────────────
@@ -2962,7 +2904,7 @@ mod tests {
             .await
             .unwrap();
 
-        std::fs::create_dir_all(&agent_dir).unwrap();
+        mark_builtin_agent_installed(&agent_dir);
 
         // Create a discovered skill in a project.
         let skill_dir = tmp.path().join("project/.claude/skills/my-skill");
@@ -2990,11 +2932,11 @@ mod tests {
         .unwrap();
 
         // Import to platform using the impl function.
-        let result = import_discovered_skill_to_platform_impl(
+        let result = import_discovered_skill_to_platform_from_pool(
             &pool,
             "claude-code__project__my-skill",
             "claude-code",
-            &agent_dir,
+            Some("symlink"),
         )
         .await;
 
@@ -3028,6 +2970,11 @@ mod tests {
         let claude_install_dir = PathBuf::from(CROSS_AREA_FIXTURE_CLAUDE_PLATFORM_DIR);
         let cursor_install_dir = PathBuf::from(CROSS_AREA_FIXTURE_CURSOR_PLATFORM_DIR);
         std::fs::create_dir_all(&central_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
             .bind(claude_install_dir.to_string_lossy().to_string())
             .execute(&pool)
@@ -3236,10 +3183,9 @@ mod tests {
             "platform install must not mutate the source Obsidian vault"
         );
 
-        let import_result =
-            import_discovered_skill_to_central_impl(&pool, &fixture_skill.id, &central_dir)
-                .await
-                .unwrap();
+        let import_result = import_discovered_skill_to_central_from_pool(&pool, &fixture_skill.id)
+            .await
+            .unwrap();
         assert_eq!(import_result.skill_id, CROSS_AREA_FIXTURE_SKILL_DIR_NAME);
         let central_target = PathBuf::from(CROSS_AREA_FIXTURE_CENTRAL_TARGET);
         assert!(central_target.join("SKILL.md").exists());
@@ -3399,81 +3345,6 @@ mod tests {
             vault_manifest(&vault_dir),
             "platform installs must not mutate the source Obsidian vault"
         );
-    }
-
-    /// Implementation of import_discovered_skill_to_platform that accepts a custom agent_dir
-    /// for testing (avoids depending on $HOME and real agent dirs).
-    async fn import_discovered_skill_to_platform_impl(
-        pool: &DbPool,
-        discovered_skill_id: &str,
-        agent_id: &str,
-        agent_dir: &Path,
-    ) -> Result<ImportResult, String> {
-        let skill = db::get_discovered_skill_by_id(pool, discovered_skill_id)
-            .await?
-            .ok_or_else(|| format!("Discovered skill '{}' not found", discovered_skill_id))?;
-
-        let skill_dir_name = Path::new(&skill.dir_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .ok_or_else(|| "Cannot extract skill directory name".to_string())?
-            .to_string();
-
-        let target_path = agent_dir.join(&skill_dir_name);
-
-        std::fs::create_dir_all(agent_dir)
-            .map_err(|e| format!("Failed to create agent skills directory: {}", e))?;
-
-        if target_path.exists() || std::fs::symlink_metadata(&target_path).is_ok() {
-            return Err(format!(
-                "Skill '{}' already exists in agent {}",
-                skill_dir_name, agent_id
-            ));
-        }
-
-        let src_path = Path::new(&skill.dir_path);
-        let relative_target = super::super::linker::symlink_target_path(agent_dir, src_path);
-        super::super::linker::create_symlink(&relative_target, &target_path)?;
-
-        // Record the installation.
-        let now = Utc::now().to_rfc3339();
-
-        let skill_md_path = src_path.join("SKILL.md");
-        let info = super::super::scanner::parse_skill_md(&skill_md_path);
-
-        if let Some(skill_info) = info {
-            let db_skill = db::Skill {
-                id: skill_dir_name.clone(),
-                name: skill_info.name,
-                description: skill_info.description,
-                file_path: skill_md_path.to_string_lossy().into_owned(),
-                canonical_path: None,
-                is_central: false,
-                source: Some("symlink".to_string()),
-                content: None,
-                scanned_at: now.clone(),
-            };
-            db::upsert_skill(pool, &db_skill).await?;
-        }
-
-        let installation = db::SkillInstallation {
-            skill_id: skill_dir_name.clone(),
-            agent_id: agent_id.to_string(),
-            installed_path: target_path.to_string_lossy().into_owned(),
-            link_type: "symlink".to_string(),
-            symlink_target: Some(skill.dir_path.clone()),
-            created_at: now,
-        };
-        db::upsert_skill_installation(pool, &installation).await?;
-
-        // NOTE: Intentionally do NOT delete the discovered skill record.
-        // This allows multi-platform install (importing the same discovered
-        // skill to multiple platforms in sequence).
-
-        Ok(ImportResult {
-            skill_id: skill_dir_name,
-            target: agent_id.to_string(),
-        })
     }
 
     #[tokio::test]
@@ -3903,6 +3774,11 @@ mod tests {
         let pool = setup_test_db().await;
         let central_dir = tmp.path().join("central");
         std::fs::create_dir_all(&central_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // Create a skill already in central.
         let existing = central_dir.join("existing-skill");
@@ -3938,10 +3814,9 @@ mod tests {
         .await
         .unwrap();
 
-        let result = import_discovered_skill_to_central_impl(
+        let result = import_discovered_skill_to_central_from_pool(
             &pool,
             "claude-code__project__existing-skill",
-            &central_dir,
         )
         .await;
 
@@ -3956,7 +3831,12 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let pool = setup_test_db().await;
         let agent_dir = tmp.path().join("agent-skills");
-        std::fs::create_dir_all(&agent_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(agent_dir.to_string_lossy().to_string())
+            .execute(&pool)
+            .await
+            .unwrap();
+        mark_builtin_agent_installed(&agent_dir);
 
         // Create an existing skill in agent dir.
         let existing = agent_dir.join("existing-skill");
@@ -3987,11 +3867,11 @@ mod tests {
         .await
         .unwrap();
 
-        let result = import_discovered_skill_to_platform_impl(
+        let result = import_discovered_skill_to_platform_from_pool(
             &pool,
             "claude-code__project__existing-skill",
             "claude-code",
-            &agent_dir,
+            Some("symlink"),
         )
         .await;
 
@@ -4667,10 +4547,17 @@ mod tests {
         let pool = setup_test_db().await;
 
         // Set up two agent dirs.
-        let agent_dir_a = tmp.path().join("agent-a-skills");
-        let agent_dir_b = tmp.path().join("agent-b-skills");
-        std::fs::create_dir_all(&agent_dir_a).unwrap();
-        std::fs::create_dir_all(&agent_dir_b).unwrap();
+        let agent_dir_a = tmp.path().join("agent-a/skills");
+        let agent_dir_b = tmp.path().join("agent-b/skills");
+        for (id, dir) in [("claude-code", &agent_dir_a), ("cursor", &agent_dir_b)] {
+            sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = ?")
+                .bind(dir.to_string_lossy().to_string())
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            mark_builtin_agent_installed(dir);
+        }
 
         // Create a discovered skill.
         let skill_dir = tmp.path().join("project/.claude/skills/my-skill");
@@ -4698,22 +4585,22 @@ mod tests {
         .unwrap();
 
         // Import to first platform.
-        let result_a = import_discovered_skill_to_platform_impl(
+        let result_a = import_discovered_skill_to_platform_from_pool(
             &pool,
             "claude-code__project__my-skill",
-            "agent-a",
-            &agent_dir_a,
+            "claude-code",
+            Some("symlink"),
         )
         .await;
         assert!(result_a.is_ok(), "first import should succeed");
 
         // Import to second platform — this should also succeed because
         // the discovered record is NOT deleted after platform install.
-        let result_b = import_discovered_skill_to_platform_impl(
+        let result_b = import_discovered_skill_to_platform_from_pool(
             &pool,
             "claude-code__project__my-skill",
-            "agent-b",
-            &agent_dir_b,
+            "cursor",
+            Some("symlink"),
         )
         .await;
         assert!(result_b.is_ok(), "second import should succeed");
