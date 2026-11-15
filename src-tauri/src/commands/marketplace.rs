@@ -95,8 +95,10 @@ async fn fetch_github_skills(
     registry_id: &str,
 ) -> Result<Vec<MarketplaceSkill>, String> {
     let auth = github_import::github_direct_auth_from_settings(pool).await?;
-    let repo = github_import::resolve_repo_ref(url, auth.as_deref()).await?;
-    let candidates = github_import::fetch_repo_skill_candidates(&repo, auth.as_deref()).await?;
+    let mirror = github_import::github_mirror_enabled(pool).await?;
+    let repo = github_import::resolve_repo_ref(url, auth.as_deref(), mirror).await?;
+    let candidates =
+        github_import::fetch_repo_skill_candidates(&repo, auth.as_deref(), mirror).await?;
     Ok(marketplace_skills_from_candidates(registry_id, candidates))
 }
 
@@ -608,9 +610,15 @@ pub async fn install_marketplace_skill(
             content: None,
             scanned_at: chrono::Utc::now().to_rfc3339(),
         };
-        if let Err(error) =
-            skill_origin::persist_imported_skill(&state.db, &db_skill, &repo, &source_path, None)
-                .await
+        if let Err(error) = skill_origin::persist_imported_skill(
+            &state.db,
+            &db_skill,
+            &repo,
+            &source_path,
+            None,
+            false,
+        )
+        .await
         {
             let _ = std::fs::remove_dir_all(&skill_dir);
             return Err(error);
@@ -857,9 +865,10 @@ pub async fn browse_skills_sh_directory(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -966,9 +975,10 @@ pub async fn read_skills_sh_file(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1008,9 +1018,10 @@ pub async fn resolve_skills_sh_url(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1041,9 +1052,10 @@ pub async fn install_from_skills_sh(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1055,7 +1067,7 @@ pub async fn install_from_skills_sh(
         .map_err(|e| e.to_string())?;
 
     // Download full repo snapshot (tarball) and find the skill directory
-    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth)
+    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth, mirror)
         .await
         .ok();
     let download_ref = commit_oid
@@ -1065,7 +1077,8 @@ pub async fn install_from_skills_sh(
             ..repo.clone()
         })
         .unwrap_or_else(|| repo.clone());
-    let snapshot = github_import::download_repo_snapshot(&client, &download_ref, auth).await?;
+    let snapshot =
+        github_import::download_repo_snapshot(&client, &download_ref, auth, mirror).await?;
 
     // Find the skill directory by matching the last directory component against skill_id
     let source_path = find_skill_path_in_snapshot(&snapshot, &skill_id).ok_or_else(|| {
@@ -1126,6 +1139,7 @@ pub async fn install_from_skills_sh(
         &repo,
         &source_path,
         commit_oid.as_deref(),
+        snapshot.via_mirror,
     )
     .await
     {
