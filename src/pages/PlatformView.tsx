@@ -40,8 +40,15 @@ import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { cn } from "@/lib/utils";
 import { isUniversalSource, UNIVERSAL_AGENT_ID } from "@/lib/agents";
-import { ScannedSkill, SkillWithLinks, type PlatformSkillControlStatus, type SharedSkillImpact } from "@/types";
+import {
+  ScannedSkill,
+  SkillWithLinks,
+  type PlatformSkillControlStatus,
+  type SharedSkillImpact,
+  type UnreadableRoot,
+} from "@/types";
 
+const EMPTY_UNREADABLE_ROOTS: UnreadableRoot[] = [];
 const EMPTY_PLATFORM_CONTROLS: PlatformSkillControlStatus[] = [];
 const EMPTY_PLATFORM_CONTROL_UPDATES: Record<string, boolean> = {};
 
@@ -76,6 +83,9 @@ export function PlatformView() {
   const { t, i18n } = useTranslation();
   const agents = usePlatformStore((state) => state.agents);
   const scanGeneration = usePlatformStore((state) => state.scanGeneration ?? 0);
+  const unreadableRoots = usePlatformStore(
+    (state) => state.unreadableRoots ?? EMPTY_UNREADABLE_ROOTS
+  );
 
   const skillsByAgent = useSkillStore((state) => state.skillsByAgent);
   const loadingByAgent = useSkillStore((state) => state.loadingByAgent);
@@ -679,6 +689,19 @@ export function PlatformView() {
         <p className="text-sm text-muted-foreground mt-0.5">
           {formatPathForDisplay(agent.global_skills_dir)}
         </p>
+        {unreadableRoots.some((root) => root.agent_id === agent.id) ? (
+          <div role="alert" className="mt-3 rounded-md border border-destructive/40 px-3 py-2 text-xs">
+            <p className="font-medium text-destructive">{t("platform.unreadableTitle")}</p>
+            <ul className="mt-1 text-muted-foreground">
+              {unreadableRoots
+                .filter((root) => root.agent_id === agent.id)
+                .map((root) => (
+                  <li key={root.path}>{formatPathForDisplay(root.path)}</li>
+                ))}
+            </ul>
+            <p className="mt-1 text-muted-foreground">{t("platform.unreadableHint")}</p>
+          </div>
+        ) : null}
         {usageStatus ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {usageStatus.skills.length > 0 ? (
