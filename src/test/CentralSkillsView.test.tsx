@@ -25,6 +25,10 @@ vi.mock("../stores/skillStore", () => ({
 
 vi.mock("../stores/marketplaceStore", () => ({
   useMarketplaceStore: vi.fn(),
+  githubImportAiSummaryKey: (
+    repo: { owner: string; repo: string },
+    sourcePath: string,
+  ) => `${repo.owner}/${repo.repo}:${sourcePath}`,
   toGitHubImportFailure: (error: unknown) =>
     error && typeof error === "object" && "code" in error ? error : null,
 }));
