@@ -922,6 +922,7 @@ export function PlatformView() {
                             : undefined}
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
+                          isUnmanaged={skill.is_managed === false}
                           isUniversalSource={isUniversalSource(skill, universalRoot)}
                           platformDisplayName={agent.display_name}
                           usageControl={platformControl?.shared_install

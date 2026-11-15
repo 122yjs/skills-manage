@@ -122,6 +122,42 @@ pub async fn compare_skill_locations(
         .map_err(|e| e.to_string())
 }
 
+const RECLASSIFIED_SETTING: &str = "installations_reclassified";
+
+/// 업데이트 뒤 처음 실행할 때 한 번, 기존 복사 설치 기록을 보관함 원본과 비교한다 (ADR-0002).
+///
+/// 위 중복 출처 비교에서 "동일한 복사본"으로 나온 기록만 관리 설치로 남기고, 다른 내용이거나
+/// 비교할 수 없으면(원본 없음 포함) 관찰 항목으로 낮춘다. 파일은 건드리지 않는다.
+pub async fn reclassify_copy_installations(pool: &DbPool) -> Result<(), String> {
+    if db::get_setting(pool, RECLASSIFIED_SETTING).await?.is_some() {
+        return Ok(());
+    }
+    for installation in db::get_all_skill_installations(pool).await? {
+        if installation.link_type != "copy" {
+            continue;
+        }
+        let original = db::get_skill_by_id(pool, &installation.skill_id)
+            .await?
+            .filter(|skill| skill.is_central)
+            .and_then(|skill| skill.canonical_path);
+        let identical = original.is_some_and(|original| {
+            compare_paths(vec![installation.installed_path.clone(), original]).relation
+                == "identical"
+        });
+        if !identical {
+            sqlx::query(
+                "UPDATE skill_installations SET is_managed = 0 WHERE skill_id = ? AND agent_id = ?",
+            )
+            .bind(&installation.skill_id)
+            .bind(&installation.agent_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    db::set_setting(pool, RECLASSIFIED_SETTING, "1").await
+}
+
 /// DB가 오래됐어도 실제 로딩 경로의 같은 이름을 발견하면 새 복사본을 만들지 않는다.
 pub(crate) async fn check_install(
     pool: &DbPool,

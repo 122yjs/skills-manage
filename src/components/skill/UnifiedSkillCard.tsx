@@ -131,6 +131,8 @@ export interface UnifiedSkillCardProps {
   sourceType?: "symlink" | "copy" | "native";
   originKind?: ClaudeSourceKind | null;
   isReadOnly?: boolean;
+  /** 앱이 관리하지 않는 관찰 항목. 제거·비활성 같은 관리 동작을 열지 않는다. */
+  isUnmanaged?: boolean;
   isUniversalSource?: boolean;
   isExternallyManaged?: boolean;
   /** 앱이 관리하는 설치의 실제 활성 상태. 설치 파일 삭제와는 별개다. */
@@ -217,6 +219,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     sourceType,
     originKind,
     isReadOnly,
+    isUnmanaged,
     isUniversalSource,
     isExternallyManaged,
     usageControl,
@@ -553,6 +556,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           ) : description ? (
             <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
           ) : null}
+
+          {isUnmanaged && <UnmanagedBadge />}
 
           {!isPlatformCard && <SkillGroupLinks filePath={translation?.filePath} />}
 
@@ -984,6 +989,16 @@ function ReadOnlyBadge() {
       {t("platform.readOnly", {
         defaultValue: i18n.language.startsWith("zh") ? "只读" : "Read-only",
       })}
+    </span>
+  );
+}
+
+function UnmanagedBadge() {
+  const { t } = useTranslation();
+  return (
+    <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
+      <Lock className="size-3 shrink-0" />
+      {t("platform.unmanaged")}
     </span>
   );
 }

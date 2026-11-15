@@ -111,6 +111,36 @@ export function LegacyMigrationNotice({ onMigrated }: LegacyMigrationNoticeProps
               </div>
             ) : null}
 
+            {preview && preview.linked_skills.length > 0 ? (
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-sm font-medium">
+                  {t("migration.linkedSkills", { count: preview.linked_skills.length })}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">{t("migration.linkedSkillsResult")}</p>
+                <ul className="mt-2 max-h-28 list-disc overflow-auto pl-5 text-xs">
+                  {preview.linked_skills.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {preview && preview.unrecognized_items.length > 0 ? (
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-sm font-medium">
+                  {t("migration.unrecognizedItems", { count: preview.unrecognized_items.length })}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("migration.unrecognizedItemsResult")}
+                </p>
+                <ul className="mt-2 max-h-28 list-disc overflow-auto pl-5 text-xs">
+                  {preview.unrecognized_items.map((name) => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {preview && preview.conflicts.length > 0 ? (
               <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3" role="alert">
                 <p className="text-sm font-medium text-destructive">

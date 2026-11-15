@@ -20,6 +20,8 @@ const preview: StoragePreview = {
   current_path: status.legacy_path,
   new_path: status.default_central_path,
   skill_count: 3,
+  linked_skills: [],
+  unrecognized_items: [],
   conflicts: [],
   can_proceed: true,
 };
