@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use super::{github_import, skill_origin};
+use crate::text_utils::truncate_at_char_boundary;
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1569,7 +1570,7 @@ pub async fn test_ai_connection(
 
     let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
         Some(k) => k,
-        None => get_provider_setting(&state.db, "ai_api_key")
+        None => get_provider_secret(&state.db, "ai_api_key")
             .await
             .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?,
     };
@@ -1630,7 +1631,7 @@ pub async fn test_ai_connection(
 
     // Accept either Anthropic or OpenAI response shape
     let val: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| format!("无法解析响应: {}", &body[..body.len().min(200)]))?;
+        .map_err(|_| format!("无法解析响应: {}", truncate_at_char_boundary(&body, 200)))?;
 
     if parse_translation_response(&body).is_ok() {
         Ok("Connection OK".to_string())
@@ -1639,7 +1640,7 @@ pub async fn test_ai_connection(
     } else {
         Err(format!(
             "无法识别的响应格式: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
     }
 }
@@ -1664,7 +1665,7 @@ pub async fn list_ai_models(
     let api_key = match req.api_key {
         Some(k) if !k.trim().is_empty() => Some(k),
         Some(_) => None,
-        None => get_provider_setting(&state.db, "ai_api_key").await,
+        None => get_provider_secret(&state.db, "ai_api_key").await,
     };
 
     let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
@@ -1800,7 +1801,7 @@ pub async fn list_ai_models(
         return catalog_fallback(format!(
             "模型列表返回错误 {}: {}",
             status,
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -1813,7 +1814,7 @@ pub async fn list_ai_models(
     if models.is_empty() {
         return catalog_fallback(format!(
             "无法解析模型列表响应: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -2000,6 +2001,16 @@ async fn get_ai_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// 활성 제공업체의 비밀값(API 키)을 DB가 아니라 OS 키체인에서 읽는다.
+async fn get_provider_secret(pool: &crate::db::DbPool, key: &str) -> Option<String> {
+    let provider = get_ai_setting(pool, "ai_provider")
+        .await
+        .unwrap_or_default();
+    crate::secrets::shared()
+        .get(&format!("{}__{}", key, provider))
+        .filter(|v| !v.trim().is_empty())
+}
+
 async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
     let provider = get_ai_setting(pool, "ai_provider")
         .await
@@ -2011,7 +2022,10 @@ async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<Str
 /// Helper: truncate skill content to 8000 chars.
 fn truncate_content(content: &str) -> String {
     if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
+        format!(
+            "{}...\n\n(内容已截断)",
+            truncate_at_char_boundary(content, 8000)
+        )
     } else {
         content.to_string()
     }
@@ -2288,7 +2302,7 @@ async fn do_explain_skill_stream(
     content: &str,
     lang: &str,
 ) -> Result<(), String> {
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
 
@@ -2565,7 +2579,7 @@ pub(crate) async fn translate_skill_description_impl(
         return Err("번역할 설명이 비어 있습니다.".to_string());
     }
 
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
     let api_url = get_provider_setting(pool, "ai_api_url")
@@ -2660,6 +2674,17 @@ pub async fn refresh_skill_explanation(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn korean_content_over_8000_bytes_is_truncated_on_a_char_boundary() {
+        let content = "가".repeat(3000);
+        let truncated = super::truncate_content(&content);
+        let clipped = truncated
+            .strip_suffix("...\n\n(内容已截断)")
+            .expect("truncated content keeps the marker");
+        assert_eq!(clipped.len(), 7998);
+        assert!(clipped.chars().all(|c| c == '가'));
+    }
+
     #[test]
     fn raw_github_install_url_keeps_the_installed_source_directory() {
         let (repo, path) = super::github_origin_from_raw_url(
@@ -2826,8 +2851,8 @@ mod tests {
         db::set_setting(pool, "ai_provider", "translation-test")
             .await
             .expect("set active provider");
+        crate::secrets::shared().set("ai_api_key__translation-test", "secret-key");
         for (key, value) in [
-            ("ai_api_key__translation-test", "secret-key"),
             ("ai_api_url__translation-test", api_url),
             ("ai_model__translation-test", "translation-model"),
             ("ai_protocol__translation-test", protocol),

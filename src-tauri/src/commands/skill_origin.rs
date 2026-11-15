@@ -20,7 +20,7 @@ mod installation_records;
 use installation_records::RecordedOrigin;
 
 // 한 번의 전체 확인에서 같은 저장소를 여러 스킬 때문에 반복 다운로드하지 않는다.
-type RemoteCache = HashMap<(String, Option<String>, bool), Result<RemoteSnapshot, String>>;
+type RemoteCache = HashMap<(String, Option<String>), Result<RemoteSnapshot, String>>;
 type RepositoryHints = BTreeMap<String, Option<String>>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -814,7 +814,7 @@ async fn fetch_remote_snapshot(
     source_path: &str,
     requested_ref: Option<&str>,
 ) -> Result<RemoteSnapshot, String> {
-    let mut remote = fetch_remote_repository(pool, repo_url, requested_ref, false).await?;
+    let mut remote = fetch_remote_repository(pool, repo_url, requested_ref).await?;
     remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
     remote.source_path = source_path.to_string();
     Ok(remote)
@@ -824,7 +824,6 @@ async fn fetch_remote_repository(
     pool: &DbPool,
     repo_url: &str,
     requested_ref: Option<&str>,
-    limited: bool,
 ) -> Result<RemoteSnapshot, String> {
     let auth = github_import::github_direct_auth_from_settings(pool).await?;
     let mut repo = github_import::resolve_repo_ref(repo_url, auth.as_deref()).await?;
@@ -888,11 +887,7 @@ async fn fetch_remote_repository(
 
     // 이후 비교와 적용은 사용자가 확인한 불변 커밋을 사용한다.
     repo.branch = commit_oid.clone();
-    let snapshot = if limited {
-        github_import::download_repo_snapshot_for_origin(&client, &repo, auth.as_deref()).await?
-    } else {
-        github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?
-    };
+    let snapshot = github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?;
     if let Ok(skills) = github_import::build_repo_skill_candidates_from_snapshot(&repo, &snapshot) {
         sqlx::query("INSERT INTO skill_repository_catalog (owner, repo, ref_name, skill_count) VALUES (?, ?, ?, ?) ON CONFLICT(owner, repo, ref_name) DO UPDATE SET skill_count = excluded.skill_count")
             .bind(repo.owner.to_lowercase()).bind(repo.repo.to_lowercase()).bind(&ref_name)
@@ -915,13 +910,12 @@ async fn cached_remote_repository(
     repo_url: &str,
     ref_name: Option<&str>,
     cache: &mut RemoteCache,
-    limited: bool,
 ) -> Result<RemoteSnapshot, String> {
-    let key = (repo_url.to_string(), ref_name.map(str::to_string), limited);
+    let key = (repo_url.to_string(), ref_name.map(str::to_string));
     if let Some(cached) = cache.get(&key) {
         return cached.clone();
     }
-    let remote = fetch_remote_repository(pool, repo_url, ref_name, limited).await;
+    let remote = fetch_remote_repository(pool, repo_url, ref_name).await;
     cache.insert(key, remote.clone());
     remote
 }
@@ -932,9 +926,8 @@ async fn cached_remote_snapshot(
     source_path: &str,
     ref_name: Option<&str>,
     cache: &mut RemoteCache,
-    limited: bool,
 ) -> Result<RemoteSnapshot, String> {
-    let mut remote = cached_remote_repository(pool, repo_url, ref_name, cache, limited).await?;
+    let mut remote = cached_remote_repository(pool, repo_url, ref_name, cache).await?;
     remote.manifest = manifest_from_files(&remote_files(&remote.snapshot, source_path)?);
     remote.source_path = source_path.to_string();
     Ok(remote)
@@ -983,7 +976,6 @@ async fn check_origin_with_cache(
         &origin.source_path,
         Some(&origin.ref_name),
         cache,
-        false,
     )
     .await
     {
@@ -1373,7 +1365,6 @@ async fn discover_skill_origin_with_repositories(
             &candidate.source_path,
             (!candidate.ref_name.is_empty()).then_some(candidate.ref_name.as_str()),
             cache,
-            true,
         )
         .await?;
         let status = link_downloaded_origin(pool, &target, &remote, false, None, None).await?;
@@ -1399,7 +1390,7 @@ async fn discover_skill_origin_with_repositories(
         repositories.sort_by_key(|(url, document)| (document.is_none(), url.clone()));
         let mut matches = Vec::new();
         for (repo_url, document) in repositories.into_iter().take(10) {
-            let Ok(repository) = cached_remote_repository(pool, &repo_url, None, cache, true).await
+            let Ok(repository) = cached_remote_repository(pool, &repo_url, None, cache).await
             else {
                 continue;
             };
@@ -2848,10 +2839,8 @@ mod tests {
             manifest: manifest_from_files(&remote_files(&snapshot, "skills/first").unwrap()),
             snapshot,
         };
-        let mut cache = RemoteCache::from([(
-            ("https://github.com/acme/skills".into(), None, true),
-            Ok(remote),
-        )]);
+        let mut cache =
+            RemoteCache::from([(("https://github.com/acme/skills".into(), None), Ok(remote))]);
         discover_installed_origins(&pool, &mut cache).await.unwrap();
         for (path, original) in before {
             let origin = load_origin(&pool, &origin_target_key(&path))
@@ -2985,7 +2974,6 @@ mod tests {
             (
                 "https://github.com/acme/skills".into(),
                 Some("release/v2".into()),
-                true,
             ),
             Ok(remote),
         )]);
@@ -3140,7 +3128,7 @@ mod tests {
             snapshot,
         };
         let mut cache = RemoteCache::from([(
-            ("https://github.com/acme/skills".into(), None, true),
+            ("https://github.com/acme/skills".into(), None),
             Ok(remote.clone()),
         )]);
         let request = SkillTargetRequest {
@@ -3165,10 +3153,7 @@ mod tests {
             .unwrap();
         let mut fork = remote.clone();
         fork.owner = "fork".into();
-        cache.insert(
-            ("https://github.com/fork/skills".into(), None, true),
-            Ok(fork),
-        );
+        cache.insert(("https://github.com/fork/skills".into(), None), Ok(fork));
         let hints = RepositoryHints::from([
             (
                 "https://github.com/acme/skills".into(),
@@ -3202,7 +3187,7 @@ mod tests {
             .unwrap()
             .is_none());
         cache.insert(
-            ("https://github.com/unavailable/repo".into(), None, true),
+            ("https://github.com/unavailable/repo".into(), None),
             Err("HTTP 429".into()),
         );
         assert_eq!(
@@ -3210,8 +3195,7 @@ mod tests {
                 &pool,
                 "https://github.com/unavailable/repo",
                 None,
-                &mut cache,
-                true
+                &mut cache
             )
             .await
             .unwrap_err(),
@@ -3276,7 +3260,7 @@ mod tests {
             .count();
         let remotes = cache
             .iter()
-            .map(|((url, _, _), value)| match value {
+            .map(|((url, _), value)| match value {
                 Ok(remote) => serde_json::json!({"url":url,"commit":remote.commit_oid}),
                 Err(error) => serde_json::json!({"url":url,"error":error}),
             })

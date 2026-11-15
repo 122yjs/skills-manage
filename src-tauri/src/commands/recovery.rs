@@ -521,11 +521,22 @@ fn restore_entry_without_overwriting(source: &Path, target: &Path) -> Result<(),
 }
 
 fn write_manifest(layout: &RecoveryLayout, manifest: &RecoveryManifest) -> Result<(), String> {
+    persist_manifest(layout, manifest, false)
+}
+
+/// `replace`가 참이면 이미 있는 복구 정보를 임시 파일로 안전하게 바꿔 씁니다.
+fn persist_manifest(
+    layout: &RecoveryLayout,
+    manifest: &RecoveryManifest,
+    replace: bool,
+) -> Result<(), String> {
     let manifest_path = manifest_path(layout, &manifest.entry.id)?;
     let temp_path = layout
         .manifests
         .join(format!(".{}.partial", manifest.entry.id));
-    if fs::symlink_metadata(&manifest_path).is_ok() || fs::symlink_metadata(&temp_path).is_ok() {
+    if (!replace && fs::symlink_metadata(&manifest_path).is_ok())
+        || fs::symlink_metadata(&temp_path).is_ok()
+    {
         return Err("같은 복구 항목 ID가 이미 있습니다".to_string());
     }
     let contents = serde_json::to_vec_pretty(manifest)
@@ -909,6 +920,67 @@ async fn backup_vault_before_removal_locked(
     };
     let _ = snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
     create_file_backup(&layout, VAULT_TRASH, label, source, source, None).map(Some)
+}
+
+/// 보관함 위치를 옮긴 뒤 원래 위치에 남은 백업을 보관 기간 동안 쓸 수 있는 휴지통 항목으로 보존합니다.
+///
+/// 복원 위치는 새 보관함 안(`restore_path`)이어야 보관함 밖 복원 금지 규칙을 지킵니다.
+pub async fn backup_vault_after_move(
+    pool: &DbPool,
+    backup: &Path,
+    restore_path: &Path,
+    label: String,
+) -> Result<Option<RecoveryEntry>, String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(None);
+    };
+    create_file_backup(&layout, VAULT_TRASH, label, backup, restore_path, None).map(Some)
+}
+
+/// 보관함 위치가 바뀌면 휴지통 항목의 원래 위치를 새 보관함 기준으로 옮깁니다.
+///
+/// 되돌릴 때는 `old_root`와 `new_root`를 바꿔 다시 호출합니다.
+pub async fn retarget_vault_trash(
+    pool: &DbPool,
+    old_root: &Path,
+    new_root: &Path,
+) -> Result<(), String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(());
+    };
+    for directory_entry in fs::read_dir(&layout.manifests)
+        .map_err(|error| format!("복구 목록을 읽을 수 없습니다: {error}"))?
+    {
+        let path = directory_entry
+            .map_err(|error| format!("복구 목록 항목을 읽을 수 없습니다: {error}"))?
+            .path();
+        let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            || !valid_entry_id(id)
+        {
+            continue;
+        }
+        let Ok(mut manifest) = read_manifest(&layout, id) else {
+            continue;
+        };
+        if manifest.entry.kind != VAULT_TRASH {
+            continue;
+        }
+        let Some(relative) = Path::new(&manifest.entry.original_path)
+            .strip_prefix(old_root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+        else {
+            continue;
+        };
+        manifest.entry.original_path = new_root.join(relative).to_string_lossy().into_owned();
+        persist_manifest(&layout, &manifest, true)?;
+    }
+    Ok(())
 }
 
 async fn snapshot_database_locked(

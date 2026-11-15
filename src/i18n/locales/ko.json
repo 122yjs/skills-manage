@@ -359,6 +359,13 @@
     "toggleIndividualSkill": "{{platform}}에서만 {{name}} 전환",
     "sharedDesktopRequired": "공용 설치는 데스크톱 앱에서만 관리할 수 있습니다."
   },
+  "startup": {
+    "title": "앱을 시작하지 못했습니다",
+    "description": "데이터 폴더, 데이터베이스 또는 스킬 보관함을 준비하는 중 문제가 생겼습니다. 외장 디스크가 분리되어 있다면 다시 연결한 뒤 다시 시도하고, 쓸 수 없는 폴더라면 다른 보관함 경로를 지정하세요.",
+    "pathLabel": "새 보관함 경로",
+    "retry": "다시 시도",
+    "changePath": "이 경로로 바꾸고 다시 시도"
+  },
   "storage": {
     "title": "원본 스킬 보관함 위치",
     "description": "앱이 관리하는 스킬 원본을 보관합니다. 에이전트는 이 폴더를 자동으로 읽지 않으며, 플랫폼이나 공용 위치에 설치한 스킬을 사용합니다.",
@@ -383,7 +390,11 @@
     "conflicts": "충돌 {{count}}개가 있어 아직 이동할 수 없습니다.",
     "later": "나중에",
     "start": "마이그레이션 시작",
-    "migrating": "마이그레이션 중..."
+    "migrating": "마이그레이션 중...",
+    "linkedSkills": "링크로 연결된 스킬 {{count}}개",
+    "linkedSkillsResult": "이동 후에도 같은 대상을 가리키는 링크로 유지됩니다. 원본 폴더는 바뀌지 않습니다.",
+    "unrecognizedItems": "스킬로 인식되지 않는 항목 {{count}}개",
+    "unrecognizedItemsResult": "보관함으로 옮겨지고, 공용 경로에는 그 항목을 가리키는 링크가 남아 계속 보입니다."
   },
   "sharedDelete": {
     "title": "공용 설치와 연결된 바로가기를 삭제할까요?",
@@ -806,6 +817,9 @@
       "intl": "국제"
     },
     "aiApiKeyLabel": "API 키",
+    "secretSavedPlaceholder": "저장됨 · 새 값을 입력하면 바뀝니다",
+    "secretKeychainUnavailable": "이 환경에서는 OS 키체인을 쓸 수 없어 비밀값을 파일에 저장하지 않고, 앱이 실행되는 동안에만 메모리에 보관합니다. 앱을 다시 켜면 다시 입력해야 합니다.",
+    "aiApiKeyClear": "키 지우기",
     "aiModelLabel": "모델",
     "aiModelPlaceholder": "모델 이름",
     "aiModelCustom": "사용자 지정",

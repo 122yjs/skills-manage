@@ -1,7 +1,9 @@
+use serde::Serialize;
 use tauri::State;
 
 use crate::db::{self, DbPool, ScanDirectory};
 use crate::path_utils::{expand_home_path, path_to_string};
+use crate::secrets::{self, Secrets, CONFIGURED_MARKER};
 use crate::AppState;
 
 // ─── Core Implementations (testable without Tauri State) ──────────────────────
@@ -55,7 +57,11 @@ pub async fn set_scan_directory_active_impl(
 }
 
 /// Get a settings value by key. Returns `None` if the key is not set.
+/// 비밀값은 화면으로 보내지 않으므로 `get_secret_status`로 설정 여부만 조회한다.
 pub async fn get_setting_impl(pool: &DbPool, key: &str) -> Result<Option<String>, String> {
+    if secrets::is_secret_key(key) {
+        return Err(SECRET_KEY_ERROR.to_string());
+    }
     db::get_setting(pool, key).await
 }
 
@@ -64,10 +70,65 @@ pub async fn set_setting_impl(pool: &DbPool, key: &str, value: &str) -> Result<(
     if key.trim().is_empty() {
         return Err("Settings key cannot be empty".to_string());
     }
+    if secrets::is_secret_key(key) {
+        return Err(SECRET_KEY_ERROR.to_string());
+    }
     if key == db::CENTRAL_SKILLS_PATH_SETTING {
         return Err("Use change_central_path to move the Central vault safely".to_string());
     }
     db::set_setting(pool, key, value).await
+}
+
+const SECRET_KEY_ERROR: &str = "Secrets are stored in the OS keychain; use set_secret";
+
+/// 화면에는 비밀값 자체가 아니라 설정 여부와 키체인 사용 가능 여부만 전달한다.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SecretStatus {
+    pub configured: bool,
+    pub keychain_available: bool,
+}
+
+fn ensure_secret_key(key: &str) -> Result<(), String> {
+    if secrets::is_secret_key(key) {
+        Ok(())
+    } else {
+        Err(format!("'{key}' is not a secret setting"))
+    }
+}
+
+fn secret_status(secrets: &Secrets, key: &str) -> SecretStatus {
+    SecretStatus {
+        configured: secrets.get(key).is_some(),
+        keychain_available: secrets.keychain_available(),
+    }
+}
+
+pub fn get_secret_status_impl(secrets: &Secrets, key: &str) -> Result<SecretStatus, String> {
+    ensure_secret_key(key)?;
+    Ok(secret_status(secrets, key))
+}
+
+/// 비밀값을 키체인에 저장하고 DB에는 설정 여부 표시만 남긴다. 빈 값이면 지운다.
+/// 키체인을 쓸 수 없으면 메모리에만 두고 DB에는 아무것도 남기지 않는다.
+pub async fn set_secret_impl(
+    pool: &DbPool,
+    secrets: &Secrets,
+    key: &str,
+    value: &str,
+) -> Result<SecretStatus, String> {
+    ensure_secret_key(key)?;
+    let value = value.trim();
+    let marker = if value.is_empty() {
+        secrets.delete(key)?;
+        ""
+    } else if secrets.set(key, value) {
+        CONFIGURED_MARKER
+    } else {
+        ""
+    };
+    db::set_setting(pool, key, marker).await?;
+    Ok(secret_status(secrets, key))
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
@@ -125,13 +186,31 @@ pub async fn set_setting(
     set_setting_impl(&state.db, &key, &value).await
 }
 
+/// Tauri command: 비밀값의 설정 여부만 조회한다. 값은 반환하지 않는다.
+#[tauri::command]
+pub async fn get_secret_status(key: String) -> Result<SecretStatus, String> {
+    get_secret_status_impl(secrets::shared(), &key)
+}
+
+/// Tauri command: 비밀값을 OS 키체인에 저장한다. 빈 값이면 지운다.
+#[tauri::command]
+pub async fn set_secret(
+    state: State<'_, AppState>,
+    key: String,
+    value: String,
+) -> Result<SecretStatus, String> {
+    set_secret_impl(&state.db, secrets::shared(), &key, &value).await
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::db;
+    use crate::secrets::{MemoryStore, SecretStore, UnavailableStore};
     use sqlx::SqlitePool;
+    use std::sync::Arc;
 
     async fn setup_test_db() -> DbPool {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
@@ -441,5 +520,87 @@ mod tests {
         assert!(result.is_ok(), "Setting an empty value should succeed");
         let value = get_setting_impl(&pool, "empty-val").await.unwrap();
         assert_eq!(value.as_deref(), Some(""));
+    }
+
+    // ── secrets ───────────────────────────────────────────────────────────────
+
+    fn memory_secrets() -> (Arc<MemoryStore>, Secrets) {
+        let keychain = Arc::new(MemoryStore::default());
+        (keychain.clone(), Secrets::new(keychain))
+    }
+
+    #[tokio::test]
+    async fn test_set_secret_keeps_the_value_in_the_keychain_and_only_a_marker_in_the_db() {
+        let pool = setup_test_db().await;
+        let (keychain, secrets) = memory_secrets();
+
+        let status = set_secret_impl(&pool, &secrets, "github_pat", "  ghp_secret  ")
+            .await
+            .unwrap();
+
+        assert!(status.configured && status.keychain_available);
+        assert_eq!(
+            keychain.get("github_pat").unwrap().as_deref(),
+            Some("ghp_secret")
+        );
+        assert_eq!(
+            db::get_setting(&pool, "github_pat")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(CONFIGURED_MARKER)
+        );
+
+        let status = set_secret_impl(&pool, &secrets, "github_pat", "")
+            .await
+            .unwrap();
+        assert!(!status.configured);
+        assert_eq!(keychain.get("github_pat").unwrap(), None);
+        assert_eq!(
+            db::get_setting(&pool, "github_pat")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_secret_never_writes_plaintext_to_the_db_without_a_keychain() {
+        let pool = setup_test_db().await;
+        let secrets = Secrets::new(Arc::new(UnavailableStore));
+
+        let status = set_secret_impl(&pool, &secrets, "ai_api_key__claude", "sk-secret")
+            .await
+            .unwrap();
+
+        assert!(status.configured && !status.keychain_available);
+        assert_eq!(
+            secrets.get("ai_api_key__claude").as_deref(),
+            Some("sk-secret")
+        );
+        assert_eq!(
+            db::get_setting(&pool, "ai_api_key__claude")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_generic_settings_commands_refuse_secret_keys() {
+        let pool = setup_test_db().await;
+
+        assert!(set_setting_impl(&pool, "github_pat", "ghp_secret")
+            .await
+            .is_err());
+        assert!(set_setting_impl(&pool, "ai_api_key__claude", "sk-secret")
+            .await
+            .is_err());
+        assert!(get_setting_impl(&pool, "github_pat").await.is_err());
+        assert!(set_secret_impl(&pool, &memory_secrets().1, "theme", "dark")
+            .await
+            .is_err());
     }
 }
