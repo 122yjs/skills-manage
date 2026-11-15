@@ -9,9 +9,11 @@ import { SettingsView } from "@/pages/SettingsView";
 import { DiscoverView } from "@/pages/DiscoverView";
 import { ObsidianVaultView } from "@/pages/ObsidianVaultView";
 import { UniversalInstallView } from "@/pages/UniversalInstallView";
+import { StartupGate } from "@/components/layout/StartupRecovery";
 
 function App() {
   return (
+    <StartupGate>
     <Routes>
       <Route path="/" element={<AppShell />}>
         {/* Default redirect to the Skill Library */}
@@ -37,6 +39,7 @@ function App() {
         <Route path="settings" element={<SettingsView />} />
       </Route>
     </Routes>
+    </StartupGate>
   );
 }
 
