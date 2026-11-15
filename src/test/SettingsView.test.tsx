@@ -84,7 +84,10 @@ function setupMocks({
   addCustomAgent = vi.fn(),
   updateCustomAgent = vi.fn(),
   removeCustomAgent = vi.fn(),
-  githubPat = "",
+  githubPatConfigured = false,
+  secretKeychainAvailable = true,
+  getSecretStatus = vi.fn().mockResolvedValue(false),
+  setSecret = vi.fn().mockResolvedValue(true),
   isLoadingGitHubPat = false,
   isSavingGitHubPat = false,
   loadGitHubPat = vi.fn(),
@@ -109,7 +112,10 @@ function setupMocks({
       addCustomAgent,
       updateCustomAgent,
       removeCustomAgent,
-      githubPat,
+      githubPatConfigured,
+      secretKeychainAvailable,
+      getSecretStatus,
+      setSecret,
       isLoadingGitHubPat,
       isSavingGitHubPat,
       loadGitHubPat,
@@ -223,18 +229,26 @@ describe("SettingsView", () => {
     expect(loadGitHubPat).toHaveBeenCalled();
   });
 
-  it("renders the saved github pat value and explanation copy", () => {
-    setupMocks({ githubPat: "github_pat_saved" });
+  it("shows that a github pat is saved without putting its value in the form", () => {
+    setupMocks({ githubPatConfigured: true });
     renderSettingsView();
 
-    expect(screen.getByLabelText("GitHub Personal Access Token")).toHaveValue("github_pat_saved");
+    expect(screen.getByLabelText("GitHub Personal Access Token")).toHaveValue("");
+    expect(screen.getByPlaceholderText("已保存 · 输入新值即可替换")).toBeTruthy();
     expect(screen.getByText(/它绝不会被发送到公共镜像或代理回退链路/)).toBeTruthy();
     expect(screen.getByText(/当 GitHub 预览\/导入遇到限流/)).toBeTruthy();
   });
 
+  it("explains that secrets stay in memory when the OS keychain is unavailable", () => {
+    setupMocks({ secretKeychainAvailable: false });
+    renderSettingsView();
+
+    expect(screen.getAllByText(/无法使用系统钥匙串/).length).toBeGreaterThan(0);
+  });
+
   it("saves the github pat from settings", async () => {
     const saveGitHubPat = vi.fn().mockResolvedValue(undefined);
-    setupMocks({ githubPat: "", saveGitHubPat });
+    setupMocks({ saveGitHubPat });
     renderSettingsView();
 
     fireEvent.change(screen.getByLabelText("GitHub Personal Access Token"), {
@@ -250,7 +264,7 @@ describe("SettingsView", () => {
 
   it("clears the github pat from settings", async () => {
     const clearGitHubPat = vi.fn().mockResolvedValue(undefined);
-    setupMocks({ githubPat: "github_pat_saved", clearGitHubPat });
+    setupMocks({ githubPatConfigured: true, clearGitHubPat });
     renderSettingsView();
 
     fireEvent.click(screen.getByRole("button", { name: "清除令牌" }));
@@ -259,6 +273,38 @@ describe("SettingsView", () => {
       expect(clearGitHubPat).toHaveBeenCalled();
     });
     expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
+  });
+
+  it("shows a saved AI key as configured without loading its value into the form", async () => {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "get_setting" && (args as { key: string }).key === "ai_provider") return "claude";
+      return null;
+    });
+    const getSecretStatus = vi.fn().mockResolvedValue(true);
+    setupMocks({ getSecretStatus });
+    renderSettingsView();
+
+    await waitFor(() => expect(getSecretStatus).toHaveBeenCalledWith("ai_api_key__claude"));
+    expect(await screen.findByPlaceholderText("已保存 · 输入新值即可替换")).toHaveValue("");
+    expect(invoke).not.toHaveBeenCalledWith("get_setting", { key: "ai_api_key__claude" });
+  });
+
+  it("saves a typed AI key through the keychain command, not the settings table", async () => {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "get_setting" && (args as { key: string }).key === "ai_provider") return "claude";
+      return null;
+    });
+    const setSecret = vi.fn().mockResolvedValue(true);
+    setupMocks({ setSecret });
+    renderSettingsView();
+
+    fireEvent.change(await screen.findByPlaceholderText("sk-..."), { target: { value: "sk-typed" } });
+
+    await waitFor(() => expect(setSecret).toHaveBeenCalledWith("ai_api_key__claude", "sk-typed"));
+    expect(invoke).not.toHaveBeenCalledWith("set_setting", {
+      key: "ai_api_key__claude",
+      value: "sk-typed",
+    });
   });
 
   it("loads the public OpenCode Go model catalog without an API key", async () => {
