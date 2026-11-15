@@ -340,9 +340,9 @@ describe("SkillDetailView", () => {
       if (command === "list_skill_directory") {
         return mockDirectoryTree;
       }
-      if (command === "read_file_by_path") {
-        if (args && typeof args === "object" && "path" in args) {
-          return args.path === "~/.agents/skills/frontend-design/docs/notes.txt"
+      if (command === "read_skill_file") {
+        if (args && typeof args === "object" && "relativePath" in args) {
+          return args.relativePath === "docs/notes.txt"
             ? mockNotesContent
             : mockContent;
         }
@@ -1071,6 +1071,7 @@ describe("SkillDetailView", () => {
             description: "Discovered skill",
             platformName: "Claude Code",
             projectName: "project",
+            id: "claude-code__project__frontend-design",
             filePath,
             dirPath: "/tmp/project/.claude/skills/frontend-design",
             isAlreadyCentral: false,
@@ -1715,9 +1716,9 @@ function mockOriginInvoke(originFixture: typeof importedOriginFixture | null) {
     if (command === "list_skill_directory") {
       return mockDirectoryTree;
     }
-    if (command === "read_file_by_path") {
-      if (args && typeof args === "object" && "path" in args) {
-        return args.path === "~/.agents/skills/frontend-design/docs/notes.txt"
+    if (command === "read_skill_file") {
+      if (args && typeof args === "object" && "relativePath" in args) {
+        return args.relativePath === "docs/notes.txt"
           ? mockNotesContent
           : mockContent;
       }
@@ -1757,7 +1758,7 @@ describe("SkillDetailView imported origin", () => {
         remoteCommitOid: "latest",
       };
       if (command === "list_skill_directory") return mockDirectoryTree;
-      if (command === "read_file_by_path") return mockContent;
+      if (command === "read_skill_file") return mockContent;
       return null;
     });
     renderView();
@@ -1765,6 +1766,12 @@ describe("SkillDetailView imported origin", () => {
     expect(screen.getByText(/\/skills\/setup\/SKILL.md/)).toBeInTheDocument();
     expect(screen.getByText(/720/)).toHaveTextContent("4");
     expect(await screen.findByText(/unknown_baseline/)).toBeInTheDocument();
+  });
+
+  it("tells the user when the install came through a third-party mirror", async () => {
+    mockOriginInvoke({ ...importedOriginFixture, viaMirror: true } as typeof importedOriginFixture);
+    renderView();
+    expect(await screen.findByText("通过第三方镜像下载，而非直接来自 GitHub")).toBeInTheDocument();
   });
 
   it.each([true, false])("asks once before updating an unknown version (accept=%s)", async (accept) => {
@@ -1783,7 +1790,7 @@ describe("SkillDetailView imported origin", () => {
       };
       if (command === "apply_skill_update") return { operationId: "update-1", recoveryEntryId: "backup-1" };
       if (command === "list_skill_directory") return mockDirectoryTree;
-      if (command === "read_file_by_path") return mockContent;
+      if (command === "read_skill_file") return mockContent;
       return [];
     });
     renderView();

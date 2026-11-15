@@ -907,20 +907,40 @@ pub async fn backup_vault_before_removal(
     source: &Path,
     label: String,
 ) -> Result<Option<RecoveryEntry>, String> {
-    let _guard = recovery_lock().await;
-    backup_vault_before_removal_locked(pool, source, label).await
+    Ok(backup_vault_with_snapshot(pool, source, label)
+        .await?
+        .map(|(_, vault)| vault))
 }
 
-async fn backup_vault_before_removal_locked(
+/// `backup_vault_before_removal`과 같지만 삭제가 실패했을 때 되돌릴 수 있도록
+/// 함께 만든 DB 스냅샷 항목까지 돌려줍니다.
+pub async fn backup_vault_with_snapshot(
     pool: &DbPool,
     source: &Path,
     label: String,
-) -> Result<Option<RecoveryEntry>, String> {
+) -> Result<Option<(RecoveryEntry, RecoveryEntry)>, String> {
+    let _guard = recovery_lock().await;
     let Some(layout) = recovery_layout(pool).await? else {
         return Ok(None);
     };
-    let _ = snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
-    create_file_backup(&layout, VAULT_TRASH, label, source, source, None).map(Some)
+    let snapshot =
+        snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
+    match create_file_backup(&layout, VAULT_TRASH, label, source, source, None) {
+        Ok(vault) => Ok(Some((snapshot, vault))),
+        Err(error) => {
+            if let Ok(manifest) = read_manifest(&layout, &snapshot.id) {
+                let _ = delete_manifest_entry(&layout, &manifest);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// 삭제가 실패했을 때 그 시도에서 만든 복구 항목을 지웁니다.
+pub async fn discard_entries(pool: &DbPool, entries: &[&RecoveryEntry]) {
+    for entry in entries {
+        let _ = delete_recovery_entry_impl(pool, &entry.id).await;
+    }
 }
 
 /// 보관함 위치를 옮긴 뒤 원래 위치에 남은 백업을 보관 기간 동안 쓸 수 있는 휴지통 항목으로 보존합니다.

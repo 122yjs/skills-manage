@@ -44,6 +44,15 @@ pub struct ScanResult {
     pub total_skills: usize,
     pub agents_scanned: usize,
     pub skills_by_agent: HashMap<String, usize>,
+    /// 폴더는 있지만 읽지 못한 스킬 폴더. 비어 있는 폴더와 구분해 알린다.
+    pub unreadable_roots: Vec<UnreadableRoot>,
+}
+
+/// 권한이나 입출력 문제로 읽지 못한 플랫폼 스킬 폴더.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnreadableRoot {
+    pub agent_id: String,
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -740,6 +749,12 @@ pub(crate) fn loading_paths_for_agent(
         .collect()
 }
 
+/// 폴더가 있는데 권한이나 입출력 문제로 목록을 읽지 못하면 true.
+/// 폴더가 없는 경우(NotFound)는 "읽지 못함"이 아니라 "없음"이다.
+fn is_unreadable_dir(path: &Path) -> bool {
+    matches!(std::fs::read_dir(path), Err(e) if e.kind() != std::io::ErrorKind::NotFound)
+}
+
 fn claude_observation_row_id(agent_id: &str, dir_path: &str) -> String {
     format!("{agent_id}::{dir_path}")
 }
@@ -770,6 +785,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
     // Accumulate every skill ID discovered in this scan so we can purge stale
     // rows from the database once all directories have been walked.
     let mut all_found_skill_ids: HashSet<String> = HashSet::new();
+    let mut unreadable_roots: Vec<UnreadableRoot> = Vec::new();
 
     // ── Per-agent scans ───────────────────────────────────────────────────────
     for agent in &agents {
@@ -781,6 +797,43 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         let tracks_observations =
             agent.id == "universal" || scan_roots.iter().any(|root| root.source_kind.is_some());
         let has_existing_root = scan_roots.iter().any(|root| root.path.exists());
+        // 읽지 못한 폴더는 비어 있는 폴더가 아니다. 그 범위의 기존 기록은 지우지 않는다.
+        let agent_unreadable: Vec<PathBuf> = scan_roots
+            .iter()
+            .filter(|root| is_unreadable_dir(&root.path))
+            .map(|root| root.path.clone())
+            .collect();
+        unreadable_roots.extend(agent_unreadable.iter().map(|path| UnreadableRoot {
+            agent_id: agent.id.clone(),
+            path: path.to_string_lossy().into_owned(),
+        }));
+        let mut preserved_install_ids: Vec<String> = Vec::new();
+        let mut preserved_observation_ids: Vec<String> = Vec::new();
+        if !agent_unreadable.is_empty() {
+            let under_unreadable = |path: &str| {
+                agent_unreadable
+                    .iter()
+                    .any(|root| Path::new(path).starts_with(root))
+            };
+            preserved_install_ids = sqlx::query_as::<_, SkillInstallation>(
+                "SELECT * FROM skill_installations WHERE agent_id = ?",
+            )
+            .bind(&agent.id)
+            .fetch_all(pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|installation| under_unreadable(&installation.installed_path))
+            .map(|installation| installation.skill_id)
+            .collect();
+            preserved_observation_ids = db::get_agent_skill_observations(pool, &agent.id)
+                .await?
+                .into_iter()
+                .filter(|observation| under_unreadable(&observation.dir_path))
+                .map(|observation| observation.row_id)
+                .collect();
+            all_found_skill_ids.extend(preserved_install_ids.iter().cloned());
+        }
         let existing_roots: Vec<AgentScanRoot> = scan_roots
             .into_iter()
             .filter(|root| {
@@ -797,7 +850,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             skills_by_agent.insert(agent.id.clone(), 0);
             // 디렉터리가 실제로 사라진 경우에만 설치 기록을 정리한다.
             // 도구 감지가 실패했지만 경로는 남은 경우, 제거·복구에 필요한 기록을 보존한다.
-            if !has_existing_root {
+            if !has_existing_root && preserved_install_ids.is_empty() {
                 let _ = db::delete_stale_skill_installations(pool, &agent.id, &[]).await;
             } else {
                 let installations = sqlx::query_as::<_, SkillInstallation>(
@@ -807,7 +860,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                 .fetch_all(pool)
                 .await
                 .map_err(|error| error.to_string())?;
-                let mut found_install_ids = Vec::new();
+                let mut found_install_ids = preserved_install_ids.clone();
                 for installation in installations {
                     if std::fs::symlink_metadata(&installation.installed_path).is_ok() {
                         all_found_skill_ids.insert(installation.skill_id.clone());
@@ -819,7 +872,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
             if tracks_observations {
                 // Retain verified observation context for paused installs so
                 // cards and restore survive rescan (never invent new readers).
-                let mut keep: Vec<String> = Vec::new();
+                let mut keep: Vec<String> = preserved_observation_ids.clone();
                 if let Ok(paused) = db::get_paused_installations_by_agent(pool, &agent.id).await {
                     if let Ok(existing) = db::get_agent_skill_observations(pool, &agent.id).await {
                         for o in &existing {
@@ -838,8 +891,8 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
 
         let _ = db::update_agent_detected(pool, &agent.id, is_detected).await;
         let mut scanned = Vec::new();
-        let mut found_install_ids = Vec::new();
-        let mut found_observation_row_ids = Vec::new();
+        let mut found_install_ids = preserved_install_ids;
+        let mut found_observation_row_ids = preserved_observation_ids;
 
         for root in &existing_roots {
             let root_path = root
@@ -908,7 +961,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                         symlink_target: skill.symlink_target.clone(),
                         created_at: now.clone(),
                     };
-                    db::upsert_skill_installation(pool, &installation).await?;
+                    db::upsert_scanned_installation(pool, &installation).await?;
                 }
             }
 
@@ -989,6 +1042,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
         total_skills,
         agents_scanned: agents.len(),
         skills_by_agent,
+        unreadable_roots,
     })
 }
 
@@ -2085,6 +2139,87 @@ enabled = false
         assert_eq!(skills_in_db.len(), 2);
     }
 
+    /// 읽기 권한이 사라진 플랫폼 폴더는 "비어 있음"이 아니라 "읽지 못함"이다.
+    /// 재스캔이 그 범위의 기존 설치·스킬 기록을 지우면 안 된다.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_scan_keeps_records_when_platform_root_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePermissions(PathBuf);
+        impl Drop for RestorePermissions {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let root = tmp.path().join("skills");
+        create_skill_dir(
+            &root,
+            "alpha-skill",
+            &valid_skill_md("Alpha Skill", "First"),
+        );
+        db::insert_custom_agent(
+            &pool,
+            &db::Agent {
+                id: "test-agent".to_string(),
+                display_name: "Test Agent".to_string(),
+                category: "coding".to_string(),
+                global_skills_dir: root.to_string_lossy().into_owned(),
+                project_skills_dir: None,
+                icon_name: None,
+                is_detected: false,
+                is_builtin: false,
+                is_enabled: true,
+            },
+        )
+        .await
+        .unwrap();
+        let first = scan_all_skills_impl(&pool).await.unwrap();
+        assert!(first.unreadable_roots.is_empty());
+
+        let _restore = RestorePermissions(root.clone());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_dir(&root).is_ok() {
+            return; // root 권한 등으로 권한 제거가 통하지 않는 환경
+        }
+
+        let second = scan_all_skills_impl(&pool).await.unwrap();
+
+        assert_eq!(second.unreadable_roots.len(), 1);
+        assert_eq!(second.unreadable_roots[0].agent_id, "test-agent");
+        assert_eq!(
+            second.unreadable_roots[0].path,
+            root.to_string_lossy().into_owned()
+        );
+        assert_eq!(
+            db::get_skills_by_agent(&pool, "test-agent")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "읽지 못한 범위의 기존 기록은 유지되어야 한다"
+        );
+        let skill_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM skills WHERE id = 'alpha-skill'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(skill_rows, 1);
+
+        // 권한을 되돌리면 정상 스캔으로 돌아오고, 실제로 사라진 스킬은 정리된다.
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(root.join("alpha-skill")).unwrap();
+        let third = scan_all_skills_impl(&pool).await.unwrap();
+        assert!(third.unreadable_roots.is_empty());
+        assert!(db::get_skills_by_agent(&pool, "test-agent")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
     #[tokio::test]
     async fn test_scan_all_skills_impl_central_skills_are_marked() {
         use crate::db;
@@ -2407,14 +2542,10 @@ enabled = false
         );
         assert_ne!(shared_rows[0].row_id, shared_rows[1].row_id);
 
-        let installs = db::get_skill_installations(&pool, "shared-skill")
+        let installs = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap();
-        assert_eq!(
-            installs.len(),
-            1,
-            "only the user copy should remain manageable"
-        );
+        assert_eq!(installs.len(), 1, "only the user copy should be recorded");
         assert_eq!(
             installs[0].installed_path,
             user_root.join("shared-skill").to_string_lossy()
@@ -2793,7 +2924,7 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn test_untracked_universal_directory_becomes_manageable_without_changing_files() {
+    async fn test_untracked_universal_directory_becomes_observed_without_changing_files() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -2822,7 +2953,7 @@ enabled = false
                 .unwrap();
         }
 
-        // 이전 버전의 직접 관리됨 기록은 재스캔으로 관리 설치에 합쳐진다.
+        // 이전 버전의 직접 관리됨 기록은 재스캔으로 사라지고 관찰 항목이 된다.
         db::upsert_agent_skill_observation(
             &pool,
             &AgentSkillObservation {
@@ -2848,9 +2979,16 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let installation = db::get_skill_installation(&pool, "manual-skill", "universal")
+        assert!(
+            db::get_skill_installation(&pool, "manual-skill", "universal")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let installation = db::get_unmanaged_installations(&pool, "manual-skill")
             .await
             .unwrap()
+            .pop()
             .unwrap();
         assert_eq!(Path::new(&installation.installed_path), skill_dir);
         assert_eq!(installation.link_type, "copy");
@@ -2860,7 +2998,7 @@ enabled = false
             .is_empty());
         let skills = db::get_skills_for_agent(&pool, "universal").await.unwrap();
         assert_eq!(skills.len(), 1);
-        assert!(!skills[0].is_read_only);
+        assert!(!skills[0].is_managed && skills[0].is_read_only);
         assert_eq!(fs::read(skill_dir.join("SKILL.md")).unwrap(), original);
         assert!(central_root.read_dir().unwrap().next().is_none());
     }
@@ -3088,12 +3226,12 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let factory_installation = db::get_skill_installations(&pool, "shared-skill")
+        let factory_installation = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap()
             .into_iter()
             .find(|installation| installation.agent_id == "factory-droid")
-            .expect("Factory Droid primary root should remain a manageable install");
+            .expect("Factory Droid primary root should be recorded as an observed item");
         assert_eq!(
             factory_installation.installed_path,
             factory_root.join("shared-skill").to_string_lossy()
@@ -3104,7 +3242,7 @@ enabled = false
             .unwrap();
         assert_eq!(platform_skills.len(), 1);
         assert_eq!(platform_skills[0].id, "shared-skill");
-        assert!(!platform_skills[0].is_read_only);
+        assert!(!platform_skills[0].is_managed);
         assert_eq!(
             platform_skills[0].dir_path,
             factory_root.join("shared-skill").to_string_lossy()
@@ -3223,7 +3361,7 @@ enabled = false
         assert_eq!(rows.len(), 1, "only the user observation should remain");
         assert_eq!(rows[0].source_kind, "user");
 
-        let installs = db::get_skill_installations(&pool, "shared-skill")
+        let installs = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap();
         assert_eq!(
@@ -3330,7 +3468,8 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let installations = db::get_skill_installations(&pool, "my-skill")
+        // 플랫폼 폴더의 일반 폴더는 관찰 항목으로 기록한다.
+        let installations = db::get_unmanaged_installations(&pool, "my-skill")
             .await
             .unwrap();
         assert_eq!(

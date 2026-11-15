@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
-use crate::commands::{recovery, settings, skill_origin, storage};
+use crate::commands::{recovery, settings, skill_duplicates, skill_origin, storage};
 use crate::db::{self, DbPool};
 use crate::path_utils::{
     app_data_dir, default_central_skills_dir, expand_home_path, legacy_central_skills_dir,
@@ -79,6 +79,9 @@ async fn initialize_pool(
     if let Err(error) = settings::migrate_legacy_secrets_impl(pool, secrets::shared()).await {
         eprintln!("Could not migrate legacy secrets: {error}");
     }
+    skill_duplicates::reclassify_copy_installations(pool)
+        .await
+        .map_err(|e| format!("기존 복사 설치 기록을 다시 분류할 수 없습니다: {e}"))?;
     skill_origin::reconcile_incomplete_updates(pool)
         .await
         .map_err(|e| format!("중단된 스킬 업데이트를 정리할 수 없습니다: {e}"))?;

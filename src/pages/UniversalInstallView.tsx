@@ -412,6 +412,7 @@ export function UniversalInstallView() {
                     ? skill.link_type as "symlink" | "copy" | "native"
                     : undefined}
                   isReadOnly={skill.is_read_only ?? false}
+                  isUnmanaged={skill.is_managed === false}
                   isExternallyManaged={skill.source_kind === "unmanaged"}
                   sharedControl={sharedImpact
                     ? {
