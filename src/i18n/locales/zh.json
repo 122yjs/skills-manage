@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "符号链接",
     "sourceCopyLabel": "复制安装",
     "notFound": "未找到平台",
+    "unreadableTitle": "部分文件夹无法读取，已保留原有记录",
+    "unreadableHint": "请检查文件夹读取权限和磁盘连接状态，然后重新扫描。",
     "searchSkillLabel": "查看技能 {{name}}",
     "sourceFilterTabsLabel": "Claude 来源筛选",
     "sourceFilter": {
@@ -306,7 +308,8 @@
     "latestVersion": "GitHub 最新版本",
     "unknownVersion": "未记录",
     "compareVersions": "在 GitHub 上查看版本差异",
-    "lastChecked": "上次检查：{{date}}"
+    "lastChecked": "上次检查：{{date}}",
+    "viaMirror": "通过第三方镜像下载，而非直接来自 GitHub"
   },
   "skillUsage": {
     "active": "已激活",
@@ -379,6 +382,11 @@
     "move": "安全移动",
     "moving": "正在移动...",
     "changed": "已移动技能仓库和 {{count}} 个技能"
+  },
+  "legacySecrets": {
+    "banner": "当前环境无法使用系统钥匙串，旧版本以明文留在数据库及其备份中的 AI API 密钥和 GitHub 令牌无法迁移到安全位置。删除后需要重新输入这些密钥。",
+    "clear": "删除旧值",
+    "later": "稍后处理"
   },
   "migration": {
     "title": "分离技能仓库",
@@ -763,6 +771,9 @@
     "githubPatSaved": "GitHub 令牌已保存",
     "githubPatCleared": "GitHub 令牌已清除",
     "githubPatClear": "清除令牌",
+    "githubMirrorTitle": "GitHub 镜像回退",
+    "githubMirrorDesc": "当 GitHub 请求被限流或失败时，改为通过第三方镜像（ghfast.top、ghproxy.net 等）下载。默认关闭；通过镜像获得的内容可能并非直接来自 GitHub。关闭时，请求会失败，并提示保存 GitHub 令牌或开启此选项。",
+    "githubMirrorLabel": "启用 GitHub 镜像回退",
     "about": "关于",
     "appVersion": "应用版本",
     "dbPath": "数据库路径",
@@ -861,6 +872,7 @@
     "adding": "添加中..."
   },
   "platformDialog": {
+    "removeBlockedByInstalls": "该平台上仍有应用安装的技能，无法删除。请先移除这些安装，再删除平台。",
     "addTitle": "添加自定义平台",
     "editTitle": "编辑自定义平台",
     "addDesc": "注册一个新的自定义平台，添加后将自动重新扫描。",
@@ -1130,7 +1142,7 @@
     "githubImportPostSyncFailed": "技能已导入，但刷新应用数据失败。重试刷新不会再次执行导入。",
     "githubImportPostSyncRetry": "重试刷新",
     "githubImportSkippedOnlyTitle": "没有导入任何技能",
-    "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
+    "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。如遇限流，也可以在设置中开启 GitHub 镜像回退。"
   },
   "libraryBrowser": {
     "folders": "浏览技能库",

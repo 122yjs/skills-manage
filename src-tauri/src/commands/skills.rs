@@ -1249,6 +1249,9 @@ pub async fn delete_central_skill_bundle_impl(
 ) -> Result<DeleteCentralSkillBundleResult, String> {
     let central_root = central_root_path(pool).await?;
     let target = validate_central_bundle_target(relative_path, &central_root)?;
+    for skill in central_skills_in_bundle(pool, &target).await? {
+        db::delete_orphan_installations(pool, &skill.id).await?;
+    }
     let preview = central_bundle_preview_for_target(pool, target.clone()).await?;
     let skills = central_skills_in_bundle(pool, &target).await?;
 
@@ -1275,35 +1278,50 @@ pub async fn delete_central_skill_bundle_impl(
     }
 
     // 파일과 DB를 먼저 보존해야 원본 삭제를 진행할 수 있습니다.
-    recovery::backup_vault_before_removal(
+    let backup = recovery::backup_vault_with_snapshot(
         pool,
         &target.delete_path,
         format!("보관함 묶음 휴지통: {}", target.relative_path),
     )
     .await?;
 
-    let mut uninstalled_agents = BTreeSet::new();
-    if options.cascade_uninstall {
-        for skill in &skills {
-            let central_skill_dir = skill_directory_path_buf(skill);
-            let installations = db::get_skill_installations(pool, &skill.id).await?;
-            for installation in installations {
-                if is_shared_central_installation(
-                    pool,
-                    &installation,
-                    &central_root,
-                    &central_skill_dir,
-                )
-                .await?
-                {
-                    continue;
-                }
+    // 원본을 지우기 전에 실패하면 이번 시도에서 만든 복구 항목을 남기지 않는다.
+    let cascade = async {
+        let mut uninstalled = BTreeSet::new();
+        if options.cascade_uninstall {
+            for skill in &skills {
+                let central_skill_dir = skill_directory_path_buf(skill);
+                let installations = db::get_skill_installations(pool, &skill.id).await?;
+                for installation in installations {
+                    if is_shared_central_installation(
+                        pool,
+                        &installation,
+                        &central_root,
+                        &central_skill_dir,
+                    )
+                    .await?
+                    {
+                        continue;
+                    }
 
-                uninstall_skill_from_agent_impl(pool, &skill.id, &installation.agent_id).await?;
-                uninstalled_agents.insert(installation.agent_id);
+                    uninstall_skill_from_agent_impl(pool, &skill.id, &installation.agent_id)
+                        .await?;
+                    uninstalled.insert(installation.agent_id);
+                }
             }
         }
+        Ok::<_, String>(uninstalled)
     }
+    .await;
+    let uninstalled_agents = match cascade {
+        Ok(done) => done,
+        Err(error) => {
+            if let Some((snapshot, vault)) = &backup {
+                recovery::discard_entries(pool, &[snapshot, vault]).await;
+            }
+            return Err(error);
+        }
+    };
 
     // 폴더가 사라지는 동안에만 경로를 해석할 수 있으므로 삭제 전에 키를 모은다.
     // 남겨 둔 바인딩은 같은 경로에 들어온 다음 스킬에 이전 저장소 출처를 붙인다.
@@ -1379,6 +1397,7 @@ pub async fn delete_central_skill_impl(
     let canonical_dir = canonical_delete_dir(&skill, &central_root);
     let delete_target = validate_central_delete_target(&canonical_dir, &central_root)?;
 
+    db::delete_orphan_installations(pool, skill_id).await?;
     let installations = db::get_skill_installations(pool, skill_id).await?;
     let paused_installations = db::get_paused_installations(pool, skill_id).await?;
     if !paused_installations.is_empty() {
@@ -1402,28 +1421,41 @@ pub async fn delete_central_skill_impl(
     }
 
     // 파일과 DB를 먼저 보존해야 원본 삭제를 진행할 수 있습니다.
-    recovery::backup_vault_before_removal(
+    let backup = recovery::backup_vault_with_snapshot(
         pool,
         &delete_target,
         format!("보관함 스킬 휴지통: {}", skill.name),
     )
     .await?;
 
-    let skipped_read_only_agents = read_only_agent_ids_for_skill(pool, skill_id, true).await?;
-    let mut uninstalled_agents = Vec::new();
+    // 원본을 지우기 전에 실패하면 이번 시도에서 만든 복구 항목을 남기지 않는다.
+    let cascade = async {
+        let skipped = read_only_agent_ids_for_skill(pool, skill_id, true).await?;
+        let mut uninstalled = Vec::new();
+        if options.cascade_uninstall {
+            for installation in &installations {
+                if is_shared_central_installation(pool, installation, &central_root, &delete_target)
+                    .await?
+                {
+                    continue;
+                }
 
-    if options.cascade_uninstall {
-        for installation in &installations {
-            if is_shared_central_installation(pool, installation, &central_root, &delete_target)
-                .await?
-            {
-                continue;
+                uninstall_skill_from_agent_impl(pool, skill_id, &installation.agent_id).await?;
+                uninstalled.push(installation.agent_id.clone());
             }
-
-            uninstall_skill_from_agent_impl(pool, skill_id, &installation.agent_id).await?;
-            uninstalled_agents.push(installation.agent_id.clone());
         }
+        Ok::<_, String>((skipped, uninstalled))
     }
+    .await;
+    let (skipped_read_only_agents, uninstalled_agents) = match cascade {
+        Ok(done) => done,
+        Err(error) => {
+            if let Some((snapshot, vault)) = &backup {
+                recovery::discard_entries(pool, &[snapshot, vault]).await;
+            }
+            return Err(error);
+        }
+    };
 
     // 심볼릭 링크 항목은 링크만 사라지고 내용은 남으므로 출처를 유지한다.
     let removed_origin_key = std::fs::symlink_metadata(&delete_target)
@@ -1488,9 +1520,68 @@ pub async fn read_skill_content(
         .map_err(|e| format!("Failed to read '{}': {}", skill.file_path, e))
 }
 
+/// 스킬 식별자(발견된 프로젝트 스킬 ID 포함)로 스킬 폴더를 찾고, 그 폴더 기준
+/// 상대 경로의 파일만 읽는다. 화면이 임의 경로를 넘겨 폴더 밖 파일을 읽지 못하게 한다.
+pub(crate) async fn read_skill_file_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: Option<&str>,
+    row_id: Option<&str>,
+    relative_path: &str,
+) -> Result<String, String> {
+    let root = match db::get_discovered_skill_by_id(pool, skill_id).await? {
+        Some(discovered) => discovered.dir_path,
+        None => {
+            get_skill_detail_with_row_impl(pool, skill_id, agent_id, row_id)
+                .await?
+                .dir_path
+        }
+    };
+    let relative = Path::new(relative_path);
+    if !relative
+        .components()
+        .all(|component| matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    let root = Path::new(&root)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve skill folder '{}': {}", root, e))?;
+    let target = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve '{}': {}", relative_path, e))?;
+    if !target.starts_with(&root) {
+        return Err(format!(
+            "Path is outside the skill folder: {}",
+            relative_path
+        ));
+    }
+
+    std::fs::read_to_string(&target)
+        .map_err(|e| format!("Failed to read '{}': {}", relative_path, e))
+}
+
 #[tauri::command]
-pub async fn read_file_by_path(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read '{}': {}", path, e))
+pub async fn read_skill_file(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_id: Option<String>,
+    row_id: Option<String>,
+    relative_path: String,
+) -> Result<String, String> {
+    read_skill_file_impl(
+        &state.db,
+        &skill_id,
+        agent_id.as_deref(),
+        row_id.as_deref(),
+        &relative_path,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2162,6 +2253,103 @@ mod tests {
         assert!(!install_path.exists());
         assert!(!central_dir.join("cascade-me").exists());
         assert!(db::get_skill_installations(&pool, "cascade-me")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_ignores_installation_of_removed_platform() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_test_db().await;
+        set_agent_dir(&pool, "central", &central_dir).await;
+        create_central_skill(&pool, &central_dir, "orphaned").await;
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "orphaned".to_string(),
+                agent_id: "removed-platform".to_string(),
+                installed_path: tmp
+                    .path()
+                    .join("gone/orphaned")
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        delete_central_skill_impl(
+            &pool,
+            "orphaned",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: true,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!central_dir.join("orphaned").exists());
+        assert!(db::get_skill_installations(&pool, "orphaned")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_failed_central_skill_delete_leaves_no_recovery_entry() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let claude_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&claude_dir).unwrap();
+        let db_path = tmp.path().join("db.sqlite");
+        let pool = db::create_pool(db_path.to_str().unwrap()).await.unwrap();
+        db::init_database(&pool).await.unwrap();
+        set_agent_dir(&pool, "central", &central_dir).await;
+        set_agent_dir(&pool, "claude-code", &claude_dir).await;
+        db::set_setting(
+            &pool,
+            db::CENTRAL_SKILLS_PATH_SETTING,
+            central_dir.to_string_lossy().as_ref(),
+        )
+        .await
+        .unwrap();
+        create_central_skill(&pool, &central_dir, "stuck").await;
+        // 심볼릭 링크 설치로 기록됐지만 실제 폴더라 제거가 거부된다.
+        let install_path = claude_dir.join("stuck");
+        fs::create_dir_all(&install_path).unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &SkillInstallation {
+                skill_id: "stuck".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: install_path.to_string_lossy().into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: None,
+                created_at: Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = delete_central_skill_impl(
+            &pool,
+            "stuck",
+            DeleteCentralSkillOptions {
+                cascade_uninstall: true,
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(central_dir.join("stuck").exists());
+        assert!(recovery::list_recovery_entries_impl(&pool)
             .await
             .unwrap()
             .is_empty());
@@ -3438,24 +3626,81 @@ mod tests {
         );
     }
 
-    // ── read_file_by_path ──────────────────────────────────────────────────────
+    // ── read_skill_file ────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn test_read_file_by_path_success() {
-        let tmp = TempDir::new().unwrap();
-        let file_path = tmp.path().join("test-skill.md");
-        let content = "---\nname: Test\n---\n\n# Test Skill";
-        fs::write(&file_path, content).unwrap();
+    async fn central_skill_with_secret(tmp: &Path, pool: &SqlitePool) {
+        let skill_dir = tmp.join("central").join("my-skill");
+        fs::create_dir_all(skill_dir.join("docs")).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# My Skill").unwrap();
+        fs::write(skill_dir.join("docs").join("guide.md"), "guide").unwrap();
+        fs::write(tmp.join("secret.txt"), "secret").unwrap();
 
-        let result = read_file_by_path(file_path.to_string_lossy().into_owned()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content);
+        let mut skill = make_skill("my-skill", "My Skill", true);
+        skill.file_path = skill_dir.join("SKILL.md").to_string_lossy().into_owned();
+        skill.canonical_path = Some(skill_dir.to_string_lossy().into_owned());
+        db::upsert_skill(pool, &skill).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_read_file_by_path_not_found() {
-        let result = read_file_by_path("/nonexistent/file.md".to_string()).await;
-        assert!(result.is_err());
+    async fn test_read_skill_file_reads_files_inside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+
+        let skill_md = read_skill_file_impl(&pool, "my-skill", None, None, "SKILL.md").await;
+        let guide = read_skill_file_impl(&pool, "my-skill", None, None, "docs/guide.md").await;
+
+        assert_eq!(skill_md.unwrap(), "# My Skill");
+        assert_eq!(guide.unwrap(), "guide");
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_rejects_paths_outside_skill_folder() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        central_skill_with_secret(tmp.path(), &pool).await;
+        let secret = tmp.path().join("secret.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&secret, tmp.path().join("central/my-skill/link.txt")).unwrap();
+
+        let absolute = secret.to_string_lossy().into_owned();
+        let mut attempts = vec!["../../secret.txt", "docs/../../../secret.txt", &absolute];
+        #[cfg(unix)]
+        attempts.push("link.txt");
+
+        for attempt in attempts {
+            let result = read_skill_file_impl(&pool, "my-skill", None, None, attempt).await;
+            assert!(result.is_err(), "'{attempt}' must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_read_skill_file_reads_discovered_skill_by_id() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let skill_dir = tmp.path().join("project").join(".claude/skills/found");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Found").unwrap();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__found",
+            "found",
+            None,
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let content =
+            read_skill_file_impl(&pool, "claude-code__project__found", None, None, "SKILL.md")
+                .await;
+
+        assert_eq!(content.unwrap(), "# Found");
     }
 
     #[tokio::test]
@@ -3586,6 +3831,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3651,6 +3897,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3699,6 +3946,7 @@ mod tests {
                 &imported_repo(),
                 "skills/shared",
                 Some("abc123"),
+                false,
             )
             .await
             .unwrap();

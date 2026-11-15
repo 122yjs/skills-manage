@@ -42,6 +42,13 @@ export interface ScanResult {
   total_skills: number;
   agents_scanned: number;
   skills_by_agent: Record<string, number>;
+  unreadable_roots?: UnreadableRoot[];
+}
+
+/** 폴더는 있지만 권한·입출력 문제로 읽지 못한 플랫폼 스킬 폴더. */
+export interface UnreadableRoot {
+  agent_id: string;
+  path: string;
 }
 
 export type ClaudeSourceKind = "user" | "plugin" | "compatibility" | "unmanaged";
@@ -163,6 +170,8 @@ export interface SkillOriginInfo {
   lastError?: string | null;
   bindingVersion: number;
   canUpdate: boolean;
+  /** GitHub가 아닌 제3자 미러에서 받은 설치인지 여부. */
+  viaMirror?: boolean;
 }
 
 export interface SkillOriginCandidate {

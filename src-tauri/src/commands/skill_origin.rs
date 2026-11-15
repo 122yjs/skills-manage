@@ -97,6 +97,7 @@ struct SkillOriginRow {
     last_error: Option<String>,
     binding_version: i64,
     discovery_evidence_json: Option<String>,
+    via_mirror: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -120,6 +121,8 @@ pub struct SkillOriginInfo {
     pub binding_version: i64,
     pub can_update: bool,
     pub discovery_evidence: Option<discovery::OriginEvidence>,
+    /// 이 설치를 GitHub가 아닌 제3자 미러에서 받았는지 여부.
+    pub via_mirror: bool,
 }
 
 /// 카드와 목록에 붙일 최소 GitHub 출처 요약입니다.
@@ -551,6 +554,7 @@ fn origin_info(origin: &SkillOriginRow, can_update: bool) -> SkillOriginInfo {
             .discovery_evidence_json
             .as_deref()
             .and_then(|json| serde_json::from_str(json).ok()),
+        via_mirror: origin.via_mirror,
     }
 }
 
@@ -581,6 +585,7 @@ pub async fn persist_imported_skill(
     repo: &github_import::GitHubRepoRef,
     source_path: &str,
     commit_oid: Option<&str>,
+    via_mirror: bool,
 ) -> Result<(), String> {
     let target_dir = skill
         .canonical_path
@@ -623,8 +628,8 @@ pub async fn persist_imported_skill(
           owner, repo, source_path, ref_name, baseline_state, base_commit_oid, base_manifest_json,
           last_applied_commit_oid, last_applied_at, last_checked_at,
           last_remote_commit_oid, last_remote_manifest_json, last_error,
-          binding_version, created_at, updated_at)
-         VALUES (?, ?, ?, NULL, NULL, ?, 'github', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+          binding_version, created_at, updated_at, via_mirror)
+         VALUES (?, ?, ?, NULL, NULL, ?, 'github', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)
          ON CONFLICT(target_key) DO UPDATE SET
           skill_id=excluded.skill_id, agent_id=NULL, row_id=NULL,
           target_path=excluded.target_path, repository_id=NULL,
@@ -635,7 +640,8 @@ pub async fn persist_imported_skill(
           last_applied_at=excluded.last_applied_at, last_checked_at=excluded.last_checked_at,
           last_remote_commit_oid=excluded.last_remote_commit_oid,
           last_remote_manifest_json=excluded.last_remote_manifest_json,
-          last_error=NULL, discovery_evidence_json=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at",
+          last_error=NULL, discovery_evidence_json=NULL, binding_version=skill_origins.binding_version+1, updated_at=excluded.updated_at,
+          via_mirror=excluded.via_mirror",
     )
     .bind(&binding_id)
     .bind(&target_key)
@@ -655,6 +661,7 @@ pub async fn persist_imported_skill(
     .bind(&last_remote_manifest_json)
     .bind(&now)
     .bind(&now)
+    .bind(via_mirror)
     .execute(&mut *transaction)
     .await
     .map_err(|error| error.to_string())?;
@@ -794,8 +801,8 @@ pub(crate) async fn inherit_copied_origin(
          (binding_id, target_key, skill_id, agent_id, row_id, target_path, provider, repository_id,
           owner, repo, source_path, ref_name, baseline_state, base_commit_oid, base_manifest_json,
           last_applied_commit_oid, last_applied_at, last_checked_at, last_remote_commit_oid,
-          last_remote_manifest_json, last_error, binding_version, created_at, updated_at)
-         VALUES (?, ?, ?, ?, NULL, ?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)"
+          last_remote_manifest_json, last_error, binding_version, created_at, updated_at, via_mirror)
+         VALUES (?, ?, ?, ?, NULL, ?, 'github', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?, ?)"
     )
     .bind(Uuid::new_v4().to_string()).bind(&target_key).bind(skill_id).bind(agent_id)
     .bind(target_dir.to_string_lossy().into_owned()).bind(&source.repository_id)
@@ -803,7 +810,7 @@ pub(crate) async fn inherit_copied_origin(
     .bind(&source.baseline_state).bind(&source.base_commit_oid).bind(&source.base_manifest_json)
     .bind(&source.last_applied_commit_oid).bind(&source.last_applied_at).bind(&source.last_checked_at)
     .bind(&source.last_remote_commit_oid).bind(&source.last_remote_manifest_json)
-    .bind(&now).bind(&now)
+    .bind(&now).bind(&now).bind(source.via_mirror)
     .execute(pool).await.map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -826,7 +833,8 @@ async fn fetch_remote_repository(
     requested_ref: Option<&str>,
 ) -> Result<RemoteSnapshot, String> {
     let auth = github_import::github_direct_auth_from_settings(pool).await?;
-    let mut repo = github_import::resolve_repo_ref(repo_url, auth.as_deref()).await?;
+    let mirror = github_import::github_mirror_enabled(pool).await?;
+    let mut repo = github_import::resolve_repo_ref(repo_url, auth.as_deref(), mirror).await?;
     let ref_name = requested_ref
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(&repo.branch)
@@ -887,7 +895,8 @@ async fn fetch_remote_repository(
 
     // 이후 비교와 적용은 사용자가 확인한 불변 커밋을 사용한다.
     repo.branch = commit_oid.clone();
-    let snapshot = github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await?;
+    let snapshot =
+        github_import::download_repo_snapshot(&client, &repo, auth.as_deref(), mirror).await?;
     if let Ok(skills) = github_import::build_repo_skill_candidates_from_snapshot(&repo, &snapshot) {
         sqlx::query("INSERT INTO skill_repository_catalog (owner, repo, ref_name, skill_count) VALUES (?, ?, ?, ?) ON CONFLICT(owner, repo, ref_name) DO UPDATE SET skill_count = excluded.skill_count")
             .bind(repo.owner.to_lowercase()).bind(repo.repo.to_lowercase()).bind(&ref_name)
@@ -1168,6 +1177,9 @@ async fn search_public_origin_candidates(
         .await
         .ok()
         .flatten();
+    let mirror = github_import::github_mirror_enabled(pool)
+        .await
+        .unwrap_or(false);
     let Ok(client) = reqwest::Client::builder()
         .user_agent("skills-manage/0.12.2")
         .timeout(std::time::Duration::from_secs(12))
@@ -1220,7 +1232,7 @@ async fn search_public_origin_candidates(
             normalized_url: repo_url.clone(),
         };
         let Ok(snapshot) =
-            github_import::download_repo_snapshot(&client, &repo, auth.as_deref()).await
+            github_import::download_repo_snapshot(&client, &repo, auth.as_deref(), mirror).await
         else {
             continue;
         };
@@ -1332,13 +1344,14 @@ async fn discover_skill_origin_with_repositories(
             });
         } else {
             let auth = github_import::github_direct_auth_from_settings(pool).await?;
+            let mirror = github_import::github_mirror_enabled(pool).await?;
             let mut repo =
-                github_import::resolve_repo_ref(&record.repo_url, auth.as_deref()).await?;
+                github_import::resolve_repo_ref(&record.repo_url, auth.as_deref(), mirror).await?;
             if let Some(ref_name) = &record.ref_name {
                 repo.branch = ref_name.clone();
             }
             for remote_skill in
-                github_import::fetch_repo_skill_candidates(&repo, auth.as_deref()).await?
+                github_import::fetch_repo_skill_candidates(&repo, auth.as_deref(), mirror).await?
             {
                 if remote_skill.skill_id.eq_ignore_ascii_case(&target.skill_id)
                     || skill.as_ref().is_some_and(|skill| {
@@ -1965,6 +1978,7 @@ async fn apply_downloaded_update(
     let binding_id = origin.binding_id.clone();
     let remote_commit_oid = remote.commit_oid;
     let expected_remote_manifest = remote.manifest;
+    let via_mirror = remote.snapshot.via_mirror;
     let files = remote_files(&remote.snapshot, &origin.source_path)?;
     let _mutation_guard = mutation_lock().await;
     // 네트워크 요청 동안은 잠그지 않고, 실제 파일 변경 직전에 로컬 상태를 다시 검증한다.
@@ -2046,7 +2060,7 @@ async fn apply_downloaded_update(
         sqlx::query(
             "UPDATE skill_origins SET baseline_state='verified', base_commit_oid=?, base_manifest_json=?,
              last_applied_commit_oid=?, last_applied_at=?, last_checked_at=?, last_remote_commit_oid=?,
-             last_remote_manifest_json=?, last_error=NULL, updated_at=? WHERE binding_id=?",
+             last_remote_manifest_json=?, last_error=NULL, updated_at=?, via_mirror=? WHERE binding_id=?",
         )
         .bind(&remote_commit_oid)
         .bind(manifest_json(&expected_remote_manifest)?)
@@ -2056,6 +2070,7 @@ async fn apply_downloaded_update(
         .bind(&remote_commit_oid)
         .bind(manifest_json(&expected_remote_manifest)?)
         .bind(&applied_at)
+        .bind(via_mirror)
         .bind(&binding_id)
         .execute(&mut *transaction)
         .await
@@ -2320,9 +2335,16 @@ mod tests {
         skill.is_central = false;
         skill.canonical_path = None;
         let target = shared.join("demo").canonicalize().unwrap();
-        persist_imported_skill(&pool, &skill, &imported_repo(), "skills/demo", Some("abc"))
-            .await
-            .unwrap();
+        persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/demo",
+            Some("abc"),
+            false,
+        )
+        .await
+        .unwrap();
         sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'universal'")
             .bind(shared.to_string_lossy().as_ref())
             .execute(&pool)
@@ -2434,7 +2456,7 @@ mod tests {
         let mut skill = write_imported_skill(&root.join("korean"), "demo", "demo");
         skill.is_central = false;
         skill.canonical_path = None;
-        persist_imported_skill(&pool, &skill, &imported_repo(), "demo", None)
+        persist_imported_skill(&pool, &skill, &imported_repo(), "demo", None, false)
             .await
             .unwrap();
         let target = root.join("korean/demo").canonicalize().unwrap();
@@ -2551,6 +2573,7 @@ mod tests {
                     .into_iter()
                     .map(|(path, bytes)| (format!("skills/demo/{path}"), bytes))
                     .collect(),
+                ..Default::default()
             }),
             manifest: remote_manifest.clone(),
         };
@@ -2765,6 +2788,7 @@ mod tests {
             &imported_repo(),
             "skills/demo",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -2828,7 +2852,10 @@ mod tests {
             files.insert(format!("skills/third/{path}"), file);
         }
         fs::write(third.join("references/guide.md"), "local edit").unwrap();
-        let snapshot = Arc::new(github_import::GitHubRepoSnapshot { files });
+        let snapshot = Arc::new(github_import::GitHubRepoSnapshot {
+            files,
+            ..Default::default()
+        });
         let remote = RemoteSnapshot {
             repository_id: Some("123".into()),
             owner: "acme".into(),
@@ -2957,7 +2984,10 @@ mod tests {
                 executable: false,
             },
         );
-        let snapshot = Arc::new(github_import::GitHubRepoSnapshot { files });
+        let snapshot = Arc::new(github_import::GitHubRepoSnapshot {
+            files,
+            ..Default::default()
+        });
         let remote = RemoteSnapshot {
             repository_id: Some("123".into()),
             owner: "acme".into(),
@@ -3116,6 +3146,7 @@ mod tests {
                     },
                 ),
             ]),
+            ..Default::default()
         });
         let remote = RemoteSnapshot {
             repository_id: Some("123".into()),
@@ -3362,6 +3393,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn origin_shows_mirror_only_for_the_latest_install_through_a_mirror() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_origin_db().await;
+        let skill = write_imported_skill(&temp.path().join("central"), "demo", "demo");
+        let key = origin_target_key(Path::new(skill.canonical_path.as_deref().unwrap()));
+
+        persist_imported_skill(&pool, &skill, &imported_repo(), "skills/demo", None, true)
+            .await
+            .unwrap();
+        let origin = load_origin(&pool, &key).await.unwrap().unwrap();
+        assert!(origin_info(&origin, true).via_mirror);
+
+        // 같은 스킬을 GitHub에서 직접 다시 받으면 미러 표시가 사라진다.
+        persist_imported_skill(&pool, &skill, &imported_repo(), "skills/demo", None, false)
+            .await
+            .unwrap();
+        let origin = load_origin(&pool, &key).await.unwrap().unwrap();
+        assert!(!origin_info(&origin, true).via_mirror);
+    }
+
+    #[tokio::test]
     async fn imported_skill_binds_renamed_directory_to_upstream_path() {
         let temp = TempDir::new().unwrap();
         let pool = setup_origin_db().await;
@@ -3374,6 +3426,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3426,6 +3479,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3443,7 +3497,7 @@ mod tests {
             branch: "release".to_string(),
             normalized_url: "https://github.com/other/vault".to_string(),
         };
-        persist_imported_skill(&pool, &skill, &other_repo, "skills/renamed", None)
+        persist_imported_skill(&pool, &skill, &other_repo, "skills/renamed", None, false)
             .await
             .unwrap();
 
@@ -3487,10 +3541,16 @@ mod tests {
             scanned_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        let error =
-            persist_imported_skill(&pool, &skill, &imported_repo(), "skills/x", Some("abc"))
-                .await
-                .unwrap_err();
+        let error = persist_imported_skill(
+            &pool,
+            &skill,
+            &imported_repo(),
+            "skills/x",
+            Some("abc"),
+            false,
+        )
+        .await
+        .unwrap_err();
 
         assert!(error.contains("SKILL.md"), "unexpected error: {error}");
         assert!(db::get_skill_by_id(&pool, "not-a-skill")
@@ -3515,6 +3575,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3561,6 +3622,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3622,6 +3684,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3660,6 +3723,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();

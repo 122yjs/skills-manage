@@ -554,6 +554,14 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         "ALTER TABLE skill_origins ADD COLUMN discovery_evidence_json TEXT",
     )
     .await?;
+    // GitHub가 아닌 제3자 미러에서 받은 설치인지 기록한다.
+    ensure_column(
+        pool,
+        "skill_origins",
+        "via_mirror",
+        "ALTER TABLE skill_origins ADD COLUMN via_mirror INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS skill_origin_ignores (
@@ -2304,6 +2312,32 @@ pub async fn get_skill_installations(
     .map_err(|e| e.to_string())
 }
 
+/// 플랫폼이 이미 사라진 설치 기록을 지운다. 기록만 지우고 파일은 건드리지 않는다.
+pub async fn delete_orphan_installations(pool: &DbPool, skill_id: &str) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM skill_installations
+         WHERE skill_id = ? AND agent_id NOT IN (SELECT id FROM agents)",
+    )
+    .bind(skill_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// 플랫폼을 지울 때 남는 관찰 항목 기록을 지운다. 사용자 폴더는 건드리지 않는다.
+pub async fn delete_observed_installations_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM skill_installations WHERE agent_id = ? AND is_managed = 0")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// All active managed installations across every platform.
 pub async fn get_all_skill_installations(pool: &DbPool) -> Result<Vec<SkillInstallation>, String> {
     sqlx::query_as::<_, SkillInstallation>(
@@ -2906,6 +2940,24 @@ pub async fn get_central_skills_dir(pool: &DbPool) -> Result<std::path::PathBuf,
         .or(get_setting(pool, CENTRAL_SKILLS_PATH_SETTING).await?)
         .map(std::path::PathBuf::from)
         .unwrap_or_else(default_central_skills_dir))
+}
+
+/// 이전 버전이 DB에 평문으로 남긴 비밀값(키, 값). 빈 값과 키체인 저장 표시는 제외한다.
+pub async fn plaintext_secret_settings<'e, E>(executor: E) -> Result<Vec<(String, String)>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let rows =
+        sqlx::query("SELECT key, value FROM settings WHERE TRIM(value) != '' AND value != ?")
+            .bind(crate::secrets::CONFIGURED_MARKER)
+            .fetch_all(executor)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| (row.get::<String, _>("key"), row.get::<String, _>("value")))
+        .filter(|(key, _)| crate::secrets::is_secret_key(key))
+        .collect())
 }
 
 /// Set (upsert) a setting value.

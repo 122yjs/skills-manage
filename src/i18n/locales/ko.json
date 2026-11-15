@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "심볼릭 링크",
     "sourceCopyLabel": "복사본",
     "notFound": "플랫폼을 찾을 수 없습니다",
+    "unreadableTitle": "읽지 못한 폴더가 있어 기존 기록을 그대로 두었습니다",
+    "unreadableHint": "폴더 읽기 권한과 디스크 연결 상태를 확인한 뒤 다시 스캔하세요.",
     "searchSkillLabel": "{{name}} 스킬 보기",
     "sourceFilterTabsLabel": "Claude 소스 필터",
     "sourceFilter": {
@@ -306,7 +308,8 @@
     "latestVersion": "GitHub 최신 버전",
     "unknownVersion": "기록 없음",
     "compareVersions": "GitHub에서 버전 차이 보기",
-    "lastChecked": "마지막 확인: {{date}}"
+    "lastChecked": "마지막 확인: {{date}}",
+    "viaMirror": "GitHub가 아닌 제3자 미러를 거쳐 받았습니다"
   },
   "skillUsage": {
     "active": "활성",
@@ -379,6 +382,11 @@
     "move": "안전하게 이동",
     "moving": "이동 중...",
     "changed": "보관함과 스킬 {{count}}개를 이동했습니다"
+  },
+  "legacySecrets": {
+    "banner": "이 환경에서는 OS 키체인을 쓸 수 없어, 이전 버전이 데이터베이스와 백업에 평문으로 남긴 AI API 키·GitHub 토큰을 안전한 곳으로 옮기지 못했습니다. 지우면 해당 키는 다시 입력해야 합니다.",
+    "clear": "이전 값 지우기",
+    "later": "나중에"
   },
   "migration": {
     "title": "원본 스킬 보관함을 분리하세요",
@@ -763,6 +771,9 @@
     "githubPatSaved": "GitHub 토큰을 저장했습니다",
     "githubPatCleared": "GitHub 토큰을 지웠습니다",
     "githubPatClear": "토큰 지우기",
+    "githubMirrorTitle": "GitHub 미러 대체 사용",
+    "githubMirrorDesc": "GitHub 요청이 제한되거나 실패했을 때 제3자 미러(ghfast.top, ghproxy.net 등)로 대신 받습니다. 기본은 꺼짐이며, 미러로 받은 내용은 GitHub가 직접 제공한 것이 아닐 수 있습니다. 꺼 두면 GitHub 토큰을 저장하거나 이 설정을 켜라는 안내와 함께 실패합니다.",
+    "githubMirrorLabel": "GitHub 미러 대체 사용",
     "about": "정보",
     "appVersion": "앱 버전",
     "dbPath": "데이터베이스 경로",
@@ -861,6 +872,7 @@
     "adding": "추가 중..."
   },
   "platformDialog": {
+    "removeBlockedByInstalls": "이 플랫폼에 앱이 설치한 스킬이 남아 있어 삭제할 수 없습니다. 먼저 설치를 모두 제거한 뒤 다시 삭제하세요.",
     "addTitle": "사용자 지정 플랫폼 추가",
     "editTitle": "사용자 지정 플랫폼 편집",
     "addDesc": "새 사용자 지정 플랫폼을 등록합니다. 추가한 뒤 자동으로 다시 스캔합니다.",
@@ -1130,7 +1142,7 @@
     "githubImportPostSyncFailed": "스킬은 가져왔지만 앱 데이터 새로 고침에 실패했습니다. 새로 고침을 다시 시도해도 가져오기는 실행되지 않습니다.",
     "githubImportPostSyncRetry": "새로 고침 다시 시도",
     "githubImportSkippedOnlyTitle": "가져온 스킬이 없습니다",
-    "githubPatSettingsHint": "설정을 열고 GitHub 개인용 액세스 토큰을 저장하면 이 가져오기 과정에서 인증된 GitHub 직접 요청을 사용할 수 있습니다."
+    "githubPatSettingsHint": "설정을 열고 GitHub 개인용 액세스 토큰을 저장하면 이 가져오기 과정에서 인증된 GitHub 직접 요청을 사용할 수 있습니다. 요청 한도에 걸렸다면 설정에서 GitHub 미러 대체를 켤 수도 있습니다."
   },
   "libraryBrowser": {
     "folders": "보관함 탐색",
