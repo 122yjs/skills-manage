@@ -802,6 +802,9 @@
       "intl": "국제"
     },
     "aiApiKeyLabel": "API 키",
+    "secretSavedPlaceholder": "저장됨 · 새 값을 입력하면 바뀝니다",
+    "secretKeychainUnavailable": "이 환경에서는 OS 키체인을 쓸 수 없어 비밀값을 파일에 저장하지 않고, 앱이 실행되는 동안에만 메모리에 보관합니다. 앱을 다시 켜면 다시 입력해야 합니다.",
+    "aiApiKeyClear": "키 지우기",
     "aiModelLabel": "모델",
     "aiModelPlaceholder": "모델 이름",
     "aiModelCustom": "사용자 지정",

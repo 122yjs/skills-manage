@@ -12,6 +12,12 @@ export interface AgentWithStatus {
   is_enabled: boolean;
 }
 
+/** 비밀값 자체가 아니라 설정 여부와 OS 키체인 사용 가능 여부만 담는다. */
+export interface SecretStatus {
+  configured: boolean;
+  keychainAvailable: boolean;
+}
+
 export interface CustomAgentConfig {
   id?: string;
   display_name: string;

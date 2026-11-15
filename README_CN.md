@@ -113,7 +113,7 @@ xattr -dr com.apple.quarantine "/Applications/skills-manage.app"
 - **本地优先** — 元数据、集合、扫描结果、设置和 AI explanation 缓存都保存在 `~/.skillsmanage/db.sqlite` 或你自己管理的本地 skill 目录中。
 - **无遥测** — 应用不包含分析、崩溃上报或使用追踪。
 - **网络访问由功能触发** — 只有在你显式使用 marketplace 同步/下载、GitHub 导入或 AI explanation 时才会发起外部请求。
-- **凭据仅本地存储** — GitHub PAT 和 AI API key 会保存在本地 SQLite settings 表中，应用本身不提供静态加密。
+- **凭据仅保存在系统钥匙串** — GitHub PAT 和 AI API key 只保存在操作系统钥匙串中，本地 SQLite settings 表只记录是否已设置。没有可用钥匙串时，仅在应用运行期间保存在内存中。
 - 不要在 issue、PR、截图或日志里公开真实密钥。
 
 ## 技术栈

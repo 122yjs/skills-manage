@@ -116,7 +116,7 @@ Custom platforms can be added through Settings.
 - **Local-first storage** — metadata, collections, scan results, settings, and cached AI explanations stay in `~/.skillsmanage/db.sqlite` or the local skill directories you manage.
 - **No telemetry** — the app does not include analytics, crash reporting, or usage tracking.
 - **Network access is feature-driven** — outbound requests only happen when you explicitly use marketplace sync/download, GitHub import, or AI explanation generation.
-- **Credentials are stored locally** — GitHub PAT and AI API keys are kept in the local SQLite settings table and are not encrypted at rest by the app.
+- **Credentials stay in the OS keychain** — GitHub PAT and AI API keys are stored only in the operating-system keychain; the local SQLite settings table records only whether they are set. Without a keychain they are kept in memory for the running session.
 - Never post real secrets in issues, pull requests, screenshots, or logs.
 
 ## Tech Stack

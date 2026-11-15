@@ -802,6 +802,9 @@
       "intl": "International"
     },
     "aiApiKeyLabel": "API Key",
+    "secretSavedPlaceholder": "Saved · enter a new value to replace it",
+    "secretKeychainUnavailable": "The OS keychain is not available here, so secrets are not written to disk and are kept in memory only while the app is running. You will need to enter them again after restarting the app.",
+    "aiApiKeyClear": "Clear key",
     "aiModelLabel": "Model",
     "aiModelPlaceholder": "Model name",
     "aiModelCustom": "Custom",

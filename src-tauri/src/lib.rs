@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod db;
 pub mod path_utils;
+pub mod secrets;
 
 use db::DbPool;
 use std::fs;
@@ -126,6 +127,8 @@ pub fn run() {
             commands::settings::set_scan_directory_active,
             commands::settings::get_setting,
             commands::settings::set_setting,
+            commands::settings::get_secret_status,
+            commands::settings::set_secret,
             commands::recovery::list_recovery_entries,
             commands::recovery::get_database_backup_directory,
             commands::recovery::restore_recovery_entry,
