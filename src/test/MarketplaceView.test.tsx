@@ -173,6 +173,10 @@ vi.mock("@/stores/marketplaceStore", () => ({
       importGitHubRepoSkills: mockImportGitHubRepoSkills,
       resetGitHubImport: mockResetGitHubImport,
     }),
+  githubImportAiSummaryKey: (
+    repo: { owner: string; repo: string },
+    sourcePath: string,
+  ) => `${repo.owner}/${repo.repo}:${sourcePath}`,
   toGitHubImportFailure: (error: unknown) =>
     error && typeof error === "object" && "code" in error
       ? (error as GitHubImportFailure)
