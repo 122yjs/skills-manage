@@ -99,6 +99,40 @@ async fn import_copies_to_central_keeps_platform_folder_and_becomes_managed() {
 }
 
 #[tokio::test]
+async fn import_of_identical_copy_records_managed_install_without_copying() {
+    let (tmp, pool) = fixture().await;
+    let central = tmp.path().join("central/my-skill");
+    write_skill(&central, "my-skill", "같은 내용");
+    let folder = tmp.path().join("claude-code/my-skill");
+    write_skill(&folder, "my-skill", "같은 내용");
+    scanner::scan_all_skills_impl(&pool).await.unwrap();
+    assert_eq!(
+        db::get_unmanaged_installations(&pool, "my-skill")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let comparison = import_observed_skill_impl(&pool, "my-skill", "claude-code")
+        .await
+        .unwrap();
+
+    assert!(comparison.is_none());
+    let installation = db::get_skill_installation(&pool, "my-skill", "claude-code")
+        .await
+        .unwrap()
+        .expect("관리 설치로 기록된다");
+    assert_eq!(installation.link_type, "copy");
+    assert!(db::get_unmanaged_installations(&pool, "my-skill")
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(central.join("SKILL.md").is_file());
+    assert!(folder.join("SKILL.md").is_file());
+}
+
+#[tokio::test]
 async fn import_with_same_named_central_skill_stops_and_returns_comparison() {
     let (tmp, pool) = fixture().await;
     write_skill(

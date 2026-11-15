@@ -11,8 +11,9 @@ use crate::{
 use std::path::{Path, PathBuf};
 use tauri::State;
 
-/// 같은 이름의 보관함 스킬이 없으면 가져오고 `None`을 돌려준다. 있으면 아무것도 바꾸지 않고
-/// 그 스킬과 비교한 결과를 돌려준다. 어느 쪽을 쓸지는 사용자가 고른다.
+/// 같은 이름의 보관함 스킬이 없으면 가져오고 `None`을 돌려준다. 있고 내용이 같은 복사본이면
+/// 복사 없이 관리 설치로 기록하고 `None`을 돌려준다. 내용이 다르거나 비교할 수 없으면 아무것도
+/// 바꾸지 않고 비교 결과를 돌려준다. 어느 쪽을 쓸지는 사용자가 고른다.
 pub async fn import_observed_skill_impl(
     pool: &DbPool,
     skill_id: &str,
@@ -35,10 +36,16 @@ pub async fn import_observed_skill_impl(
         .map(PathBuf::from)
         .or_else(|| target.symlink_metadata().is_ok().then(|| target.clone()));
     if let Some(existing) = existing {
-        return Ok(Some(skill_duplicates::compare_paths(vec![
-            observed.installed_path,
+        let comparison = skill_duplicates::compare_paths(vec![
+            observed.installed_path.clone(),
             existing.to_string_lossy().into_owned(),
-        ])));
+        ]);
+        // 보관함 원본과 내용이 같은 복사본이면 복사할 것이 없다. 그대로 관리 설치로 기록한다.
+        if comparison.relation != "identical" {
+            return Ok(Some(comparison));
+        }
+        db::upsert_skill_installation(pool, &observed).await?;
+        return Ok(None);
     }
 
     // 스킬 기록의 대표 경로가 다른 플랫폼 폴더일 수 있으므로, 누른 항목의 폴더에서 복사한다.
