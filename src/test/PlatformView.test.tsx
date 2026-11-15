@@ -657,6 +657,27 @@ describe("PlatformView", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows which platform folder could not be read", () => {
+    mockUsePlatformStore.mockImplementation((selector?: unknown) => {
+      const state = buildPlatformStoreState({
+        unreadableRoots: [{ agent_id: "claude-code", path: "/locked/claude/skills" }],
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/platform/claude-code"]}>
+        <Routes>
+          <Route path="/platform/:agentId" element={<PlatformView />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("/locked/claude/skills");
+    expect(screen.getByRole("alert")).toHaveTextContent(/无法读取/);
+  });
+
   // ── Platform Not Found ────────────────────────────────────────────────────
 
   it("shows not found when agent doesn't exist", () => {

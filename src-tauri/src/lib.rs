@@ -83,7 +83,7 @@ pub fn run() {
             commands::skills::delete_central_skill,
             commands::skills::get_skill_detail,
             commands::skills::read_skill_content,
-            commands::skills::read_file_by_path,
+            commands::skills::read_skill_file,
             commands::repository_descriptions::get_repository_skill_descriptions,
             commands::skills::list_skill_directory,
             commands::skills::open_in_file_manager,

@@ -219,9 +219,10 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
         "get_skill_detail",
         buildDetailInvokeArgs(detailRequest)
       );
-      setActiveDetailRequestFromDetail(detailRequest, detail);
-      const content = await invoke<string>("read_file_by_path", {
-        path: detail.file_path,
+      const resolvedRequest = setActiveDetailRequestFromDetail(detailRequest, detail);
+      const content = await invoke<string>("read_skill_file", {
+        ...buildDetailInvokeArgs(resolvedRequest),
+        relativePath: "SKILL.md",
       });
       set((state) => ({ detail, content, isLoading: false, contentRevision: state.contentRevision + 1 }));
     } catch (err) {

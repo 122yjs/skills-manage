@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "符号链接",
     "sourceCopyLabel": "复制安装",
     "notFound": "未找到平台",
+    "unreadableTitle": "部分文件夹无法读取，已保留原有记录",
+    "unreadableHint": "请检查文件夹读取权限和磁盘连接状态，然后重新扫描。",
     "searchSkillLabel": "查看技能 {{name}}",
     "sourceFilterTabsLabel": "Claude 来源筛选",
     "sourceFilter": {

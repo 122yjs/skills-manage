@@ -1105,8 +1105,20 @@ pub async fn install_skill_to_agent_impl(
         symlink_target: Some(canonical_dir.to_string_lossy().into_owned()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    let relative_target = symlink_target_path(&agent_dir, &canonical_dir);
+    // 플랫폼 폴더 자체가 링크일 수 있으므로, 링크가 실제로 놓이는 위치 기준으로 계산한다.
+    let link_parent = std::fs::canonicalize(&agent_dir)
+        .map_err(|e| format!("Failed to resolve agent skills directory: {}", e))?;
+    let relative_target = symlink_target_path(&link_parent, &canonical_dir);
     if let Err(error) = create_symlink(&relative_target, &symlink_path) {
+        return Err(rollback_error(pool, &installation, &rollback, error).await);
+    }
+    // 기록 전에 만든 링크로 SKILL.md를 읽을 수 있는지 확인한다.
+    if let Err(error) = std::fs::read(symlink_path.join("SKILL.md")) {
+        let error = format!(
+            "Installed link '{}' does not resolve to the skill: {}",
+            symlink_path.display(),
+            error
+        );
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
@@ -2317,6 +2329,34 @@ mod tests {
             skill_md.exists(),
             "SKILL.md should be accessible via symlink"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_install_through_symlinked_platform_dir_points_to_central() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        // 플랫폼 폴더가 깊이가 다른 위치를 가리키는 링크다.
+        let real_dir = tmp.path().join("deep/er/real-skills");
+        let agent_dir = tmp.path().join("claude/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::create_dir_all(agent_dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        create_central_skill(&central_dir, "linked-dir-skill");
+
+        install_skill_to_agent_impl(&pool, "linked-dir-skill", "claude-code")
+            .await
+            .unwrap();
+
+        let link = agent_dir.join("linked-dir-skill");
+        assert_eq!(
+            fs::canonicalize(&link).unwrap(),
+            fs::canonicalize(central_dir.join("linked-dir-skill")).unwrap()
+        );
+        assert!(link.join("SKILL.md").exists());
     }
 
     #[tokio::test]
