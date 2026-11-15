@@ -90,6 +90,9 @@ function setupMocks({
   loadGitHubPat = vi.fn(),
   saveGitHubPat = vi.fn(),
   clearGitHubPat = vi.fn(),
+  githubMirrorEnabled = false,
+  loadGitHubMirror = vi.fn(),
+  setGitHubMirror = vi.fn(),
   rescan = vi.fn(),
   refreshCounts = vi.fn(),
   flavor = "mocha" as const,
@@ -115,6 +118,9 @@ function setupMocks({
       loadGitHubPat,
       saveGitHubPat,
       clearGitHubPat,
+      githubMirrorEnabled,
+      loadGitHubMirror,
+      setGitHubMirror,
       clearError: vi.fn(),
     })
   );
@@ -261,6 +267,20 @@ describe("SettingsView", () => {
     expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
   });
 
+  it("shows the mirror fallback as off and turns it on from settings", async () => {
+    const setGitHubMirror = vi.fn().mockResolvedValue(undefined);
+    setupMocks({ githubMirrorEnabled: false, setGitHubMirror });
+    renderSettingsView();
+
+    const toggle = screen.getByRole("switch", { name: "启用 GitHub 镜像回退" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(setGitHubMirror).toHaveBeenCalledWith(true);
+    });
+  });
+
   it("loads the public OpenCode Go model catalog without an API key", async () => {
     vi.mocked(invoke).mockImplementation(async (command) => {
       if (command === "list_ai_models") {
@@ -393,13 +413,13 @@ describe("SettingsView", () => {
   it("shows toggle for custom directories", () => {
     setupMocks({ scanDirs: [mockCustomDir] });
     renderSettingsView();
-    expect(screen.getByRole("switch")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: /my-project/ })).toBeTruthy();
   });
 
   it("does not show toggle for builtin directories", () => {
     setupMocks({ scanDirs: [mockBuiltinDir] });
     renderSettingsView();
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: /\.agents\/skills/ })).toBeNull();
   });
 
   it("shows 启用 label when directory is active", () => {

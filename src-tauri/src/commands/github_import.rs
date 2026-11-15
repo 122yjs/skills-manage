@@ -13,6 +13,20 @@ use crate::{
     AppState,
 };
 
+/// 토큰을 보내도 되는 호스트. 미러·프록시와 그 밖의 주소에는 토큰을 붙이지 않는다.
+const GITHUB_TOKEN_HOSTS: &[&str] = &["api.github.com", "raw.githubusercontent.com"];
+
+fn is_github_token_host(url: &str) -> bool {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|url| {
+            url.host_str()
+                .map(|host| GITHUB_TOKEN_HOSTS.contains(&host))
+        })
+        .unwrap_or(false)
+}
+
+/// 실제 요청 주소의 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
 pub(crate) fn github_request(
     client: &reqwest::Client,
     url: &str,
@@ -20,8 +34,8 @@ pub(crate) fn github_request(
 ) -> reqwest::RequestBuilder {
     let req = client.get(url);
     match token {
-        Some(t) => req.bearer_auth(t),
-        None => req,
+        Some(t) if is_github_token_host(url) => req.bearer_auth(t),
+        _ => req,
     }
 }
 
@@ -205,6 +219,8 @@ pub(crate) struct RemoteSkillCandidate {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GitHubRepoSnapshot {
     pub(crate) files: HashMap<String, SnapshotFile>,
+    /// 압축 파일을 GitHub가 아닌 미러에서 받았는지 여부. 출처 기록에 남긴다.
+    pub(crate) via_mirror: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -214,6 +230,15 @@ pub(crate) struct SnapshotFile {
 }
 
 const GITHUB_PAT_SETTING_KEY: &str = "github_pat";
+const GITHUB_MIRROR_SETTING_KEY: &str = "github_mirror_enabled";
+
+/// 제3자 미러로 대체할지 여부. 설정이 없으면 꺼짐이다.
+pub(crate) async fn github_mirror_enabled(pool: &DbPool) -> Result<bool, String> {
+    Ok(db::get_setting(pool, GITHUB_MIRROR_SETTING_KEY)
+        .await?
+        .as_deref()
+        == Some("true"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GitHubAccessDenialKind {
@@ -348,7 +373,8 @@ pub async fn fetch_github_skill_markdown(
 ) -> Result<String, String> {
     let client = github_client()?;
     let auth = github_direct_auth_from_settings(&state.db).await?;
-    fetch_raw_text(&client, &download_url, auth.as_deref()).await
+    let mirror = github_mirror_enabled(&state.db).await?;
+    fetch_raw_text(&client, &download_url, auth.as_deref(), mirror).await
 }
 
 async fn preview_github_repo_import_impl(
@@ -356,8 +382,9 @@ async fn preview_github_repo_import_impl(
     repo_url: &str,
 ) -> Result<GitHubRepoPreview, String> {
     let auth = github_direct_auth_from_settings(pool).await?;
-    let repo = resolve_repo_ref(repo_url, auth.as_deref()).await?;
-    let candidates = fetch_repo_skill_candidates(&repo, auth.as_deref()).await?;
+    let mirror = github_mirror_enabled(pool).await?;
+    let repo = resolve_repo_ref(repo_url, auth.as_deref(), mirror).await?;
+    let candidates = fetch_repo_skill_candidates(&repo, auth.as_deref(), mirror).await?;
     let central_root = central_skills_root(pool).await?;
     let skills = build_preview_skills(pool, &central_root, &candidates).await?;
 
@@ -393,14 +420,19 @@ async fn import_github_repo_skills_impl(
     let auth = github_direct_auth_from_settings(pool)
         .await
         .map_err(GitHubImportError::plain)?;
-    let repo = resolve_repo_ref(repo_url, auth.as_deref())
+    let mirror = github_mirror_enabled(pool)
+        .await
+        .map_err(GitHubImportError::plain)?;
+    let repo = resolve_repo_ref(repo_url, auth.as_deref(), mirror)
         .await
         .map_err(GitHubImportError::plain)?;
     let client = github_client().map_err(GitHubImportError::plain)?;
 
     // 확인한 커밋이 있으면 그 커밋으로 고정해 내려받는다. 조회에 실패하면 기본
     // 브랜치로 진행하되, 검증된 기준으로 기록하지 않는다.
-    let commit_oid = resolve_repo_commit_oid(&repo, auth.as_deref()).await.ok();
+    let commit_oid = resolve_repo_commit_oid(&repo, auth.as_deref(), mirror)
+        .await
+        .ok();
     let download_ref = match &commit_oid {
         Some(commit) => GitHubRepoRef {
             branch: commit.clone(),
@@ -408,7 +440,7 @@ async fn import_github_repo_skills_impl(
         },
         None => repo.clone(),
     };
-    let snapshot = download_repo_snapshot(&client, &download_ref, auth.as_deref())
+    let snapshot = download_repo_snapshot(&client, &download_ref, auth.as_deref(), mirror)
         .await
         .map_err(GitHubImportError::plain)?;
     let candidates = build_repo_skill_candidates_from_snapshot(&download_ref, &snapshot)
@@ -702,6 +734,7 @@ async fn install_repo_skills_from_snapshot(
             &request.repo,
             &op.candidate.source_path,
             request.commit_oid.as_deref(),
+            request.snapshot.via_mirror,
         )
         .await
         {
@@ -1132,10 +1165,11 @@ fn target_is_owned_by_record(record: &Skill, target_dir: &Path) -> bool {
 pub(crate) async fn resolve_repo_ref(
     repo_url: &str,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<GitHubRepoRef, String> {
     let (owner, repo) = parse_github_url(repo_url)?;
     let client = github_client()?;
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         &client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1147,6 +1181,7 @@ pub(crate) async fn resolve_repo_ref(
         },
         "Failed to inspect GitHub repository",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1182,9 +1217,10 @@ pub(crate) async fn resolve_repo_ref(
 pub(crate) async fn resolve_repo_commit_oid(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<String, String> {
     let client = github_client()?;
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         &client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1199,6 +1235,7 @@ pub(crate) async fn resolve_repo_commit_oid(
         },
         "Failed to resolve the repository commit",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1338,9 +1375,10 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
 pub(crate) async fn fetch_repo_skill_candidates(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<Vec<RemoteSkillCandidate>, String> {
     let client = github_client()?;
-    let snapshot = download_repo_snapshot(&client, repo, auth_token).await?;
+    let snapshot = download_repo_snapshot(&client, repo, auth_token, mirror_enabled).await?;
     build_repo_skill_candidates_from_snapshot(repo, &snapshot)
 }
 
@@ -1457,9 +1495,14 @@ pub(crate) async fn download_repo_snapshot(
     client: &reqwest::Client,
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<GitHubRepoSnapshot, String> {
-    let archive = download_repository_archive(client, repo, auth_token).await?;
-    snapshot_from_repository_archive(&archive)
+    let (archive, via_mirror) =
+        download_repository_archive(client, repo, auth_token, mirror_enabled).await?;
+    Ok(GitHubRepoSnapshot {
+        via_mirror,
+        ..snapshot_from_repository_archive(&archive)?
+    })
 }
 
 const MAX_REPOSITORY_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
@@ -1482,12 +1525,14 @@ fn archive_extraction_limit_error() -> String {
     )
 }
 
+/// 압축 파일 바이트와, 그것을 미러에서 받았는지 여부를 돌려준다.
 async fn download_repository_archive(
     client: &reqwest::Client,
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
-) -> Result<Vec<u8>, String> {
-    let mut response = send_github_request_with_fallback(
+    mirror_enabled: bool,
+) -> Result<(Vec<u8>, bool), String> {
+    let (mut response, via_mirror) = send_github_request_with_fallback(
         client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1502,6 +1547,7 @@ async fn download_repository_archive(
         },
         "Failed to download GitHub repository archive",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1540,7 +1586,7 @@ async fn download_repository_archive(
         }
         archive.extend_from_slice(&chunk);
     }
-    Ok(archive)
+    Ok((archive, via_mirror))
 }
 
 fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSnapshot, String> {
@@ -1590,7 +1636,10 @@ fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSn
         );
     }
 
-    Ok(GitHubRepoSnapshot { files })
+    Ok(GitHubRepoSnapshot {
+        files,
+        via_mirror: false,
+    })
 }
 
 fn relative_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String, String> {
@@ -1785,8 +1834,9 @@ async fn fetch_raw_text(
     client: &reqwest::Client,
     url: &str,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<String, String> {
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         client,
         GitHubFetchSurface::Raw,
         |endpoint| {
@@ -1798,6 +1848,7 @@ async fn fetch_raw_text(
         },
         "Failed to download skill metadata",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1871,28 +1922,32 @@ fn raw_file_url(endpoint: &GitHubMirrorEndpoint, repo: &GitHubRepoRef, file_path
     )
 }
 
+/// GitHub에 요청한다. 미러 대체가 켜져 있을 때만 실패한 요청을 미러로 넘기고,
+/// 응답이 미러에서 왔는지도 함께 돌려준다.
 async fn send_github_request_with_fallback<F>(
     client: &reqwest::Client,
     surface: GitHubFetchSurface,
     build_url: F,
     failure_prefix: &str,
     auth_token: Option<&str>,
-) -> Result<reqwest::Response, String>
+    mirror_enabled: bool,
+) -> Result<(reqwest::Response, bool), String>
 where
     F: Fn(&GitHubMirrorEndpoint) -> String,
 {
     let mut attempts = Vec::new();
     let mut last_retryable_denial = None;
+    // 첫 항목이 GitHub 직접 주소이고 나머지는 제3자 미러다.
+    let endpoints = if mirror_enabled {
+        GITHUB_MIRROR_ENDPOINTS
+    } else {
+        &GITHUB_MIRROR_ENDPOINTS[..1]
+    };
 
-    for endpoint in GITHUB_MIRROR_ENDPOINTS {
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let via_mirror = index > 0;
         let url = build_url(endpoint);
-        let mut request = client.get(url);
-        if endpoint.label == "github" {
-            if let Some(token) = auth_token {
-                request = request.bearer_auth(token);
-            }
-        }
-        match request.send().await {
+        match github_request(client, &url, auth_token).send().await {
             Ok(response) => {
                 let status = response.status();
                 if matches!(
@@ -1902,10 +1957,11 @@ where
                         | reqwest::StatusCode::TOO_MANY_REQUESTS
                 ) {
                     let denial = parse_github_denial_response(response, "contacting GitHub").await;
-                    let can_retry_public_mirror = auth_token.is_none()
-                        && denial.as_ref().is_some_and(|denial| {
-                            matches!(denial.kind, GitHubAccessDenialKind::RateLimited { .. })
-                        });
+                    let is_rate_limited = denial.as_ref().is_some_and(|denial| {
+                        matches!(denial.kind, GitHubAccessDenialKind::RateLimited { .. })
+                    });
+                    let can_retry_public_mirror =
+                        mirror_enabled && auth_token.is_none() && is_rate_limited;
                     if can_retry_public_mirror {
                         last_retryable_denial = denial;
                         attempts.push(MirrorAttemptOutcome {
@@ -1920,13 +1976,17 @@ where
                         continue;
                     }
 
-                    return Err(denial
+                    let mut message = denial
                         .map(|denial| denial.to_string())
-                        .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status)));
+                        .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status));
+                    if !mirror_enabled && auth_token.is_none() && is_rate_limited {
+                        message.push_str(MIRROR_DISABLED_GUIDANCE);
+                    }
+                    return Err(message);
                 }
 
                 if status.is_success() {
-                    return Ok(response);
+                    return Ok((response, via_mirror));
                 }
 
                 if status == reqwest::StatusCode::NOT_FOUND {
@@ -1941,7 +2001,7 @@ where
                         });
                         continue;
                     }
-                    return Ok(response);
+                    return Ok((response, via_mirror));
                 }
 
                 if should_retry_via_mirror_status(surface, status) {
@@ -1982,12 +2042,21 @@ where
         return Err(denial.to_string());
     }
 
+    let unreachable = if mirror_enabled {
+        "Direct GitHub access and built-in mirrors were unreachable. Retry later or try a different network path."
+    } else {
+        "GitHub was unreachable and the mirror fallback is off. Retry later, try a different network path, or enable the mirror fallback in Settings."
+    };
     Err(format!(
-        "{}. Direct GitHub access and built-in mirrors were unreachable. Retry later or try a different network path. Last errors: {}",
+        "{}. {} Last errors: {}",
         failure_prefix,
+        unreachable,
         summarize_mirror_attempts(&attempts)
     ))
 }
+
+/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
+const MIRROR_DISABLED_GUIDANCE: &str = " Save a GitHub token in Settings or enable the mirror fallback in Settings. / 설정에서 GitHub 토큰을 저장하거나 미러 대체를 켜세요. / 请在设置中保存 GitHub 令牌，或开启镜像回退。";
 
 fn should_retry_via_mirror_status(
     surface: GitHubFetchSurface,
@@ -2285,6 +2354,7 @@ mod tests {
                     )
                 })
                 .collect::<HashMap<_, _>>(),
+            ..Default::default()
         }
     }
 
@@ -3234,6 +3304,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_records_mirror_use_only_when_archive_came_from_mirror() {
+        let pool = setup_test_db().await;
+        let _central_root = setup_central_dir(&pool).await;
+
+        for (skill, via_mirror) in [("commit", true), ("agent-planner", false)] {
+            let mut snapshot = multi_skill_snapshot();
+            snapshot.via_mirror = via_mirror;
+            install_snapshot(
+                &pool,
+                snapshot,
+                vec![import_selection(
+                    &format!("skills/{skill}"),
+                    DuplicateResolution::Overwrite,
+                )],
+            )
+            .await
+            .expect("import from snapshot");
+
+            let row = sqlx::query("SELECT via_mirror FROM skill_origins WHERE skill_id = ?")
+                .bind(skill)
+                .fetch_one(&pool)
+                .await
+                .expect("origin row");
+            assert_eq!(row.get::<bool, _>("via_mirror"), via_mirror, "{skill}");
+        }
+    }
+
+    #[tokio::test]
     async fn import_blocks_intra_batch_target_collisions_in_both_orders() {
         let pool = setup_test_db().await;
         let central_root = setup_central_dir(&pool).await;
@@ -3589,6 +3687,75 @@ mod tests {
         );
     }
 
+    /// 로컬 서버가 요청을 `count`번 받아 순서대로 기록한다. 응답은 요청 내용으로 정한다.
+    fn serve_requests(
+        count: usize,
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buffer = [0_u8; 4096];
+                let bytes_read = stream.read(&mut buffer).expect("read");
+                let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                stream
+                    .write_all(respond(&request).as_bytes())
+                    .expect("write");
+                captured.push(request);
+            }
+            captured
+        });
+        (address, handle)
+    }
+
+    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+
+    fn has_bearer(request: &str, token: &str) -> bool {
+        request
+            .to_ascii_lowercase()
+            .contains(&format!("authorization: bearer {token}"))
+    }
+
+    #[tokio::test]
+    async fn token_is_attached_only_when_request_host_is_github() {
+        let (address, server) = serve_requests(2, |_| OK_RESPONSE.to_string());
+        // 호스트 이름만 로컬 서버로 연결해 실제 요청 주소의 호스트로 판단하는지 본다.
+        let client = reqwest::Client::builder()
+            .resolve("api.github.com", address)
+            .resolve("evil.example", address)
+            .build()
+            .expect("client");
+
+        for host in ["api.github.com", "evil.example"] {
+            let (response, via_mirror) = send_github_request_with_fallback(
+                &client,
+                GitHubFetchSurface::Api,
+                |_| format!("http://{host}:{}/probe", address.port()),
+                "request failed",
+                Some("secret-token"),
+                false,
+            )
+            .await
+            .expect("response");
+            assert!(response.status().is_success());
+            assert!(!via_mirror, "direct response is not a mirror response");
+        }
+
+        let captured = server.join().expect("server join");
+        assert!(
+            has_bearer(&captured[0], "secret-token"),
+            "GitHub host should receive the token"
+        );
+        assert!(
+            !has_bearer(&captured[1], "secret-token"),
+            "non-GitHub host must not receive the token"
+        );
+    }
+
     #[tokio::test]
     async fn authenticated_api_fallback_does_not_forward_bearer_auth_to_mirror() {
         use std::io::{Read, Write};
@@ -3628,11 +3795,14 @@ mod tests {
             }
         });
 
-        let client = github_client().expect("client");
-        let direct_url = format!("http://{}/direct", address);
+        let client = reqwest::Client::builder()
+            .resolve("api.github.com", address)
+            .build()
+            .expect("client");
+        let direct_url = format!("http://api.github.com:{}/direct", address.port());
         let mirror_url = format!("http://{}/mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Api,
             |endpoint| {
@@ -3644,10 +3814,12 @@ mod tests {
             },
             "direct request failed",
             Some("direct-token"),
+            true,
         )
         .await
         .expect("fallback response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "fallback response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
@@ -3709,11 +3881,17 @@ mod tests {
             }
         });
 
-        let client = github_client().expect("client");
-        let direct_url = format!("http://{}/raw-direct", address);
+        let client = reqwest::Client::builder()
+            .resolve("raw.githubusercontent.com", address)
+            .build()
+            .expect("client");
+        let direct_url = format!(
+            "http://raw.githubusercontent.com:{}/raw-direct",
+            address.port()
+        );
         let mirror_url = format!("http://{}/raw-mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Raw,
             |endpoint| {
@@ -3725,10 +3903,12 @@ mod tests {
             },
             "raw request failed",
             Some("direct-token"),
+            true,
         )
         .await
         .expect("fallback response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "fallback response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
@@ -3750,6 +3930,69 @@ mod tests {
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
             "mirror raw request should not include bearer auth"
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_with_mirror_off_fails_with_guidance_and_skips_mirror() {
+        let (address, server) = serve_requests(1, |_| {
+            concat!(
+                "HTTP/1.1 403 Forbidden\r\n",
+                "Content-Type: application/json\r\n",
+                "X-RateLimit-Remaining: 0\r\n",
+                "Content-Length: 48\r\n\r\n",
+                "{\"message\":\"API rate limit exceeded for 1.2.3.4\"}"
+            )
+            .to_string()
+        });
+        // 미러가 잘못 호출되면 같은 서버가 응답하지 않으므로 시간 초과로 테스트가 실패한다.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let direct_url = format!("http://{address}/direct");
+        let mirror_url = format!("http://{address}/mirror");
+
+        let error = send_github_request_with_fallback(
+            &client,
+            GitHubFetchSurface::Api,
+            |endpoint| {
+                if endpoint.label == "github" {
+                    direct_url.clone()
+                } else {
+                    mirror_url.clone()
+                }
+            },
+            "request failed",
+            None,
+            false,
+        )
+        .await
+        .expect_err("rate limited without mirror must fail");
+
+        assert!(error.contains("rate limit"), "{error}");
+        assert!(
+            error.contains("GitHub token") && error.contains("mirror"),
+            "failure should point to token setup or enabling the mirror: {error}"
+        );
+        let captured = server.join().expect("server join");
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("GET /direct"));
+    }
+
+    #[tokio::test]
+    async fn github_mirror_is_off_by_default_and_follows_setting() {
+        let pool = setup_test_db().await;
+        assert!(!github_mirror_enabled(&pool).await.expect("default"));
+
+        db::set_setting(&pool, "github_mirror_enabled", "true")
+            .await
+            .expect("enable");
+        assert!(github_mirror_enabled(&pool).await.expect("enabled"));
+
+        db::set_setting(&pool, "github_mirror_enabled", "false")
+            .await
+            .expect("disable");
+        assert!(!github_mirror_enabled(&pool).await.expect("disabled"));
     }
 
     #[tokio::test]
@@ -3799,7 +4042,7 @@ mod tests {
         let direct_url = format!("http://{}/direct", address);
         let mirror_url = format!("http://{}/mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Api,
             |endpoint| {
@@ -3811,10 +4054,12 @@ mod tests {
             },
             "request failed",
             None,
+            true,
         )
         .await
         .expect("mirror retry response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "retry response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");

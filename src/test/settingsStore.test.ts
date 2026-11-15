@@ -53,6 +53,7 @@ describe("settingsStore", () => {
       githubPat: "",
       isLoadingGitHubPat: false,
       isSavingGitHubPat: false,
+      githubMirrorEnabled: false,
     });
     vi.clearAllMocks();
   });
@@ -376,5 +377,26 @@ describe("settingsStore", () => {
     });
     expect(useSettingsStore.getState().githubPat).toBe("");
     expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
+  });
+
+  it("loadGitHubMirror treats an unset github_mirror_enabled as off", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+
+    await useSettingsStore.getState().loadGitHubMirror();
+
+    expect(invoke).toHaveBeenCalledWith("get_setting", { key: "github_mirror_enabled" });
+    expect(useSettingsStore.getState().githubMirrorEnabled).toBe(false);
+  });
+
+  it("setGitHubMirror persists the toggle as a github_mirror_enabled setting", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await useSettingsStore.getState().setGitHubMirror(true);
+
+    expect(invoke).toHaveBeenCalledWith("set_setting", {
+      key: "github_mirror_enabled",
+      value: "true",
+    });
+    expect(useSettingsStore.getState().githubMirrorEnabled).toBe(true);
   });
 });

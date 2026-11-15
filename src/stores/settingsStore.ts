@@ -11,6 +11,7 @@ interface SettingsState {
   githubPat: string;
   isLoadingGitHubPat: boolean;
   isSavingGitHubPat: boolean;
+  githubMirrorEnabled: boolean;
 
   // Actions — scan directories
   loadScanDirectories: () => Promise<void>;
@@ -22,6 +23,10 @@ interface SettingsState {
   loadGitHubPat: () => Promise<void>;
   saveGitHubPat: (value: string) => Promise<void>;
   clearGitHubPat: () => Promise<void>;
+
+  // Actions — GitHub mirror fallback (default off)
+  loadGitHubMirror: () => Promise<void>;
+  setGitHubMirror: (enabled: boolean) => Promise<void>;
 
   // Actions — custom agents
   addCustomAgent: (config: CustomAgentConfig) => Promise<AgentWithStatus>;
@@ -40,6 +45,7 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   githubPat: "",
   isLoadingGitHubPat: false,
   isSavingGitHubPat: false,
+  githubMirrorEnabled: false,
 
   // ── Scan Directories ───────────────────────────────────────────────────────
 
@@ -143,6 +149,27 @@ export const useSettingsStore = create<SettingsState>((set) => ({
         error: String(err),
         isSavingGitHubPat: false,
       });
+      throw err;
+    }
+  },
+
+  // ── GitHub mirror fallback ─────────────────────────────────────────────────
+
+  loadGitHubMirror: async () => {
+    try {
+      const value = await invoke<string | null>("get_setting", { key: "github_mirror_enabled" });
+      set({ githubMirrorEnabled: value === "true" });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  setGitHubMirror: async (enabled: boolean) => {
+    try {
+      await invoke("set_setting", { key: "github_mirror_enabled", value: String(enabled) });
+      set({ githubMirrorEnabled: enabled });
+    } catch (err) {
+      set({ error: String(err) });
       throw err;
     }
   },

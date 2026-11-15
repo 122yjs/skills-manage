@@ -153,6 +153,8 @@ export interface SkillOriginInfo {
   lastError?: string | null;
   bindingVersion: number;
   canUpdate: boolean;
+  /** GitHub가 아닌 제3자 미러에서 받은 설치인지 여부. */
+  viaMirror?: boolean;
 }
 
 export interface SkillOriginCandidate {

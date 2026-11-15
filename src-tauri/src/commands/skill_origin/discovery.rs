@@ -382,7 +382,7 @@ mod tests {
         let mut snapshot = github_import::GitHubRepoSnapshot { files: HashMap::from([
             ("forecast/SKILL.md".into(), file(&format!("{header}설명: https://github.com/acme/skills/blob/main/forecast/instruction.md"))),
             ("forecast/instruction.md".into(), file(&body)),
-        ]) };
+        ]), ..Default::default() };
         let matches = modified_skill_paths(&snapshot, &local, "/installer/SKILL.md");
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].0, "forecast");
@@ -435,6 +435,7 @@ mod tests {
                 .iter()
                 .map(|(p, f)| (format!("example/{p}"), f.clone()))
                 .collect(),
+            ..Default::default()
         };
         assert!(modified_skill_paths(&snapshot, &local, "installer").is_empty());
     }
@@ -467,7 +468,7 @@ mod tests {
             let mut snapshot = github_import::GitHubRepoSnapshot { files: HashMap::from([
                 ("forecast/SKILL.md".into(), file(&format!("---\nname: forecast\ndescription: {remote_description}\n---\n\n`instruction.md`"))),
                 ("forecast/instruction.md".into(), file(&expanded_body)),
-            ]) };
+            ]), ..Default::default() };
             let matches = modified_skill_paths(&snapshot, &local, "/installer/SKILL.md");
             assert_eq!(matches.len(), 1);
             assert_eq!(matches[0].1.matched_paragraphs, 3);

@@ -3536,6 +3536,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3601,6 +3602,7 @@ mod tests {
             &imported_repo(),
             "skills/code-review",
             Some("abc123"),
+            false,
         )
         .await
         .unwrap();
@@ -3649,6 +3651,7 @@ mod tests {
                 &imported_repo(),
                 "skills/shared",
                 Some("abc123"),
+                false,
             )
             .await
             .unwrap();

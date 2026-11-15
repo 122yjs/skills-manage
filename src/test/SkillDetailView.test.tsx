@@ -1767,6 +1767,12 @@ describe("SkillDetailView imported origin", () => {
     expect(await screen.findByText(/unknown_baseline/)).toBeInTheDocument();
   });
 
+  it("tells the user when the install came through a third-party mirror", async () => {
+    mockOriginInvoke({ ...importedOriginFixture, viaMirror: true } as typeof importedOriginFixture);
+    renderView();
+    expect(await screen.findByText("通过第三方镜像下载，而非直接来自 GitHub")).toBeInTheDocument();
+  });
+
   it.each([true, false])("asks once before updating an unknown version (accept=%s)", async (accept) => {
     mockTauriInvoke.mockClear();
     const origin = { ...importedOriginFixture, canUpdate: true, baselineState: "unknown", baseCommitOid: null };
