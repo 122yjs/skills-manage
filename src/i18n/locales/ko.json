@@ -389,7 +389,11 @@
     "conflicts": "충돌 {{count}}개가 있어 아직 이동할 수 없습니다.",
     "later": "나중에",
     "start": "마이그레이션 시작",
-    "migrating": "마이그레이션 중..."
+    "migrating": "마이그레이션 중...",
+    "linkedSkills": "링크로 연결된 스킬 {{count}}개",
+    "linkedSkillsResult": "이동 후에도 같은 대상을 가리키는 링크로 유지됩니다. 원본 폴더는 바뀌지 않습니다.",
+    "unrecognizedItems": "스킬로 인식되지 않는 항목 {{count}}개",
+    "unrecognizedItemsResult": "보관함으로 옮겨지고, 공용 경로에는 그 항목을 가리키는 링크가 남아 계속 보입니다."
   },
   "sharedDelete": {
     "title": "공용 설치와 연결된 바로가기를 삭제할까요?",
@@ -809,6 +813,9 @@
       "intl": "국제"
     },
     "aiApiKeyLabel": "API 키",
+    "secretSavedPlaceholder": "저장됨 · 새 값을 입력하면 바뀝니다",
+    "secretKeychainUnavailable": "이 환경에서는 OS 키체인을 쓸 수 없어 비밀값을 파일에 저장하지 않고, 앱이 실행되는 동안에만 메모리에 보관합니다. 앱을 다시 켜면 다시 입력해야 합니다.",
+    "aiApiKeyClear": "키 지우기",
     "aiModelLabel": "모델",
     "aiModelPlaceholder": "모델 이름",
     "aiModelCustom": "사용자 지정",

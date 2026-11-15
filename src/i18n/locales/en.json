@@ -389,7 +389,11 @@
     "conflicts": "{{count}} conflict(s) prevent migration.",
     "later": "Later",
     "start": "Start migration",
-    "migrating": "Migrating..."
+    "migrating": "Migrating...",
+    "linkedSkills": "{{count}} linked skill(s)",
+    "linkedSkillsResult": "They stay as links pointing to the same targets after the move. The original folders are not changed.",
+    "unrecognizedItems": "{{count}} item(s) not recognized as skills",
+    "unrecognizedItemsResult": "They are moved into the vault, and a link to each stays in the shared folder so it remains visible."
   },
   "sharedDelete": {
     "title": "Delete shared installs and linked shortcuts?",
@@ -809,6 +813,9 @@
       "intl": "International"
     },
     "aiApiKeyLabel": "API Key",
+    "secretSavedPlaceholder": "Saved · enter a new value to replace it",
+    "secretKeychainUnavailable": "The OS keychain is not available here, so secrets are not written to disk and are kept in memory only while the app is running. You will need to enter them again after restarting the app.",
+    "aiApiKeyClear": "Clear key",
     "aiModelLabel": "Model",
     "aiModelPlaceholder": "Model name",
     "aiModelCustom": "Custom",
