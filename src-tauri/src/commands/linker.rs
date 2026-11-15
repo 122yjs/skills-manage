@@ -319,10 +319,21 @@ async fn ensure_centralized(
         ));
     }
 
+    centralize_from(pool, skill, source_dir, canonical_dir).await
+}
+
+/// `source_dir`을 보관함 원본 `canonical_dir`로 원자적으로 복사하고, 스킬 기록을 보관함 스킬로 바꾼다.
+pub(crate) async fn centralize_from(
+    pool: &DbPool,
+    skill: db::Skill,
+    source_dir: &Path,
+    canonical_dir: &Path,
+) -> Result<(), String> {
     // Copy to central directory.
     copy_dir_all(source_dir, canonical_dir)?;
 
     // Update the DB record to reflect centralization.
+    let skill_id = skill.id.clone();
     let mut updated = skill;
     updated.canonical_path = Some(canonical_dir.to_string_lossy().into_owned());
     updated.is_central = true;
@@ -332,7 +343,7 @@ async fn ensure_centralized(
         .into_owned();
     db::upsert_skill(pool, &updated).await?;
 
-    skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, skill_id, None).await?;
+    skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, &skill_id, None).await?;
     super::skill_groups::inherit_group_source(pool, source_dir, canonical_dir).await?;
 
     Ok(())

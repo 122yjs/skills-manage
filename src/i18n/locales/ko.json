@@ -430,6 +430,18 @@
     "externallyManaged": "직접 관리됨",
     "externalHint": "앱이 만들지 않은 항목은 직접 관리됨으로 표시하며 자동으로 삭제하지 않습니다."
   },
+  "observedImport": {
+    "button": "가져오기",
+    "buttonLabel": "{{name}} 가져오기",
+    "buttonHint": "내용을 보관함 원본으로 복사하고 관리 설치로 바꿉니다. 이 폴더의 파일은 바뀌지 않습니다.",
+    "importing": "가져오는 중…",
+    "success": "{{name}}을(를) 보관함으로 가져왔습니다. 이 플랫폼의 폴더는 그대로 두고 관리 설치로 기록했습니다.",
+    "error": "가져오기 실패: {{error}}",
+    "conflictTitle": "같은 이름의 보관함 스킬이 있습니다",
+    "conflictDescription": "{{name}}을(를) 보관함에 이미 있는 같은 이름의 스킬 위에 가져오지 않았습니다. 아래 비교를 보고 어느 쪽을 쓸지 정하세요. 아무 파일도 바꾸지 않았습니다.",
+    "paths": "비교한 위치",
+    "close": "닫기"
+  },
   "skillLocations": {
     "summary": "스킬 {{skills}}종 · 출처 위치 {{locations}}곳",
     "selected": "{{count}}곳 선택됨",

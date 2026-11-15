@@ -430,6 +430,18 @@
     "externallyManaged": "手动管理",
     "externalHint": "非本应用创建的项目标记为手动管理，不会被自动删除。"
   },
+  "observedImport": {
+    "button": "导入",
+    "buttonLabel": "导入 {{name}}",
+    "buttonHint": "将内容复制为中央库原件，并转为受管理的安装。此文件夹中的文件不会改动。",
+    "importing": "正在导入…",
+    "success": "已将 {{name}} 导入中央库。该平台的文件夹保持原样，并已记录为受管理的安装。",
+    "error": "导入失败：{{error}}",
+    "conflictTitle": "中央库中已有同名技能",
+    "conflictDescription": "未将 {{name}} 导入到中央库中已有的同名技能之上。请查看下方比较结果，再决定使用哪一份。未改动任何文件。",
+    "paths": "已比较的位置",
+    "close": "关闭"
+  },
   "skillLocations": {
     "summary": "{{skills}} 种技能 · {{locations}} 个来源位置",
     "selected": "已选 {{count}} 个位置",

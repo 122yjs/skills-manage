@@ -39,6 +39,7 @@ pub fn run() {
             // Scanner
             commands::scanner::scan_all_skills,
             commands::skill_duplicates::compare_skill_locations,
+            commands::observed_import::import_observed_skill,
             // Agents
             commands::agents::get_agents,
             commands::agents::detect_agents,

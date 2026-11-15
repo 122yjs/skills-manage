@@ -311,6 +311,17 @@ describe("UnifiedSkillCard shared control", () => {
     expect(screen.getByRole("switch", { name: /my-notes/ })).toHaveAttribute("data-disabled");
   });
 
+  it("shows an import action on an observed folder only", () => {
+    const onImport = vi.fn();
+    const { rerender } = render(<UnifiedSkillCard name="my-notes" platformDisplayName="Claude Code" isReadOnly isUnmanaged
+      onImportObserved={onImport} />);
+    fireEvent.click(screen.getByRole("button", { name: "导入 my-notes" }));
+    expect(onImport).toHaveBeenCalledOnce();
+
+    rerender(<UnifiedSkillCard name="my-notes" platformDisplayName="Claude Code" onImportObserved={onImport} />);
+    expect(screen.queryByRole("button", { name: "导入 my-notes" })).not.toBeInTheDocument();
+  });
+
   it("disables the shared switch and shows the reason when restricted", () => {
     const onToggleShared = vi.fn();
     render(

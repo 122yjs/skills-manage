@@ -133,6 +133,8 @@ export interface UnifiedSkillCardProps {
   isReadOnly?: boolean;
   /** 앱이 관리하지 않는 관찰 항목. 제거·비활성 같은 관리 동작을 열지 않는다. */
   isUnmanaged?: boolean;
+  /** 관찰 항목을 보관함으로 가져온다. `isUnmanaged`일 때만 버튼이 보인다. */
+  onImportObserved?: () => void;
   isUniversalSource?: boolean;
   isExternallyManaged?: boolean;
   /** 앱이 관리하는 설치의 실제 활성 상태. 설치 파일 삭제와는 별개다. */
@@ -220,6 +222,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     originKind,
     isReadOnly,
     isUnmanaged,
+    onImportObserved,
     isUniversalSource,
     isExternallyManaged,
     usageControl,
@@ -557,7 +560,23 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
           ) : null}
 
-          {isUnmanaged && <UnmanagedBadge />}
+          {isUnmanaged && (
+            <div className="flex flex-wrap items-center gap-2">
+              <UnmanagedBadge />
+              {onImportObserved && (
+                <button
+                  type="button"
+                  onClick={onImportObserved}
+                  disabled={isLoading}
+                  title={t("observedImport.buttonHint")}
+                  aria-label={t("observedImport.buttonLabel", { name })}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"
+                >
+                  {isLoading ? t("observedImport.importing") : t("observedImport.button")}
+                </button>
+              )}
+            </div>
+          )}
 
           {!isPlatformCard && <SkillGroupLinks filePath={translation?.filePath} />}
 
