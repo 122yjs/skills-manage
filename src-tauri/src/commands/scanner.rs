@@ -1315,7 +1315,7 @@ mod tests {
         fs::create_dir_all(&deep_dir).unwrap();
         fs::write(
             deep_dir.join("SKILL.md"),
-            &valid_skill_md("Deep Skill", "too deep"),
+            valid_skill_md("Deep Skill", "too deep"),
         )
         .unwrap();
 

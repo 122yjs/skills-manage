@@ -3007,9 +3007,13 @@ mod tests {
             source_agent_id: Some("claude-code".into()),
             row_id: Some("claude-code::plugin::first::chosen".into()),
         };
-        let result = transfer_skills_to_agents_impl(&pool, &[source.clone()], &["cursor".into()])
-            .await
-            .unwrap();
+        let result = transfer_skills_to_agents_impl(
+            &pool,
+            std::slice::from_ref(&source),
+            &["cursor".into()],
+        )
+        .await
+        .unwrap();
         assert_eq!(result.succeeded, vec!["chosen:cursor"]);
         assert!(result.failed.is_empty());
         let source_label: String = sqlx::query_scalar(

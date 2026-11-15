@@ -3600,7 +3600,7 @@ mod tests {
                 .as_deref()
                 .expect("central rescan records the canonical path"),
         ));
-        let summaries = origin_summaries_for_targets(&pool, &[target_key.clone()])
+        let summaries = origin_summaries_for_targets(&pool, std::slice::from_ref(&target_key))
             .await
             .unwrap();
         assert_eq!(
@@ -3612,7 +3612,7 @@ mod tests {
         assert!(!summaries.get(&target_key).unwrap().update_available);
         sqlx::query("UPDATE skill_origins SET last_remote_manifest_json = '{\"entries\":[]}' WHERE target_key = ?")
             .bind(&target_key).execute(&pool).await.unwrap();
-        let changed = origin_summaries_for_targets(&pool, &[target_key.clone()])
+        let changed = origin_summaries_for_targets(&pool, std::slice::from_ref(&target_key))
             .await
             .unwrap();
         assert!(changed.get(&target_key).unwrap().update_available);

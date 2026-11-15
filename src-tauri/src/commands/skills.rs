@@ -1567,6 +1567,7 @@ mod tests {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_observation_for_agent(
         agent_id: &str,
         row_id: &str,
