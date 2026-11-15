@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import { isToggleableAgent } from "@/lib/agents";
-import { AgentWithStatus, ScanResult } from "@/types";
+import { AgentWithStatus, ScanResult, UnreadableRoot } from "@/types";
 
 const BROWSER_FIXTURE_AGENTS: AgentWithStatus[] = [
   {
@@ -58,6 +58,7 @@ const BROWSER_FIXTURE_COUNTS: ScanResult = {
 interface PlatformState {
   agents: AgentWithStatus[];
   skillsByAgent: Record<string, number>;
+  unreadableRoots?: UnreadableRoot[];
   isLoading: boolean;
   isRefreshing: boolean;
   updatingAgentIds: Record<string, boolean>;
@@ -77,6 +78,7 @@ interface PlatformState {
 export const usePlatformStore = create<PlatformState>((set, get) => ({
   agents: [],
   skillsByAgent: {},
+  unreadableRoots: [],
   isLoading: false,
   isRefreshing: false,
   updatingAgentIds: {},
@@ -106,6 +108,7 @@ export const usePlatformStore = create<PlatformState>((set, get) => ({
       set((state) => ({
         agents,
         skillsByAgent: scanResult.skills_by_agent,
+        unreadableRoots: scanResult.unreadable_roots ?? [],
         isLoading: false,
         scanGeneration: (state.scanGeneration ?? 0) + 1,
       }));
@@ -137,6 +140,7 @@ export const usePlatformStore = create<PlatformState>((set, get) => ({
       set((state) => ({
         agents,
         skillsByAgent: scanResult.skills_by_agent,
+        unreadableRoots: scanResult.unreadable_roots ?? [],
         isLoading: false,
         scanGeneration: (state.scanGeneration ?? 0) + 1,
       }));
@@ -165,6 +169,7 @@ export const usePlatformStore = create<PlatformState>((set, get) => ({
       set((state) => ({
         agents,
         skillsByAgent: scanResult.skills_by_agent,
+        unreadableRoots: scanResult.unreadable_roots ?? [],
         isRefreshing: false,
         isLoading: state.isLoading,
         scanGeneration: (state.scanGeneration ?? 0) + 1,
