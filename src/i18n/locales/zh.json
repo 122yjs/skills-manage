@@ -358,6 +358,13 @@
     "toggleIndividualSkill": "仅在 {{platform}} 切换 {{name}}",
     "sharedDesktopRequired": "公用安装需要在桌面应用中管理。"
   },
+  "startup": {
+    "title": "无法启动应用",
+    "description": "准备数据文件夹、数据库或技能仓库时出现问题。如果外接磁盘已断开，请重新连接后重试；如果该文件夹无法使用，请选择其他仓库路径。",
+    "pathLabel": "新的仓库路径",
+    "retry": "重试",
+    "changePath": "使用此路径并重试"
+  },
   "storage": {
     "title": "技能仓库位置",
     "description": "此文件夹保存所有技能原件。更改位置时会安全移动原件并更新已有安装链接。",
