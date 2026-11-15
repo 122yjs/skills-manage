@@ -2,6 +2,7 @@ pub mod commands;
 pub mod db;
 pub mod path_utils;
 pub mod startup;
+pub mod text_utils;
 
 use db::DbPool;
 use tauri::Manager;
