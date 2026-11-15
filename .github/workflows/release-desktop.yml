@@ -26,7 +26,6 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
         with:
-          version: 10.12.3
           run_install: false
 
       - name: Setup Node.js
@@ -92,7 +91,6 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
         with:
-          version: 10.12.3
           run_install: false
 
       - name: Setup Node.js
@@ -162,7 +160,6 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
         with:
-          version: 10.12.3
           run_install: false
 
       - name: Setup Node.js

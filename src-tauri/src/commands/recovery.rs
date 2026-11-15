@@ -57,7 +57,10 @@ fn valid_entry_id(id: &str) -> bool {
 }
 
 fn valid_kind(kind: &str) -> bool {
-    matches!(kind, COPY_BACKUP | ORIGIN_UPDATE_BACKUP | VAULT_TRASH | DATABASE_BACKUP)
+    matches!(
+        kind,
+        COPY_BACKUP | ORIGIN_UPDATE_BACKUP | VAULT_TRASH | DATABASE_BACKUP
+    )
 }
 
 fn safe_child_name(name: &str) -> bool {
@@ -800,18 +803,30 @@ pub async fn backup_origin_update_target(
     target: &Path,
 ) -> Result<Option<RecoveryEntry>, String> {
     let target = target.canonicalize().map_err(|error| error.to_string())?;
-    let installation = db::get_skill_installations(pool, skill_id).await?
+    let installation = db::get_skill_installations(pool, skill_id)
+        .await?
         .into_iter()
-        .find(|record| record.installed_path == target.to_string_lossy()
-            && matches!(record.link_type.as_str(), "copy" | "native"))
+        .find(|record| {
+            record.installed_path == target.to_string_lossy()
+                && matches!(record.link_type.as_str(), "copy" | "native")
+        })
         .ok_or_else(|| "업데이트할 실제 원본의 설치 기록을 찾을 수 없습니다".to_string())?;
     if expected_origin_update_path(pool, &installation).await? != target {
         return Err("업데이트 경로가 플랫폼 설치 기록과 일치하지 않습니다".into());
     }
     let _guard = recovery_lock().await;
-    let Some(layout) = recovery_layout(pool).await? else { return Ok(None); };
-    create_file_backup(&layout, ORIGIN_UPDATE_BACKUP,
-        format!("GitHub 업데이트 전 백업: {skill_id}"), &target, &target, Some(installation)).map(Some)
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(None);
+    };
+    create_file_backup(
+        &layout,
+        ORIGIN_UPDATE_BACKUP,
+        format!("GitHub 업데이트 전 백업: {skill_id}"),
+        &target,
+        &target,
+        Some(installation),
+    )
+    .map(Some)
 }
 
 /// 복사 설치를 지우기 직전에 전체 내용을 보존합니다.

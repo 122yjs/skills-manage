@@ -537,9 +537,12 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     ensure_column(
-        pool, "skill_origins", "discovery_evidence_json",
+        pool,
+        "skill_origins",
+        "discovery_evidence_json",
         "ALTER TABLE skill_origins ADD COLUMN discovery_evidence_json TEXT",
-    ).await?;
+    )
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS skill_origin_ignores (

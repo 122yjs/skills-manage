@@ -177,7 +177,8 @@ pnpm test
 pnpm typecheck
 pnpm lint
 cd src-tauri && cargo test
-cd src-tauri && cargo clippy -- -D warnings
+cd src-tauri && cargo clippy --all-targets -- -D warnings
+cd src-tauri && cargo fmt --check
 ```
 
 ## Project Structure

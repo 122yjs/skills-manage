@@ -493,21 +493,37 @@ struct MarketplaceSkillRow {
 
 /// GitHub raw 주소에서 저장소와 스킬 폴더를 복원한다. 다른 호스트의 URL은
 /// 출처로 기록하지 않는다.
-pub(crate) fn github_origin_from_raw_url(url: &str) -> Option<(github_import::GitHubRepoRef, String)> {
+pub(crate) fn github_origin_from_raw_url(
+    url: &str,
+) -> Option<(github_import::GitHubRepoRef, String)> {
     let parsed = reqwest::Url::parse(url).ok()?;
-    if parsed.host_str()? != "raw.githubusercontent.com" { return None; }
+    if parsed.host_str()? != "raw.githubusercontent.com" {
+        return None;
+    }
     let parts: Vec<_> = parsed.path_segments()?.collect();
-    if parts.len() < 4 || parts.last() != Some(&"SKILL.md") { return None; }
-    let source_path = if parts.len() == 4 { ".".to_string() } else { parts[3..parts.len()-1].join("/") };
-    Some((github_import::GitHubRepoRef {
-        owner: parts[0].to_string(), repo: parts[1].to_string(), branch: parts[2].to_string(),
-        normalized_url: format!("https://github.com/{}/{}", parts[0], parts[1]),
-    }, source_path))
+    if parts.len() < 4 || parts.last() != Some(&"SKILL.md") {
+        return None;
+    }
+    let source_path = if parts.len() == 4 {
+        ".".to_string()
+    } else {
+        parts[3..parts.len() - 1].join("/")
+    };
+    Some((
+        github_import::GitHubRepoRef {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+            branch: parts[2].to_string(),
+            normalized_url: format!("https://github.com/{}/{}", parts[0], parts[1]),
+        },
+        source_path,
+    ))
 }
 
 fn safe_install_directory_name(name: &str) -> bool {
     let mut components = std::path::Path::new(name).components();
-    matches!(components.next(), Some(std::path::Component::Normal(_))) && components.next().is_none()
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
 }
 
 async fn ensure_new_install_target(
@@ -518,9 +534,14 @@ async fn ensure_new_install_target(
     if !safe_install_directory_name(name) {
         return Err("Skill name must be a single directory name".to_string());
     }
-    if target.exists() || std::fs::symlink_metadata(target).is_ok()
-        || crate::db::get_skill_by_id(pool, name).await?.is_some() {
-        return Err(format!("Skill '{}' already exists; use the GitHub import conflict flow", name));
+    if target.exists()
+        || std::fs::symlink_metadata(target).is_ok()
+        || crate::db::get_skill_by_id(pool, name).await?.is_some()
+    {
+        return Err(format!(
+            "Skill '{}' already exists; use the GitHub import conflict flow",
+            name
+        ));
     }
     Ok(())
 }
@@ -576,13 +597,20 @@ pub async fn install_marketplace_skill(
 
     if let Some((repo, source_path)) = github_origin_from_raw_url(&skill.download_url) {
         let db_skill = crate::db::Skill {
-            id: skill.name.clone(), name: skill.name.clone(), description: None,
+            id: skill.name.clone(),
+            name: skill.name.clone(),
+            description: None,
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
-            is_central: true, source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
-            content: None, scanned_at: chrono::Utc::now().to_rfc3339(),
+            is_central: true,
+            source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
+            content: None,
+            scanned_at: chrono::Utc::now().to_rfc3339(),
         };
-        if let Err(error) = skill_origin::persist_imported_skill(&state.db, &db_skill, &repo, &source_path, None).await {
+        if let Err(error) =
+            skill_origin::persist_imported_skill(&state.db, &db_skill, &repo, &source_path, None)
+                .await
+        {
             let _ = std::fs::remove_dir_all(&skill_dir);
             return Err(error);
         }
@@ -1026,10 +1054,16 @@ pub async fn install_from_skills_sh(
         .map_err(|e| e.to_string())?;
 
     // Download full repo snapshot (tarball) and find the skill directory
-    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth).await.ok();
-    let download_ref = commit_oid.as_ref().map(|commit| github_import::GitHubRepoRef {
-        branch: commit.clone(), ..repo.clone()
-    }).unwrap_or_else(|| repo.clone());
+    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth)
+        .await
+        .ok();
+    let download_ref = commit_oid
+        .as_ref()
+        .map(|commit| github_import::GitHubRepoRef {
+            branch: commit.clone(),
+            ..repo.clone()
+        })
+        .unwrap_or_else(|| repo.clone());
     let snapshot = github_import::download_repo_snapshot(&client, &download_ref, auth).await?;
 
     // Find the skill directory by matching the last directory component against skill_id
@@ -1086,8 +1120,14 @@ pub async fn install_from_skills_sh(
         scanned_at: chrono::Utc::now().to_rfc3339(),
     };
     if let Err(error) = skill_origin::persist_imported_skill(
-        &state.db, &db_skill, &repo, &source_path, commit_oid.as_deref()
-    ).await {
+        &state.db,
+        &db_skill,
+        &repo,
+        &source_path,
+        commit_oid.as_deref(),
+    )
+    .await
+    {
         let _ = std::fs::remove_dir_all(&skill_dir);
         return Err(error);
     }
@@ -2136,8 +2176,12 @@ async fn configure_token_budget(
 ) -> Result<(), String> {
     let saved = get_provider_setting(pool, "ai_max_tokens").await;
     let raw = override_value.or(saved.as_deref()).unwrap_or("").trim();
-    let budget = if raw.is_empty() { DEFAULT_OUTPUT_TOKENS } else {
-        raw.parse::<u32>().ok().filter(|v| *v >= 16)
+    let budget = if raw.is_empty() {
+        DEFAULT_OUTPUT_TOKENS
+    } else {
+        raw.parse::<u32>()
+            .ok()
+            .filter(|v| *v >= 16)
             .ok_or_else(|| "최대 출력 토큰은 16 이상의 정수로 입력하세요.".to_string())?
     };
     body["max_tokens"] = serde_json::json!(budget);
@@ -2146,18 +2190,30 @@ async fn configure_token_budget(
 
 // 토큰 항목을 명시한 알려진 오류만 처리한다. 사용자 상한은 높이지 않는다.
 fn adjust_token_request(body: &mut serde_json::Value, error: &str, is_anthropic: bool) -> bool {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(error) else { return false; };
-    let Some(message) = value.pointer("/error/message").and_then(|v| v.as_str()) else { return false; };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(error) else {
+        return false;
+    };
+    let Some(message) = value.pointer("/error/message").and_then(|v| v.as_str()) else {
+        return false;
+    };
     let message = message.to_ascii_lowercase();
-    if !is_anthropic && body.get("max_tokens").is_some()
-        && message.contains("max_tokens") && message.contains("max_completion_tokens")
-        && (message.contains("use 'max_completion_tokens'") || message.contains("use max_completion_tokens"))
-        && message.contains("not supported") {
+    if !is_anthropic
+        && body.get("max_tokens").is_some()
+        && message.contains("max_tokens")
+        && message.contains("max_completion_tokens")
+        && (message.contains("use 'max_completion_tokens'")
+            || message.contains("use max_completion_tokens"))
+        && message.contains("not supported")
+    {
         let tokens = body.as_object_mut().unwrap().remove("max_tokens").unwrap();
         body["max_completion_tokens"] = tokens;
         return true;
     }
-    let param = if body.get("max_completion_tokens").is_some() { "max_completion_tokens" } else { "max_tokens" };
+    let param = if body.get("max_completion_tokens").is_some() {
+        "max_completion_tokens"
+    } else {
+        "max_tokens"
+    };
     let normalized = message.replace(['\'', '"', '`'], "");
     for suffix in [" must be less than or equal to ", " must be at most "] {
         let prefix = format!("{param}{suffix}");
@@ -2196,14 +2252,29 @@ async fn send_stream_request(
 
     let mut adjusted = body.clone();
     for attempt in 0..2 {
-        let response = req_builder.try_clone().expect("JSON 요청은 복제 가능")
-            .json(&adjusted).send().await.map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
-        if response.status() != reqwest::StatusCode::BAD_REQUEST { return Ok(response); }
-        let details = response.text().await.map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
-        if attempt == 0 && adjust_token_request(&mut adjusted, &details, is_anthropic) { continue; }
+        let response = req_builder
+            .try_clone()
+            .expect("JSON 요청은 복제 가능")
+            .json(&adjusted)
+            .send()
+            .await
+            .map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
+        if response.status() != reqwest::StatusCode::BAD_REQUEST {
+            return Ok(response);
+        }
+        let details = response
+            .text()
+            .await
+            .map_err(|e| classify_reqwest_error(&e, fallback_tried))?;
+        if attempt == 0 && adjust_token_request(&mut adjusted, &details, is_anthropic) {
+            continue;
+        }
         return Err(ExplanationErrorInfo {
-            message: format!("API 요청 오류 400: {details}"), details,
-            kind: ExplanationErrorKind::Response, retryable: false, fallback_tried,
+            message: format!("API 요청 오류 400: {details}"),
+            details,
+            kind: ExplanationErrorKind::Response,
+            retryable: false,
+            fallback_tried,
         });
     }
     unreachable!()
@@ -2592,8 +2663,9 @@ mod tests {
     #[test]
     fn raw_github_install_url_keeps_the_installed_source_directory() {
         let (repo, path) = super::github_origin_from_raw_url(
-            "https://raw.githubusercontent.com/acme/skills/main/skills/demo/SKILL.md"
-        ).unwrap();
+            "https://raw.githubusercontent.com/acme/skills/main/skills/demo/SKILL.md",
+        )
+        .unwrap();
         assert_eq!(repo.normalized_url, "https://github.com/acme/skills");
         assert_eq!(repo.branch, "main");
         assert_eq!(path, "skills/demo");
@@ -2611,15 +2683,27 @@ mod tests {
     #[tokio::test]
     async fn token_settings_validate_and_preserve_empty_override() {
         let (pool, _dir) = setup_test_db().await;
-        db::set_setting(&pool, "ai_provider", "budget-test").await.unwrap();
-        db::set_setting(&pool, "ai_max_tokens__budget-test", "8192").await.unwrap();
+        db::set_setting(&pool, "ai_provider", "budget-test")
+            .await
+            .unwrap();
+        db::set_setting(&pool, "ai_max_tokens__budget-test", "8192")
+            .await
+            .unwrap();
         let mut body = serde_json::json!({});
-        super::configure_token_budget(&pool, &mut body, None).await.unwrap();
+        super::configure_token_budget(&pool, &mut body, None)
+            .await
+            .unwrap();
         assert_eq!(body["max_tokens"], 8192);
-        super::configure_token_budget(&pool, &mut body, Some("")).await.unwrap();
+        super::configure_token_budget(&pool, &mut body, Some(""))
+            .await
+            .unwrap();
         assert_eq!(body["max_tokens"], 4096);
         for invalid in ["0", "1", "15", "-1", "2.5", "4294967296", "abc"] {
-            assert!(super::configure_token_budget(&pool, &mut body, Some(invalid)).await.is_err());
+            assert!(
+                super::configure_token_budget(&pool, &mut body, Some(invalid))
+                    .await
+                    .is_err()
+            );
         }
     }
 
@@ -2635,7 +2719,11 @@ mod tests {
         let lower = r#"{"error":{"message":"max_completion_tokens must be at most 2048"}}"#;
         assert!(super::adjust_token_request(&mut body, lower, false));
         assert_eq!(body["max_completion_tokens"], 2048);
-        for message in ["max_completion_tokens must be greater than 8192", "model 5 max_completion_tokens must be at most 100", "max_completion_tokens must be at most 999999"] {
+        for message in [
+            "max_completion_tokens must be greater than 8192",
+            "model 5 max_completion_tokens must be at most 100",
+            "max_completion_tokens must be at most 999999",
+        ] {
             let error = serde_json::json!({"error":{"message":message}}).to_string();
             assert!(!super::adjust_token_request(&mut body, &error, false));
         }

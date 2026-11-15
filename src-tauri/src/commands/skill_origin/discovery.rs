@@ -441,21 +441,29 @@ mod tests {
 
     #[test]
     fn description_suffix_and_list_additions_preserve_origin_evidence() {
-        assert!(!descriptions_match("Regional observations", "Regional observations and more"));
+        assert!(!descriptions_match(
+            "Regional observations",
+            "Regional observations and more"
+        ));
         let description = "Look up current regional observations, keeping the station, measurement time and unit together when reporting each result.";
         let extended = format!("{description} 추가 작업도 지원한다.");
         let first = "- 지역 관측소의 고유 식별자와 관측 시각을 함께 기록하며, 서로 다른 관측소의 측정값을 하나로 섞지 않는다. ".repeat(4);
         let second = "- 온도와 강수량의 단위를 확인하고 원본 자료가 제공하는 값을 그대로 사용하며, 없는 측정값은 임의로 채우지 않는다. ".repeat(4);
-        let third = "- 관측 결과의 유효 시각을 표시하고 자료가 갱신되지 않은 관측소는 별도로 알려준다. ".repeat(4);
+        let third =
+            "- 관측 결과의 유효 시각을 표시하고 자료가 갱신되지 않은 관측소는 별도로 알려준다. "
+                .repeat(4);
         let body = format!("{first}\n{second}\n{third}");
         let expanded_body = format!("{first}\n- 새로 추가한 결과 표시 옵션을 사용할 때도 원본 관측값은 바꾸지 않고 보존한다.\n{second}\n{third}");
         for (local_description, remote_description) in [
             (description, extended.as_str()),
             (extended.as_str(), description),
         ] {
-            let local = BTreeMap::from([("SKILL.md".into(), file(&format!(
-                "---\nname: forecast\ndescription: {local_description}\n---\n\n{body}"
-            )))]);
+            let local = BTreeMap::from([(
+                "SKILL.md".into(),
+                file(&format!(
+                    "---\nname: forecast\ndescription: {local_description}\n---\n\n{body}"
+                )),
+            )]);
             let mut snapshot = github_import::GitHubRepoSnapshot { files: HashMap::from([
                 ("forecast/SKILL.md".into(), file(&format!("---\nname: forecast\ndescription: {remote_description}\n---\n\n`instruction.md`"))),
                 ("forecast/instruction.md".into(), file(&expanded_body)),
@@ -466,7 +474,10 @@ mod tests {
             assert!(matches[0].1.matched_characters >= 400);
 
             // 이름과 설명이 맞아도 본문이 다른 스킬은 연결하지 않는다.
-            snapshot.files.insert("forecast/instruction.md".into(), file(&"독립적으로 작성한 다른 스킬의 내용이다. ".repeat(100)));
+            snapshot.files.insert(
+                "forecast/instruction.md".into(),
+                file(&"독립적으로 작성한 다른 스킬의 내용이다. ".repeat(100)),
+            );
             assert!(modified_skill_paths(&snapshot, &local, "installer").is_empty());
         }
     }
