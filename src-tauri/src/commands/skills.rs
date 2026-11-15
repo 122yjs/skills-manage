@@ -3623,11 +3623,10 @@ mod tests {
             skill_dir.join("SKILL.md").is_file(),
             "the symlink target survives"
         );
-        let remaining: Vec<String> =
-            sqlx::query_scalar("SELECT target_key FROM skill_origins")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT target_key FROM skill_origins")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         assert_eq!(remaining, vec![target_key]);
     }
 
@@ -3639,7 +3638,8 @@ mod tests {
         let pool = setup_test_db().await;
         set_agent_dir(&pool, "central", &central_dir).await;
 
-        let doomed = create_named_central_skill(&pool, &central_dir, "doomed-skill", "doomed").await;
+        let doomed =
+            create_named_central_skill(&pool, &central_dir, "doomed-skill", "doomed").await;
         let kept = create_named_central_skill(&pool, &central_dir, "kept-skill", "kept").await;
         for skill in [&doomed, &kept] {
             skill_origin::persist_imported_skill(

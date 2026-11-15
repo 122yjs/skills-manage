@@ -1054,14 +1054,22 @@ pub async fn install_skill_to_agent_copy_impl(
     if let Err(error) = copy_dir_all(&canonical_dir, &target_path) {
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
-    if let Err(error) = super::skill_groups::inherit_group_source(pool, &canonical_dir, &target_path).await {
+    if let Err(error) =
+        super::skill_groups::inherit_group_source(pool, &canonical_dir, &target_path).await
+    {
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
 
     if let Err(error) = skill_origin::inherit_copied_origin(
-        pool, &canonical_dir, &target_path, skill_id, Some(&installation.agent_id)
-    ).await {
+        pool,
+        &canonical_dir,
+        &target_path,
+        skill_id,
+        Some(&installation.agent_id),
+    )
+    .await
+    {
         eprintln!("Could not retain GitHub origin for copied installation: {error}");
     }
 
@@ -1199,8 +1207,10 @@ pub async fn uninstall_skill_from_agent_impl(
     db::delete_skill_installation(pool, skill_id, &agent.id).await?;
     if link_type == "copy" {
         skill_origin::discard_origin_bindings(
-            pool, &[skill_origin::origin_target_key(&install_path)]
-        ).await?;
+            pool,
+            &[skill_origin::origin_target_key(&install_path)],
+        )
+        .await?;
     }
 
     Ok(())
@@ -3002,9 +3012,20 @@ mod tests {
             .unwrap();
         assert_eq!(result.succeeded, vec!["chosen:cursor"]);
         assert!(result.failed.is_empty());
-        let source_label: String = sqlx::query_scalar("SELECT source_label FROM skill_group_sources WHERE target_path = ?")
-            .bind(central.join("first/chosen").canonicalize().unwrap().to_string_lossy().as_ref())
-            .fetch_one(&pool).await.unwrap();
+        let source_label: String = sqlx::query_scalar(
+            "SELECT source_label FROM skill_group_sources WHERE target_path = ?",
+        )
+        .bind(
+            central
+                .join("first/chosen")
+                .canonicalize()
+                .unwrap()
+                .to_string_lossy()
+                .as_ref(),
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(source_label, "first");
 
         assert_eq!(

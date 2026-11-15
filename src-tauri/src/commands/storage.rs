@@ -667,12 +667,19 @@ async fn update_database_paths(
     }
 
     // 보관함을 옮겨도 개별 추출본의 원래 플러그인 모음은 유지한다.
-    let group_paths = sqlx::query_scalar::<_, String>("SELECT target_path FROM skill_group_sources")
-        .fetch_all(&mut *transaction).await.map_err(|e| e.to_string())?;
+    let group_paths =
+        sqlx::query_scalar::<_, String>("SELECT target_path FROM skill_group_sources")
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|e| e.to_string())?;
     for path in group_paths {
         if let Some(new_path) = replace_path_prefix(&path, old_root, new_root) {
             sqlx::query("UPDATE skill_group_sources SET target_path = ? WHERE target_path = ?")
-                .bind(new_path).bind(path).execute(&mut *transaction).await.map_err(|e| e.to_string())?;
+                .bind(new_path)
+                .bind(path)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|e| e.to_string())?;
         }
     }
 
@@ -1245,7 +1252,9 @@ mod tests {
             .unwrap();
 
         let group_path: String = sqlx::query_scalar("SELECT target_path FROM skill_group_sources")
-            .fetch_one(&pool).await.unwrap();
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(group_path, path_to_string(&destination.join("nested/demo")));
 
         assert_eq!(result.skill_count, 1);

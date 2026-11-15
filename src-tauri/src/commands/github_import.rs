@@ -165,7 +165,6 @@ impl GitHubImportError {
     }
 }
 
-
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GitHubImportProgressPhase {
@@ -551,15 +550,17 @@ async fn install_repo_skills_from_snapshot(
     }
 
     for op in &mut staging_ops {
-        op.source_files = collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path)
-            .map_err(|message| {
-                progress.blocked(
-                    message,
-                    Some(op.candidate.source_path.as_str()),
-                    Some(op.final_skill_id.as_str()),
-                    Some(op.target_dir.clone()),
-                )
-            })?;
+        op.source_files =
+            collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path).map_err(
+                |message| {
+                    progress.blocked(
+                        message,
+                        Some(op.candidate.source_path.as_str()),
+                        Some(op.final_skill_id.as_str()),
+                        Some(op.target_dir.clone()),
+                    )
+                },
+            )?;
     }
 
     let total_files = staging_ops
@@ -662,8 +663,7 @@ async fn install_repo_skills_from_snapshot(
 
         if let Err(error) = std::fs::rename(&staging_dir, &op.target_dir) {
             remove_directory_if_present(&staging_container);
-            let mut message =
-                format!("Failed to install skill '{}': {}", op.final_skill_id, error);
+            let mut message = format!("Failed to install skill '{}': {}", op.final_skill_id, error);
             if let Some(note) =
                 restore_previous_target(&backup_container, &op.final_skill_id, &op.target_dir)
             {
@@ -689,7 +689,10 @@ async fn install_repo_skills_from_snapshot(
             file_path: skill_md_path.to_string_lossy().into_owned(),
             canonical_path: Some(op.target_dir.to_string_lossy().into_owned()),
             is_central: true,
-            source: Some(format!("github:{}/{}", request.repo.owner, request.repo.repo)),
+            source: Some(format!(
+                "github:{}/{}",
+                request.repo.owner, request.repo.repo
+            )),
             content: None,
             scanned_at: Utc::now().to_rfc3339(),
         };
@@ -806,8 +809,8 @@ async fn stage_import_target(
     progress: &ImportBatchProgress,
 ) -> Result<StagedImport, GitHubImportError> {
     let final_skill_id = match selection.resolution {
-        DuplicateResolution::Rename => sanitize_skill_id(
-            selection.renamed_skill_id.as_deref().ok_or_else(|| {
+        DuplicateResolution::Rename => {
+            sanitize_skill_id(selection.renamed_skill_id.as_deref().ok_or_else(|| {
                 progress.blocked(
                     format!(
                         "Skill '{}' requires a renamed skill id for rename resolution.",
@@ -817,16 +820,16 @@ async fn stage_import_target(
                     Some(candidate.skill_id.as_str()),
                     None,
                 )
-            })?,
-        )
-        .map_err(|message| {
-            progress.blocked(
-                message,
-                Some(candidate.source_path.as_str()),
-                Some(candidate.skill_id.as_str()),
-                None,
-            )
-        })?,
+            })?)
+            .map_err(|message| {
+                progress.blocked(
+                    message,
+                    Some(candidate.source_path.as_str()),
+                    Some(candidate.skill_id.as_str()),
+                    None,
+                )
+            })?
+        }
         _ => candidate.skill_id.clone(),
     };
     let target_dir = central_root.join(&final_skill_id);
@@ -1188,7 +1191,10 @@ pub(crate) async fn resolve_repo_commit_oid(
             github_endpoint_url(
                 endpoint,
                 GitHubFetchSurface::Api,
-                &format!("/repos/{}/{}/commits/{}", repo.owner, repo.repo, repo.branch),
+                &format!(
+                    "/repos/{}/{}/commits/{}",
+                    repo.owner, repo.repo, repo.branch
+                ),
             )
         },
         "Failed to resolve the repository commit",
@@ -1506,9 +1512,10 @@ async fn download_repository_archive(
         }));
     }
 
-    if limited && response
-        .content_length()
-        .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
+    if limited
+        && response
+            .content_length()
+            .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
     {
         return Err("GitHub repository archive exceeds the safe download limit".into());
     }
@@ -1530,7 +1537,10 @@ fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSn
     snapshot_from_repository_archive_with_limit(archive_bytes, false)
 }
 
-fn snapshot_from_repository_archive_with_limit(archive_bytes: &[u8], limited: bool) -> Result<GitHubRepoSnapshot, String> {
+fn snapshot_from_repository_archive_with_limit(
+    archive_bytes: &[u8],
+    limited: bool,
+) -> Result<GitHubRepoSnapshot, String> {
     let cursor = Cursor::new(archive_bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = tar::Archive::new(decoder);
@@ -1551,8 +1561,10 @@ fn snapshot_from_repository_archive_with_limit(archive_bytes: &[u8], limited: bo
 
         file_count += 1;
         unpacked_bytes = unpacked_bytes.saturating_add(entry.size());
-        if limited && (file_count > MAX_REPOSITORY_FILES
-            || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64) {
+        if limited
+            && (file_count > MAX_REPOSITORY_FILES
+                || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64)
+        {
             return Err("GitHub repository archive exceeds the safe extraction limit".into());
         }
 
@@ -2120,8 +2132,8 @@ fn sanitize_skill_id(raw: &str) -> Result<String, String> {
 mod tests {
     use super::*;
     use flate2::{write::GzEncoder, Compression};
-    use std::collections::HashMap;
     use sqlx::Row;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     fn import_repo() -> GitHubRepoRef {
@@ -2195,8 +2207,8 @@ mod tests {
         selections: Vec<GitHubSkillImportSelection>,
     ) -> Result<GitHubRepoImportResult, GitHubImportError> {
         let repo = import_repo();
-        let candidates = build_repo_skill_candidates_from_snapshot(&repo, &snapshot)
-            .expect("build candidates");
+        let candidates =
+            build_repo_skill_candidates_from_snapshot(&repo, &snapshot).expect("build candidates");
         install_repo_skills_from_snapshot(
             pool,
             RepoSnapshotImportRequest {
@@ -2230,7 +2242,13 @@ mod tests {
     fn central_entries(root: &Path) -> Vec<String> {
         let mut entries = std::fs::read_dir(root)
             .expect("read central")
-            .map(|entry| entry.expect("entry").file_name().to_string_lossy().into_owned())
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect::<Vec<_>>();
         entries.sort();
         entries
@@ -2487,9 +2505,11 @@ mod tests {
         std::io::Write::write_all(&mut encoder, header.as_bytes()).unwrap();
         std::io::Write::write_all(&mut encoder, &[0; 1024]).unwrap();
         let compressed = encoder.finish().unwrap();
-        assert!(snapshot_from_repository_archive_with_limit(&compressed, true)
-            .unwrap_err()
-            .contains("safe extraction limit"));
+        assert!(
+            snapshot_from_repository_archive_with_limit(&compressed, true)
+                .unwrap_err()
+                .contains("safe extraction limit")
+        );
     }
 
     #[cfg(unix)]
@@ -2635,7 +2655,14 @@ mod tests {
 
         let planner_dir = central_root.path().join("agent-planner");
         let planner_original = sample_frontmatter("Agent Planner", "original planner");
-        seed_skill_record(&pool, "agent-planner", &planner_dir, true, &planner_original).await;
+        seed_skill_record(
+            &pool,
+            "agent-planner",
+            &planner_dir,
+            true,
+            &planner_original,
+        )
+        .await;
 
         let commit_dir = central_root.path().join("commit");
         let commit_original = sample_frontmatter("Commit", "original commit");
@@ -3132,7 +3159,10 @@ mod tests {
             .expect("load record")
             .expect("new record");
         assert!(new_record.is_central);
-        assert_eq!(new_record.source.as_deref(), Some("github:anthropics/skills"));
+        assert_eq!(
+            new_record.source.as_deref(),
+            Some("github:anthropics/skills")
+        );
         assert_eq!(
             new_record.canonical_path.as_deref(),
             Some(new_dir.to_string_lossy().into_owned().as_str())
@@ -3256,10 +3286,7 @@ mod tests {
         let failure = import_failure(error);
         assert_eq!(failure.code, GitHubImportFailureCode::Blocked);
         assert_eq!(failure.skill_id.as_deref(), Some("agent-planner"));
-        assert_eq!(
-            failure.existing_path.as_deref(),
-            unmanaged_dir.to_str()
-        );
+        assert_eq!(failure.existing_path.as_deref(), unmanaged_dir.to_str());
         assert!(failure.message.contains("rename the imported skill id"));
 
         assert_eq!(
@@ -3316,7 +3343,14 @@ mod tests {
 
         let planner_dir = central_root.path().join("agent-planner");
         let planner_original = sample_frontmatter("Agent Planner", "original");
-        seed_skill_record(&pool, "agent-planner", &planner_dir, true, &planner_original).await;
+        seed_skill_record(
+            &pool,
+            "agent-planner",
+            &planner_dir,
+            true,
+            &planner_original,
+        )
+        .await;
 
         let commit_dir = central_root.path().join("commit");
         let commit_original = sample_frontmatter("Commit", "original");
@@ -3348,7 +3382,10 @@ mod tests {
         assert_eq!(failure.skill_id.as_deref(), Some("commit"));
         assert_eq!(failure.source_path.as_deref(), Some("skills/commit"));
         assert_eq!(failure.imported_skills.len(), 1);
-        assert_eq!(failure.imported_skills[0].imported_skill_id, "agent-planner");
+        assert_eq!(
+            failure.imported_skills[0].imported_skill_id,
+            "agent-planner"
+        );
         assert_eq!(
             failure.imported_skills[0].resolution,
             DuplicateResolution::Overwrite
@@ -3384,7 +3421,10 @@ mod tests {
             .await
             .expect("load record")
             .expect("planner record");
-        assert_eq!(planner_record.source.as_deref(), Some("github:anthropics/skills"));
+        assert_eq!(
+            planner_record.source.as_deref(),
+            Some("github:anthropics/skills")
+        );
         let commit_record = db::get_skill_by_id(&pool, "commit")
             .await
             .expect("load record")
