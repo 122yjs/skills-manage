@@ -861,6 +861,7 @@
     "adding": "添加中..."
   },
   "platformDialog": {
+    "removeBlockedByInstalls": "该平台上仍有应用安装的技能，无法删除。请先移除这些安装，再删除平台。",
     "addTitle": "添加自定义平台",
     "editTitle": "编辑自定义平台",
     "addDesc": "注册一个新的自定义平台，添加后将自动重新扫描。",

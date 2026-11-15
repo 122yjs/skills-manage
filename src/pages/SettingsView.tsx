@@ -722,8 +722,11 @@ export function SettingsView() {
       await rescan();
       toast.success(t("common.delete") + " ✓");
     } catch (err) {
-      setPlatformError(String(err));
-      toast.error(String(err));
+      const message = String(err).includes("PLATFORM_HAS_MANAGED_INSTALLS")
+        ? t("platformDialog.removeBlockedByInstalls")
+        : String(err);
+      setPlatformError(message);
+      toast.error(message);
     } finally {
       setRemovingAgent(null);
     }

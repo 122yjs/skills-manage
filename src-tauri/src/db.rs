@@ -2304,6 +2304,32 @@ pub async fn get_skill_installations(
     .map_err(|e| e.to_string())
 }
 
+/// 플랫폼이 이미 사라진 설치 기록을 지운다. 기록만 지우고 파일은 건드리지 않는다.
+pub async fn delete_orphan_installations(pool: &DbPool, skill_id: &str) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM skill_installations
+         WHERE skill_id = ? AND agent_id NOT IN (SELECT id FROM agents)",
+    )
+    .bind(skill_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// 플랫폼을 지울 때 남는 관찰 항목 기록을 지운다. 사용자 폴더는 건드리지 않는다.
+pub async fn delete_observed_installations_by_agent(
+    pool: &DbPool,
+    agent_id: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM skill_installations WHERE agent_id = ? AND is_managed = 0")
+        .bind(agent_id)
+        .execute(pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// All active managed installations across every platform.
 pub async fn get_all_skill_installations(pool: &DbPool) -> Result<Vec<SkillInstallation>, String> {
     sqlx::query_as::<_, SkillInstallation>(
