@@ -1353,7 +1353,7 @@ struct GitHubAuth {
 fn github_cli_path() -> Option<PathBuf> {
     // 테스트가 개발자 PC의 실제 GitHub CLI를 실행하지 않게 한다.
     // CLI 동작은 resolve_github_auth에 가짜 CLI 경로를 넘겨 시험한다.
-    if cfg!(test) {
+    if cfg!(any(test, feature = "test-isolation")) {
         return None;
     }
     let name = if cfg!(windows) { "gh.exe" } else { "gh" };
