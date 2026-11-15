@@ -204,6 +204,9 @@ export function SettingsView() {
   const loadGitHubPat = useSettingsStore((s) => s.loadGitHubPat);
   const saveGitHubPat = useSettingsStore((s) => s.saveGitHubPat);
   const clearGitHubPat = useSettingsStore((s) => s.clearGitHubPat);
+  const githubMirrorEnabled = useSettingsStore((s) => s.githubMirrorEnabled);
+  const loadGitHubMirror = useSettingsStore((s) => s.loadGitHubMirror);
+  const setGitHubMirror = useSettingsStore((s) => s.setGitHubMirror);
 
   const agents = usePlatformStore((s) => s.agents);
 
@@ -611,7 +614,8 @@ export function SettingsView() {
   useEffect(() => {
     loadScanDirectories();
     loadGitHubPat();
-  }, [loadScanDirectories, loadGitHubPat]);
+    loadGitHubMirror();
+  }, [loadScanDirectories, loadGitHubPat, loadGitHubMirror]);
 
   // 입력칸에는 이번에 새로 입력한 토큰만 있다. 저장된 토큰은 화면으로 전달되지 않는다.
   const isGitHubPatDirty = githubPatInput.trim() !== "";
@@ -924,6 +928,33 @@ export function SettingsView() {
                   <span className="text-xs text-muted-foreground">{t("settings.loading")}</span>
                 ) : null}
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── GitHub mirror fallback (default off) ───────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Globe className="size-5 text-muted-foreground" />
+              <div>
+                <CardTitle>{t("settings.githubMirrorTitle")}</CardTitle>
+                <CardDescription className="mt-1">
+                  {t("settings.githubMirrorDesc")}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={githubMirrorEnabled}
+                onCheckedChange={(enabled) => {
+                  setGitHubMirror(enabled).catch((err) => toast.error(String(err)));
+                }}
+                aria-label={t("settings.githubMirrorLabel")}
+              />
+              <span className="text-sm">{t("settings.githubMirrorLabel")}</span>
             </div>
           </CardContent>
         </Card>

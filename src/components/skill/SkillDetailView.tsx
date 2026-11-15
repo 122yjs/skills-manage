@@ -1505,6 +1505,7 @@ export function SkillDetailView({
                                   })}
                                 </div>
                               )}
+                              {origin.viaMirror && <div>{t("skillOrigin.viaMirror")}</div>}
                             </div>
 
                             {origin.discoveryEvidence && (

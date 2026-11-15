@@ -554,6 +554,14 @@ pub async fn init_database(pool: &DbPool) -> Result<(), String> {
         "ALTER TABLE skill_origins ADD COLUMN discovery_evidence_json TEXT",
     )
     .await?;
+    // GitHub가 아닌 제3자 미러에서 받은 설치인지 기록한다.
+    ensure_column(
+        pool,
+        "skill_origins",
+        "via_mirror",
+        "ALTER TABLE skill_origins ADD COLUMN via_mirror INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS skill_origin_ignores (

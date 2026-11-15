@@ -308,7 +308,8 @@
     "latestVersion": "Latest on GitHub",
     "unknownVersion": "Not recorded",
     "compareVersions": "View version comparison on GitHub",
-    "lastChecked": "Last checked: {{date}}"
+    "lastChecked": "Last checked: {{date}}",
+    "viaMirror": "Downloaded through a third-party mirror, not directly from GitHub"
   },
   "skillUsage": {
     "active": "Active",
@@ -765,6 +766,9 @@
     "githubPatSaved": "GitHub token saved",
     "githubPatCleared": "GitHub token cleared",
     "githubPatClear": "Clear token",
+    "githubMirrorTitle": "GitHub mirror fallback",
+    "githubMirrorDesc": "When GitHub requests are limited or fail, download through a third-party mirror (ghfast.top, ghproxy.net, and others) instead. Off by default; content received through a mirror may not come directly from GitHub. While off, the request fails with a prompt to save a GitHub token or turn this on.",
+    "githubMirrorLabel": "Enable GitHub mirror fallback",
     "about": "About",
     "appVersion": "App Version",
     "dbPath": "Database Path",
@@ -1128,7 +1132,7 @@
     "githubImportPostSyncFailed": "The skills were imported, but refreshing the app data failed. Retrying the refresh does not import anything again.",
     "githubImportPostSyncRetry": "Retry refresh",
     "githubImportSkippedOnlyTitle": "Nothing was imported",
-    "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow."
+    "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow. If you hit a rate limit, you can also turn on the GitHub mirror fallback in Settings."
   },
   "libraryBrowser": {
     "folders": "Browse library",
