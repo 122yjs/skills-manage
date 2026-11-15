@@ -34,6 +34,10 @@ pub struct StoragePreview {
     pub current_path: String,
     pub new_path: String,
     pub skill_count: usize,
+    /// 링크로 연결된 스킬(원래 위치 기준 상대 경로). 이전 뒤에도 같은 대상을 가리키는 링크로 남는다.
+    pub linked_skills: Vec<String>,
+    /// 스킬로 인식되지 않는 최상위 항목. 이전 뒤 공용 폴더에 링크로 계속 보인다.
+    pub unrecognized_items: Vec<String>,
     pub conflicts: Vec<String>,
     pub can_proceed: bool,
 }
@@ -249,6 +253,26 @@ fn collect_skill_locations(root: &Path) -> Result<Vec<SkillLocation>, String> {
     Ok(skills)
 }
 
+/// 스킬(또는 스킬을 담은 묶음 폴더)이 아닌 최상위 항목의 이름을 돌려준다.
+fn unrecognized_items(root: &Path, skills: &[SkillLocation]) -> Result<Vec<PathBuf>, String> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let recognized: HashSet<_> = skills
+        .iter()
+        .filter_map(|skill| skill.relative_dir.components().next())
+        .map(|component| component.as_os_str().to_owned())
+        .collect();
+    let mut items = fs::read_dir(root)
+        .map_err(|e| format!("Failed to read '{}': {e}", root.display()))?
+        .map(|entry| entry.map(|entry| entry.file_name()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read '{}': {e}", root.display()))?;
+    items.retain(|name| !recognized.contains(name));
+    items.sort();
+    Ok(items.into_iter().map(PathBuf::from).collect())
+}
+
 fn duplicate_skill_conflicts(skills: &[SkillLocation]) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut duplicates = HashSet::new();
@@ -301,10 +325,32 @@ fn preview_storage_move_impl(
         ));
     }
 
+    let linked_skills = skills
+        .iter()
+        .filter(|skill| {
+            fs::symlink_metadata(source.join(&skill.relative_dir))
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false)
+        })
+        .map(|skill| skill.relative_dir.display().to_string())
+        .collect();
+    let unrecognized_items = match unrecognized_items(&source, &skills) {
+        Ok(items) => items
+            .iter()
+            .map(|item| item.display().to_string())
+            .collect(),
+        Err(error) => {
+            conflicts.push(error);
+            Vec::new()
+        }
+    };
+
     let preview = StoragePreview {
         current_path: path_to_string(&source),
         new_path: path_to_string(&destination),
         skill_count: skills.len(),
+        linked_skills,
+        unrecognized_items,
         can_proceed: conflicts.is_empty(),
         conflicts,
     };
@@ -313,6 +359,7 @@ fn preview_storage_move_impl(
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     fn copy_entry(
+        root: &Path,
         source: &Path,
         destination: &Path,
         active_dirs: &mut HashSet<PathBuf>,
@@ -320,9 +367,21 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
         let link_metadata = fs::symlink_metadata(source)
             .map_err(|e| format!("Failed to inspect '{}': {e}", source.display()))?;
         if link_metadata.file_type().is_symlink() {
-            let target = fs::canonicalize(source)
-                .map_err(|e| format!("Failed to resolve symlink '{}': {e}", source.display()))?;
-            return copy_entry(&target, destination, active_dirs);
+            // 링크는 따라가지 않고 같은 대상을 가리키는 링크로 옮긴다. 보관함 안을 가리키는
+            // 상대 링크는 그대로 두고, 밖을 가리키는 상대 링크는 절대 경로로 바꿔 끊기지 않게 한다.
+            let raw = fs::read_link(source)
+                .map_err(|e| format!("Failed to read symlink '{}': {e}", source.display()))?;
+            let target = if raw.is_absolute() {
+                raw
+            } else {
+                let resolved = normalized_absolute(&source.parent().unwrap_or(root).join(&raw))?;
+                if resolved.starts_with(root) {
+                    raw
+                } else {
+                    resolved
+                }
+            };
+            return create_directory_symlink(&target, destination);
         }
         if link_metadata.is_dir() {
             let canonical = fs::canonicalize(source)
@@ -339,6 +398,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
             entries.sort_by_key(|entry| entry.file_name());
             for entry in entries {
                 copy_entry(
+                    root,
                     &entry.path(),
                     &destination.join(entry.file_name()),
                     active_dirs,
@@ -360,7 +420,7 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
         Err(format!("Unsupported file type: '{}'", source.display()))
     }
 
-    copy_entry(source, destination, &mut HashSet::new())
+    copy_entry(source, source, destination, &mut HashSet::new())
 }
 
 #[cfg(unix)]
@@ -376,7 +436,12 @@ fn create_directory_symlink(target: &Path, link: &Path) -> Result<(), String> {
 
 #[cfg(windows)]
 fn create_directory_symlink(target: &Path, link: &Path) -> Result<(), String> {
-    std::os::windows::fs::symlink_dir(target, link).map_err(|e| {
+    let result = if target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, link)
+    } else {
+        std::os::windows::fs::symlink_file(target, link)
+    };
+    result.map_err(|e| {
         format!(
             "Failed to create symlink '{}' -> '{}': {e}",
             link.display(),
@@ -417,6 +482,12 @@ fn apply_storage_move_impl(
     recreate_universal: bool,
     managed_links: &[ManagedLink],
 ) -> Result<AppliedStorageMove, String> {
+    // 공용 폴더를 다시 만들 때 스킬이 아닌 항목도 빠지지 않게 이전 전에 목록을 구해 둔다.
+    let unrecognized = if recreate_universal {
+        unrecognized_items(source, skills)?
+    } else {
+        Vec::new()
+    };
     let stage = temporary_sibling(destination, "stage")?;
     let backup = temporary_sibling(source, "backup")?;
     let destination_was_empty = destination.exists();
@@ -481,6 +552,9 @@ fn apply_storage_move_impl(
                     &destination.join(&skill.relative_dir),
                     &universal.join(&skill.id),
                 )?;
+            }
+            for item in &unrecognized {
+                create_directory_symlink(&destination.join(item), &universal.join(item))?;
             }
         }
         for managed in managed_links {
@@ -1160,7 +1234,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn migration_preserves_nesting_dereferences_source_links_and_rolls_back() {
+    fn migration_keeps_linked_skills_as_links_and_rolls_back() {
         let temp = tempdir().unwrap();
         let legacy = temp.path().join(".agents/skills");
         let destination = temp.path().join(".skillsmanage/skills");
@@ -1171,17 +1245,17 @@ mod tests {
 
         let (preview, skills) = preview_storage_move_impl(&legacy, &destination, &legacy).unwrap();
         assert!(preview.can_proceed);
+        assert_eq!(preview.linked_skills, vec!["bundle/my-skill".to_string()]);
         let applied =
             apply_storage_move_impl(&legacy, &destination, &legacy, &skills, true, &[]).unwrap();
 
-        assert!(destination.join("bundle/my-skill/SKILL.md").is_file());
-        assert!(!fs::symlink_metadata(destination.join("bundle/my-skill"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert_eq!(
+            fs::read_link(destination.join("bundle/my-skill")).unwrap(),
+            external
+        );
         assert_eq!(
             fs::canonicalize(legacy.join("my-skill")).unwrap(),
-            fs::canonicalize(destination.join("bundle/my-skill")).unwrap()
+            fs::canonicalize(&external).unwrap()
         );
         assert!(external.join("SKILL.md").exists());
 
@@ -1192,6 +1266,33 @@ mod tests {
             .is_symlink());
         assert!(!destination.exists());
         assert!(external.join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn migration_keeps_unrecognized_items_visible_in_universal() {
+        let temp = tempdir().unwrap();
+        let legacy = temp.path().join(".agents/skills");
+        let destination = temp.path().join(".skillsmanage/skills");
+        write_skill(&legacy.join("demo"), "Demo");
+        fs::create_dir_all(legacy.join("nameless")).unwrap();
+        fs::write(legacy.join("nameless/SKILL.md"), "no frontmatter").unwrap();
+        fs::write(legacy.join("notes.txt"), "keep").unwrap();
+
+        let (preview, skills) = preview_storage_move_impl(&legacy, &destination, &legacy).unwrap();
+        assert_eq!(
+            preview.unrecognized_items,
+            vec!["nameless".to_string(), "notes.txt".to_string()]
+        );
+        apply_storage_move_impl(&legacy, &destination, &legacy, &skills, true, &[]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(legacy.join("notes.txt")).unwrap(),
+            "keep"
+        );
+        assert_eq!(
+            fs::read_to_string(legacy.join("nameless/SKILL.md")).unwrap(),
+            "no frontmatter"
+        );
     }
 
     #[tokio::test]

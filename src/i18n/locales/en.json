@@ -389,7 +389,11 @@
     "conflicts": "{{count}} conflict(s) prevent migration.",
     "later": "Later",
     "start": "Start migration",
-    "migrating": "Migrating..."
+    "migrating": "Migrating...",
+    "linkedSkills": "{{count}} linked skill(s)",
+    "linkedSkillsResult": "They stay as links pointing to the same targets after the move. The original folders are not changed.",
+    "unrecognizedItems": "{{count}} item(s) not recognized as skills",
+    "unrecognizedItemsResult": "They are moved into the vault, and a link to each stays in the shared folder so it remains visible."
   },
   "sharedDelete": {
     "title": "Delete shared installs and linked shortcuts?",

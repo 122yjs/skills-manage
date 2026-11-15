@@ -481,6 +481,8 @@ export interface StoragePreview {
   current_path: string;
   new_path: string;
   skill_count: number;
+  linked_skills: string[];
+  unrecognized_items: string[];
   conflicts: string[];
   can_proceed: boolean;
 }
