@@ -358,6 +358,13 @@
     "toggleIndividualSkill": "Toggle {{name}} on {{platform}} only",
     "sharedDesktopRequired": "Shared installs require the desktop app."
   },
+  "startup": {
+    "title": "Could not start the app",
+    "description": "Something went wrong while preparing the data folder, database, or skill vault. If an external disk was disconnected, reconnect it and retry. If the folder is unusable, choose another vault path.",
+    "pathLabel": "New vault path",
+    "retry": "Retry",
+    "changePath": "Use this path and retry"
+  },
   "storage": {
     "title": "Skill Library location",
     "description": "This folder stores every original skill. Changing it safely moves the originals and existing install links together.",
