@@ -303,6 +303,14 @@ describe("UnifiedSkillCard shared control", () => {
     expect(menu).not.toHaveAttribute("open");
   });
 
+  it("marks an observed folder as not managed and keeps its switch disabled", () => {
+    render(<UnifiedSkillCard name="my-notes" platformDisplayName="Claude Code" isReadOnly isUnmanaged
+      usageControl={{ enabled: false, onCheckedChange: vi.fn(), state: "unsupported",
+        disabledReason: "앱이 관리하지 않는 폴더입니다." }} />);
+    expect(screen.getByText("应用未管理")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: /my-notes/ })).toHaveAttribute("data-disabled");
+  });
+
   it("disables the shared switch and shows the reason when restricted", () => {
     const onToggleShared = vi.fn();
     render(

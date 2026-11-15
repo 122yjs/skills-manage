@@ -427,6 +427,7 @@ async fn pause_active_installation_locked(
     if agent.id == "central" {
         return Err("스킬 보관함 스킬은 비활성화할 수 없습니다".to_string());
     }
+    db::ensure_installation_managed(pool, skill_id, agent_id).await?;
     let installation = db::get_skill_installation(pool, skill_id, agent_id)
         .await?
         .ok_or_else(|| format!("관리 중인 설치를 찾을 수 없습니다: {}", skill_id))?;
@@ -696,6 +697,7 @@ pub(crate) async fn delete_managed_installation_locked(
         return Err("스킬 보관함 설치는 삭제할 수 없습니다".to_string());
     }
     ensure_not_shared_universal_root(pool, &agent).await?;
+    db::ensure_installation_managed(pool, skill_id, agent_id).await?;
 
     let active = db::get_skill_installation(pool, skill_id, agent_id).await?;
     let paused = db::get_paused_installation(pool, skill_id, agent_id).await?;
@@ -2725,6 +2727,20 @@ mod tests {
                 .unwrap();
             let skills = db::get_skills_for_agent(&pool, "universal").await.unwrap();
             assert_eq!(skills.len(), 1);
+            if link_type == "copy" {
+                // 공용 폴더의 일반 폴더는 관찰 항목이라 일시 중지·삭제 대상이 아니다.
+                assert!(!skills[0].is_managed && skills[0].is_read_only);
+                assert!(
+                    delete_skill_from_agent_impl(&pool, "external-skill", "universal")
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    fs::read_to_string(installed.join("references/guide.md")).unwrap(),
+                    "함께 보존할 파일"
+                );
+                continue;
+            }
             assert!(!skills[0].is_read_only);
             let id = shared_entry_key(&installed.to_string_lossy());
             for _ in 0..2 {

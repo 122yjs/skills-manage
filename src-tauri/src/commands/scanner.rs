@@ -908,7 +908,7 @@ pub async fn scan_all_skills_impl(pool: &DbPool) -> Result<ScanResult, String> {
                         symlink_target: skill.symlink_target.clone(),
                         created_at: now.clone(),
                     };
-                    db::upsert_skill_installation(pool, &installation).await?;
+                    db::upsert_scanned_installation(pool, &installation).await?;
                 }
             }
 
@@ -2407,14 +2407,10 @@ enabled = false
         );
         assert_ne!(shared_rows[0].row_id, shared_rows[1].row_id);
 
-        let installs = db::get_skill_installations(&pool, "shared-skill")
+        let installs = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap();
-        assert_eq!(
-            installs.len(),
-            1,
-            "only the user copy should remain manageable"
-        );
+        assert_eq!(installs.len(), 1, "only the user copy should be recorded");
         assert_eq!(
             installs[0].installed_path,
             user_root.join("shared-skill").to_string_lossy()
@@ -2793,7 +2789,7 @@ enabled = false
     }
 
     #[tokio::test]
-    async fn test_untracked_universal_directory_becomes_manageable_without_changing_files() {
+    async fn test_untracked_universal_directory_becomes_observed_without_changing_files() {
         let tmp = TempDir::new().unwrap();
         let pool = setup_test_db().await;
 
@@ -2822,7 +2818,7 @@ enabled = false
                 .unwrap();
         }
 
-        // 이전 버전의 직접 관리됨 기록은 재스캔으로 관리 설치에 합쳐진다.
+        // 이전 버전의 직접 관리됨 기록은 재스캔으로 사라지고 관찰 항목이 된다.
         db::upsert_agent_skill_observation(
             &pool,
             &AgentSkillObservation {
@@ -2848,9 +2844,16 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let installation = db::get_skill_installation(&pool, "manual-skill", "universal")
+        assert!(
+            db::get_skill_installation(&pool, "manual-skill", "universal")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let installation = db::get_unmanaged_installations(&pool, "manual-skill")
             .await
             .unwrap()
+            .pop()
             .unwrap();
         assert_eq!(Path::new(&installation.installed_path), skill_dir);
         assert_eq!(installation.link_type, "copy");
@@ -2860,7 +2863,7 @@ enabled = false
             .is_empty());
         let skills = db::get_skills_for_agent(&pool, "universal").await.unwrap();
         assert_eq!(skills.len(), 1);
-        assert!(!skills[0].is_read_only);
+        assert!(!skills[0].is_managed && skills[0].is_read_only);
         assert_eq!(fs::read(skill_dir.join("SKILL.md")).unwrap(), original);
         assert!(central_root.read_dir().unwrap().next().is_none());
     }
@@ -3088,12 +3091,12 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let factory_installation = db::get_skill_installations(&pool, "shared-skill")
+        let factory_installation = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap()
             .into_iter()
             .find(|installation| installation.agent_id == "factory-droid")
-            .expect("Factory Droid primary root should remain a manageable install");
+            .expect("Factory Droid primary root should be recorded as an observed item");
         assert_eq!(
             factory_installation.installed_path,
             factory_root.join("shared-skill").to_string_lossy()
@@ -3104,7 +3107,7 @@ enabled = false
             .unwrap();
         assert_eq!(platform_skills.len(), 1);
         assert_eq!(platform_skills[0].id, "shared-skill");
-        assert!(!platform_skills[0].is_read_only);
+        assert!(!platform_skills[0].is_managed);
         assert_eq!(
             platform_skills[0].dir_path,
             factory_root.join("shared-skill").to_string_lossy()
@@ -3223,7 +3226,7 @@ enabled = false
         assert_eq!(rows.len(), 1, "only the user observation should remain");
         assert_eq!(rows[0].source_kind, "user");
 
-        let installs = db::get_skill_installations(&pool, "shared-skill")
+        let installs = db::get_unmanaged_installations(&pool, "shared-skill")
             .await
             .unwrap();
         assert_eq!(
@@ -3330,7 +3333,8 @@ enabled = false
 
         scan_all_skills_impl(&pool).await.unwrap();
 
-        let installations = db::get_skill_installations(&pool, "my-skill")
+        // 플랫폼 폴더의 일반 폴더는 관찰 항목으로 기록한다.
+        let installations = db::get_unmanaged_installations(&pool, "my-skill")
             .await
             .unwrap();
         assert_eq!(

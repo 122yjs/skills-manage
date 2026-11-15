@@ -569,6 +569,23 @@ describe("CentralSkillsView", () => {
     });
   });
 
+  it("shows which same-name folders remain when cascade deleting a skill", async () => {
+    renderCentralSkillsView({
+      skills: [{ ...mockSkills[0], observed_agents: ["cursor"] }],
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /从技能仓库删除 frontend-design 原件/i,
+      })
+    );
+
+    const dialog = await screen.findByRole("dialog", {
+      name: /将 frontend-design 移到回收站/i,
+    });
+    expect(dialog).toHaveTextContent(/应用并未管理它，删除后仍会保留：Cursor/);
+  });
+
   it("renders central skill bundles above the skill list", () => {
     window.localStorage.setItem("skills-manage.skillListViewMode.central", "folders");
     renderCentralSkillsView({ bundles: mockBundles });
