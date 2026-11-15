@@ -12,6 +12,12 @@ export interface AgentWithStatus {
   is_enabled: boolean;
 }
 
+/** 비밀값 자체가 아니라 설정 여부와 OS 키체인 사용 가능 여부만 담는다. */
+export interface SecretStatus {
+  configured: boolean;
+  keychainAvailable: boolean;
+}
+
 export interface CustomAgentConfig {
   id?: string;
   display_name: string;
@@ -462,6 +468,11 @@ export interface ScanDirectory {
 
 export type MigrationState = "pending" | "deferred" | "completed";
 
+export interface StartupStatus {
+  ready: boolean;
+  error: string | null;
+}
+
 export interface CentralVaultStatus {
   central_path: string;
   default_central_path: string;
@@ -476,6 +487,8 @@ export interface StoragePreview {
   current_path: string;
   new_path: string;
   skill_count: number;
+  linked_skills: string[];
+  unrecognized_items: string[];
   conflicts: string[];
   can_proceed: boolean;
 }

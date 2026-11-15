@@ -40,6 +40,7 @@ import { InstallDialog } from "@/components/central/InstallDialog";
 import { MarkdownPreview } from "@/components/marketplace/MarkdownPreview";
 import {
   useMarketplaceStore,
+  githubImportAiSummaryKey,
   toGitHubImportFailure,
   type GitHubImportAiSummaryEntry,
   type SkillMarkdownEntry,
@@ -298,6 +299,12 @@ export function GitHubRepoImportWizard({
     }
     return preview.skills[0] ?? null;
   }, [preview, selectedSkillPath]);
+  const selectedAiSummary =
+    preview && selectedPreviewSkill
+      ? aiSummaries[
+          githubImportAiSummaryKey(preview.repo, selectedPreviewSkill.sourcePath)
+        ]
+      : undefined;
   const previewToolbarRepoHref = useMemo(() => {
     if (!preview) return null;
     return `https://github.com/${preview.repo.owner}/${preview.repo.repo}`;
@@ -2390,9 +2397,7 @@ export function GitHubRepoImportWizard({
                                             );
                                           }}
                                           disabled={
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.isLoading
+                                            selectedAiSummary?.isLoading
                                           }
                                         >
                                           <RefreshCw className="size-3.5" />
@@ -2401,38 +2406,24 @@ export function GitHubRepoImportWizard({
                                           </span>
                                         </Button>
                                       </div>
-                                      {aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.isLoading || aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.isStreaming ? (
+                                      {selectedAiSummary?.isLoading || selectedAiSummary?.isStreaming ? (
                                         <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
                                           <RefreshCw className="size-4 animate-spin" />
-                                          {aiSummaries[
-                                            selectedPreviewSkill.sourcePath
-                                          ]?.summary
+                                          {selectedAiSummary?.summary
                                             ? t("detail.explanationStreaming")
                                             : t("detail.explanationLoading")}
                                         </div>
                                       ) : null}
-                                      {aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.summary ? (
+                                      {selectedAiSummary?.summary ? (
                                         <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
                                           {
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.summary
+                                            selectedAiSummary?.summary
                                           }
                                         </div>
-                                      ) : aiSummaries[
-                                          selectedPreviewSkill.sourcePath
-                                        ]?.error ? (
+                                      ) : selectedAiSummary?.error ? (
                                         <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                                           {
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.error
+                                            selectedAiSummary?.error
                                           }
                                         </div>
                                       ) : selectedPreviewSkill.description ? (
