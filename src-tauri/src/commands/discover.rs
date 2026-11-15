@@ -3826,6 +3826,69 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn import_to_central_leaves_nothing_when_the_copy_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        let central_dir = tmp.path().join("central");
+        std::fs::create_dir_all(&central_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central_dir.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        let skill_dir = tmp.path().join("project/.claude/skills/broken-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: broken-skill\n---\n\n# Test\n",
+        )
+        .unwrap();
+        std::fs::write(skill_dir.join("locked.txt"), "x").unwrap();
+        std::fs::set_permissions(
+            skill_dir.join("locked.txt"),
+            std::fs::Permissions::from_mode(0o000),
+        )
+        .unwrap();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__broken-skill",
+            "broken-skill",
+            None,
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            &Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
+
+        let error = import_discovered_skill_to_central_from_pool(
+            &pool,
+            "claude-code__project__broken-skill",
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.contains("locked.txt"),
+            "reason should name the file: {error}"
+        );
+        assert_eq!(std::fs::read_dir(&central_dir).unwrap().count(), 0);
+        assert!(
+            db::get_discovered_skill_by_id(&pool, "claude-code__project__broken-skill")
+                .await
+                .unwrap()
+                .is_some(),
+            "the discovered record must stay so the import can be retried"
+        );
+    }
+
     #[tokio::test]
     async fn test_import_to_platform_refuses_existing_installation() {
         let tmp = tempfile::TempDir::new().unwrap();

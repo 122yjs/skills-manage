@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "symlink",
     "sourceCopyLabel": "copy",
     "notFound": "Platform not found",
+    "unreadableTitle": "Some folders could not be read, so existing records were kept",
+    "unreadableHint": "Check the folder permissions and disk connection, then rescan.",
     "searchSkillLabel": "View skill {{name}}",
     "sourceFilterTabsLabel": "Claude source filters",
     "sourceFilter": {

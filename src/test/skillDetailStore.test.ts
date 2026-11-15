@@ -166,8 +166,9 @@ describe("skillDetailStore", () => {
   it("reads content from the resolved detail file path", async () => {
     vi.mocked(invoke).mockResolvedValueOnce(mockDetail).mockResolvedValueOnce(mockContent);
     await useSkillDetailStore.getState().loadDetail({ skillId: "frontend-design" });
-    expect(invoke).toHaveBeenCalledWith("read_file_by_path", {
-      path: mockDetail.file_path,
+    expect(invoke).toHaveBeenCalledWith("read_skill_file", {
+      skillId: "frontend-design",
+      relativePath: "SKILL.md",
     });
   });
 
@@ -185,8 +186,11 @@ describe("skillDetailStore", () => {
       skillId: "frontend-design",
       agentId: "claude-code",
     });
-    expect(invoke).toHaveBeenNthCalledWith(2, "read_file_by_path", {
-      path: mockClaudePluginDetail.file_path,
+    expect(invoke).toHaveBeenNthCalledWith(2, "read_skill_file", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+      rowId: mockClaudePluginDetail.row_id,
+      relativePath: "SKILL.md",
     });
     expect(useSkillDetailStore.getState().content).toBe(mockContent);
   });
