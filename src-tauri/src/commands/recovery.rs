@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode};
+use sqlx::{Connection, Row};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -1074,6 +1075,69 @@ pub async fn snapshot_database(
     snapshot_database_locked(pool, &layout, label)
         .await
         .map(Some)
+}
+
+async fn blank_secrets_in_database_file(path: &Path) -> Result<(), String> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .journal_mode(SqliteJournalMode::Delete);
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|error| format!("DB 백업을 열 수 없습니다 ({}): {error}", path.display()))?;
+    let result = async {
+        let secrets = db::plaintext_secret_settings(&mut connection).await?;
+        // 지운 값이 파일의 빈 공간에 남지 않도록 덮어쓴다.
+        sqlx::query("PRAGMA secure_delete = ON")
+            .execute(&mut connection)
+            .await
+            .map_err(|error| error.to_string())?;
+        for (key, _) in secrets {
+            sqlx::query("UPDATE settings SET value = '' WHERE key = ?")
+                .bind(key)
+                .execute(&mut connection)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = connection.close().await;
+    result.map_err(|error: String| {
+        format!(
+            "DB 백업의 비밀값을 지울 수 없습니다 ({}): {error}",
+            path.display()
+        )
+    })
+}
+
+/// 모든 DB 백업 파일에서 평문 비밀값 칸만 비운다(ADR-0003). 백업 파일과 나머지 내용은 그대로 둔다.
+/// 한 파일이 실패해도 나머지는 계속 처리하고 첫 오류를 돌려준다.
+pub async fn blank_secrets_in_database_backups(pool: &DbPool) -> Result<(), String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(());
+    };
+    let mut first_error = None;
+    for entry in fs::read_dir(&layout.database)
+        .map_err(|error| format!("DB 백업 목록을 읽을 수 없습니다: {error}"))?
+    {
+        let path = entry
+            .map_err(|error| format!("DB 백업 목록 항목을 읽을 수 없습니다: {error}"))?
+            .path();
+        let is_backup = path
+            .extension()
+            .is_some_and(|extension| extension == "sqlite")
+            && !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            && fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
+        if is_backup {
+            if let Err(error) = blank_secrets_in_database_file(&path).await {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// 기존 DB의 구조 버전이 바뀌는 경우에만 초기화 전에 백업한다.

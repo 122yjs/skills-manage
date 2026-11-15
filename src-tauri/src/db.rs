@@ -2942,6 +2942,24 @@ pub async fn get_central_skills_dir(pool: &DbPool) -> Result<std::path::PathBuf,
         .unwrap_or_else(default_central_skills_dir))
 }
 
+/// 이전 버전이 DB에 평문으로 남긴 비밀값(키, 값). 빈 값과 키체인 저장 표시는 제외한다.
+pub async fn plaintext_secret_settings<'e, E>(executor: E) -> Result<Vec<(String, String)>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let rows =
+        sqlx::query("SELECT key, value FROM settings WHERE TRIM(value) != '' AND value != ?")
+            .bind(crate::secrets::CONFIGURED_MARKER)
+            .fetch_all(executor)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|row| (row.get::<String, _>("key"), row.get::<String, _>("value")))
+        .filter(|(key, _)| crate::secrets::is_secret_key(key))
+        .collect())
+}
+
 /// Set (upsert) a setting value.
 pub async fn set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), String> {
     let mut transaction = pool.begin().await.map_err(|e| e.to_string())?;
