@@ -385,7 +385,17 @@ pub async fn remove_custom_agent_impl(pool: &DbPool, agent_id: &str) -> Result<(
             "비활성 설치가 있어 플랫폼을 삭제할 수 없습니다. 먼저 모두 복원하세요.".to_string(),
         );
     }
-    db::delete_custom_agent(pool, agent_id).await
+    if !db::get_skill_installations_by_agent(pool, agent_id)
+        .await?
+        .is_empty()
+    {
+        return Err(
+            "PLATFORM_HAS_MANAGED_INSTALLS: 이 플랫폼에 설치된 스킬이 있어 삭제할 수 없습니다. 먼저 설치를 모두 제거하세요."
+                .to_string(),
+        );
+    }
+    db::delete_custom_agent(pool, agent_id).await?;
+    db::delete_observed_installations_by_agent(pool, agent_id).await
 }
 
 // ─── Tauri Commands ───────────────────────────────────────────────────────────
@@ -1063,6 +1073,111 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn remove_custom_agent_requires_removing_managed_installs_first() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_test_db(&temp).await;
+        let skills_dir = temp.path().join("custom-skills");
+        let agent = add_custom_agent_impl(
+            &pool,
+            CustomAgentConfig {
+                id: Some("managed-custom".to_string()),
+                display_name: "Managed Custom".to_string(),
+                category: Some("other".to_string()),
+                global_skills_dir: skills_dir.to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "managed-skill".to_string(),
+                agent_id: agent.id.clone(),
+                installed_path: skills_dir
+                    .join("managed-skill")
+                    .to_string_lossy()
+                    .into_owned(),
+                link_type: "symlink".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let error = remove_custom_agent_impl(&pool, &agent.id)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("제거"), "안내 문구가 없음: {error}");
+        assert!(db::get_agent_by_id(&pool, &agent.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            db::get_skill_installations(&pool, "managed-skill")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_custom_agent_drops_observed_records_but_keeps_user_folder() {
+        let temp = TempDir::new().unwrap();
+        let pool = setup_file_test_db(&temp).await;
+        let skills_dir = temp.path().join("custom-skills");
+        let user_folder = skills_dir.join("my-own-skill");
+        std::fs::create_dir_all(&user_folder).unwrap();
+        std::fs::write(user_folder.join("SKILL.md"), "mine").unwrap();
+        let agent = add_custom_agent_impl(
+            &pool,
+            CustomAgentConfig {
+                id: Some("observed-custom".to_string()),
+                display_name: "Observed Custom".to_string(),
+                category: Some("other".to_string()),
+                global_skills_dir: skills_dir.to_string_lossy().into_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "my-own-skill".to_string(),
+                agent_id: agent.id.clone(),
+                installed_path: user_folder.to_string_lossy().into_owned(),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE skill_installations SET is_managed = 0 WHERE skill_id = 'my-own-skill'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        remove_custom_agent_impl(&pool, &agent.id).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(user_folder.join("SKILL.md")).unwrap(),
+            "mine"
+        );
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM skill_installations WHERE agent_id = 'observed-custom'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     // ── remove_custom_agent_impl ──────────────────────────────────────────────

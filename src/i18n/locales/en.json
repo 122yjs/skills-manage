@@ -867,6 +867,7 @@
     "adding": "Adding..."
   },
   "platformDialog": {
+    "removeBlockedByInstalls": "This platform still has skills installed by the app, so it cannot be deleted. Remove those installs first, then delete the platform.",
     "addTitle": "Add Custom Platform",
     "editTitle": "Edit Custom Platform",
     "addDesc": "Register a new custom platform. A rescan will run automatically after adding.",
