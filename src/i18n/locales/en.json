@@ -358,6 +358,13 @@
     "toggleIndividualSkill": "Toggle {{name}} on {{platform}} only",
     "sharedDesktopRequired": "Shared installs require the desktop app."
   },
+  "startup": {
+    "title": "Could not start the app",
+    "description": "Something went wrong while preparing the data folder, database, or skill vault. If an external disk was disconnected, reconnect it and retry. If the folder is unusable, choose another vault path.",
+    "pathLabel": "New vault path",
+    "retry": "Retry",
+    "changePath": "Use this path and retry"
+  },
   "storage": {
     "title": "Skill Library location",
     "description": "This folder stores every original skill. Changing it safely moves the originals and existing install links together.",
@@ -382,7 +389,11 @@
     "conflicts": "{{count}} conflict(s) prevent migration.",
     "later": "Later",
     "start": "Start migration",
-    "migrating": "Migrating..."
+    "migrating": "Migrating...",
+    "linkedSkills": "{{count}} linked skill(s)",
+    "linkedSkillsResult": "They stay as links pointing to the same targets after the move. The original folders are not changed.",
+    "unrecognizedItems": "{{count}} item(s) not recognized as skills",
+    "unrecognizedItemsResult": "They are moved into the vault, and a link to each stays in the shared folder so it remains visible."
   },
   "sharedDelete": {
     "title": "Delete shared installs and linked shortcuts?",

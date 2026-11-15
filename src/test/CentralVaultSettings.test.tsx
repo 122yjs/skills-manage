@@ -36,6 +36,8 @@ describe("CentralVaultSettings", () => {
           current_path: "/Users/test/.skillsmanage/skills",
           new_path: "/Volumes/Skills",
           skill_count: 4,
+          linked_skills: [],
+          unrecognized_items: [],
           conflicts: [],
           can_proceed: true,
         },

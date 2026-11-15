@@ -468,6 +468,11 @@ export interface ScanDirectory {
 
 export type MigrationState = "pending" | "deferred" | "completed";
 
+export interface StartupStatus {
+  ready: boolean;
+  error: string | null;
+}
+
 export interface CentralVaultStatus {
   central_path: string;
   default_central_path: string;
@@ -482,6 +487,8 @@ export interface StoragePreview {
   current_path: string;
   new_path: string;
   skill_count: number;
+  linked_skills: string[];
+  unrecognized_items: string[];
   conflicts: string[];
   can_proceed: boolean;
 }

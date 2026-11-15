@@ -10,7 +10,7 @@
 
 ## Overview
 
-`skills-manage` follows the [Agent Skills](https://github.com/anthropics/agent-skills) open pattern and uses `~/.agents/skills/` as the canonical central directory. Skills can then be installed to individual platforms through symlinks, so one source of truth can drive multiple AI coding tools.
+`skills-manage` follows the [Agent Skills](https://github.com/anthropics/agent-skills) open pattern. The central skill library (the "Skill Vault") lives at `~/.skillsmanage/skills/` by default and can be moved in Settings; platforms that share skills read the shared location `~/.agents/skills/`. Installs are symlinks to (or copies of) the central source, so one copy can drive multiple AI coding tools.
 
 ## Highlights
 
@@ -21,7 +21,7 @@
 - Discover scan for project-level skill libraries, including an Obsidian sidebar category for vault skills (`.skills/`, `.agents/skills/`, `.claude/skills/`).
 - Marketplace browsing and GitHub repository import with authenticated requests and retry fallback.
 - Fast search for large skill libraries with deferred queries, lazy indexing, and virtualization.
-- Bilingual UI, Catppuccin themes, accent colors, onboarding, and responsive navigation.
+- Trilingual UI (Korean, English, Chinese), Catppuccin themes, accent colors, onboarding, and responsive navigation.
 
 ## Screenshots
 
@@ -76,40 +76,81 @@ Then launch the app again from Finder. If your app is stored somewhere else, rep
 
 ## Supported Platforms
 
-| Category | Platform | Skills Directory |
-|----------|----------|-----------------|
+The table lists the built-in defaults for each platform's global (user-level) skills directory. Paths can be changed in Settings, and custom platforms can be added there.
+
+| Category | Platform | Global Skills Directory |
+|----------|----------|-------------------------|
 | Coding | Claude Code | `~/.claude/skills/` |
-| Coding | Codex CLI | `~/.agents/skills/` |
+| Coding | Codex CLI | `~/.codex/skills/` |
 | Coding | Cursor | `~/.cursor/skills/` |
-| Coding | Gemini CLI | `~/.gemini/skills/` |
+| Coding | Antigravity | `~/.gemini/config/skills/` |
+| Coding | AGY CLI | `~/.gemini/config/skills/` |
+| Coding | Cline | `~/.agents/skills/` |
+| Coding | Deep Agents | `~/.agents/skills/` |
+| Coding | Dexto | `~/.agents/skills/` |
+| Coding | Firebender | `~/.agents/skills/` |
+| Coding | Kimi Code CLI | `~/.agents/skills/` |
+| Coding | Warp | `~/.agents/skills/` |
+| Coding | AiderDesk | `~/.aider-desk/skills/` |
 | Coding | Trae | `~/.trae/skills/` |
+| Coding | Trae CN | `~/.trae-cn/skills/` |
 | Coding | Factory Droid | `~/.factory/skills/` |
 | Coding | Junie | `~/.junie/skills/` |
-| Coding | Qwen | `~/.qwen/skills/` |
-| Coding | Trae CN | `~/.trae-cn/skills/` |
-| Coding | Windsurf | `~/.windsurf/skills/` |
+| Coding | Qwen Code | `~/.qwen/skills/` |
+| Coding | Windsurf | `~/.codeium/windsurf/skills/` |
 | Coding | Qoder | `~/.qoder/skills/` |
 | Coding | Augment | `~/.augment/skills/` |
 | Coding | OpenCode | `~/.opencode/skills/` |
-| Coding | KiloCode | `~/.kilocode/skills/` |
+| Coding | Kilo Code | `~/.kilocode/skills/` |
 | Coding | OB1 | `~/.ob1/skills/` |
 | Coding | Amp | `~/.amp/skills/` |
-| Coding | Kiro | `~/.kiro/skills/` |
+| Coding | Kiro CLI | `~/.kiro/skills/` |
 | Coding | CodeBuddy | `~/.codebuddy/skills/` |
-| Coding | Hermes | `~/.hermes/skills/` |
-| Coding | Copilot | `~/.copilot/skills/` |
+| Coding | IBM Bob | `~/.bob/skills/` |
+| Coding | CodeArts Agent | `~/.codeartsdoer/skills/` |
+| Coding | Codemaker | `~/.codemaker/skills/` |
+| Coding | Code Studio | `~/.codestudio/skills/` |
+| Coding | Command Code | `~/.commandcode/skills/` |
+| Coding | Continue | `~/.continue/skills/` |
+| Coding | Cortex Code | `~/.snowflake/cortex/skills/` |
+| Coding | Crush | `~/.config/crush/skills/` |
+| Coding | Devin for Terminal | `~/.config/devin/skills/` |
+| Coding | ForgeCode | `~/.forge/skills/` |
+| Coding | Goose | `~/.config/goose/skills/` |
+| Coding | iFlow CLI | `~/.iflow/skills/` |
+| Coding | Kode | `~/.kode/skills/` |
+| Coding | MCPJam | `~/.mcpjam/skills/` |
+| Coding | Mistral Vibe | `~/.vibe/skills/` |
+| Coding | Mux | `~/.mux/skills/` |
+| Coding | OpenHands | `~/.openhands/skills/` |
+| Coding | Pi | `~/.pi/agent/skills/` |
+| Coding | Oh My Pi | `~/.omp/agent/skills/` |
+| Coding | Rovo Dev | `~/.rovodev/skills/` |
+| Coding | Roo Code | `~/.roo/skills/` |
+| Coding | Tabnine CLI | `~/.tabnine/agent/skills/` |
+| Coding | Zencoder | `~/.zencoder/skills/` |
+| Coding | Neovate | `~/.neovate/skills/` |
+| Coding | Pochi | `~/.pochi/skills/` |
+| Coding | AdaL | `~/.adal/skills/` |
+| Coding | GitHub Copilot | `~/.copilot/skills/` |
 | Coding | Aider | `~/.aider/skills/` |
+| Lobster | Hermes | `~/.hermes/skills/` |
 | Lobster | OpenClaw (开爪) | `~/.openclaw/skills/` |
 | Lobster | QClaw (千爪) | `~/.qclaw/skills/` |
 | Lobster | EasyClaw (简爪) | `~/.easyclaw/skills/` |
-| Lobster | EasyClaw V2 | `~/.easyclaw-20260322-01/skills/` |
 | Lobster | AutoClaw | `~/.openclaw-autoclaw/skills/` |
 | Lobster | WorkBuddy (打工搭子) | `~/.workbuddy/skills-marketplace/skills/` |
-| Central | Central Skills | `~/.agents/skills/` |
+| Shared | Universal (.agents) | `~/.agents/skills/` |
+| Central | Skill Vault (central library) | `~/.skillsmanage/skills/` |
 
-> Note: Claude Code also surfaces marketplace plugin directories under `~/.claude/plugins/marketplaces/*` as read-only rows in the Claude view. Those entries are display-only and are not managed like native skills in `~/.claude/skills/`.
+> Notes:
+>
+> - The shared location `~/.agents/skills/` is a single install target read by several tools (Cline, Deep Agents, Dexto, Firebender, Kimi Code CLI, Warp, and others). It is separate from the central library at `~/.skillsmanage/skills/`.
+> - Codex CLI also reads the shared `~/.agents/skills/` and uses `$CWD/.agents/skills/` for project-level skills; its global path is `~/.codex/skills/` so it stays distinguishable from the shared install.
+> - Claude Code also surfaces marketplace plugin directories under `~/.claude/plugins/marketplaces/*` as read-only rows in the Claude view. Those entries are display-only and are not managed like native skills in `~/.claude/skills/`.
 
 Custom platforms can be added through Settings.
+
 
 ## Privacy & Security
 
@@ -124,7 +165,7 @@ Custom platforms can be added through Settings.
 | Layer | Technology |
 |-------|-----------|
 | Desktop framework | Tauri v2 |
-| Frontend | React 19, TypeScript, Tailwind CSS 4 |
+| Frontend | React 18, TypeScript, Tailwind CSS 4 |
 | UI components | shadcn/ui, Lucide icons |
 | State management | Zustand |
 | Markdown | react-markdown |

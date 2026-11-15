@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use super::{github_import, skill_origin};
+use crate::text_utils::truncate_at_char_boundary;
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -1630,7 +1631,7 @@ pub async fn test_ai_connection(
 
     // Accept either Anthropic or OpenAI response shape
     let val: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| format!("无法解析响应: {}", &body[..body.len().min(200)]))?;
+        .map_err(|_| format!("无法解析响应: {}", truncate_at_char_boundary(&body, 200)))?;
 
     if parse_translation_response(&body).is_ok() {
         Ok("Connection OK".to_string())
@@ -1639,7 +1640,7 @@ pub async fn test_ai_connection(
     } else {
         Err(format!(
             "无法识别的响应格式: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
     }
 }
@@ -1800,7 +1801,7 @@ pub async fn list_ai_models(
         return catalog_fallback(format!(
             "模型列表返回错误 {}: {}",
             status,
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -1813,7 +1814,7 @@ pub async fn list_ai_models(
     if models.is_empty() {
         return catalog_fallback(format!(
             "无法解析模型列表响应: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -2021,7 +2022,10 @@ async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<Str
 /// Helper: truncate skill content to 8000 chars.
 fn truncate_content(content: &str) -> String {
     if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
+        format!(
+            "{}...\n\n(内容已截断)",
+            truncate_at_char_boundary(content, 8000)
+        )
     } else {
         content.to_string()
     }
@@ -2670,6 +2674,17 @@ pub async fn refresh_skill_explanation(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn korean_content_over_8000_bytes_is_truncated_on_a_char_boundary() {
+        let content = "가".repeat(3000);
+        let truncated = super::truncate_content(&content);
+        let clipped = truncated
+            .strip_suffix("...\n\n(内容已截断)")
+            .expect("truncated content keeps the marker");
+        assert_eq!(clipped.len(), 7998);
+        assert!(clipped.chars().all(|c| c == '가'));
+    }
+
     #[test]
     fn raw_github_install_url_keeps_the_installed_source_directory() {
         let (repo, path) = super::github_origin_from_raw_url(
