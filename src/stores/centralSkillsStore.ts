@@ -440,7 +440,9 @@ export const useCentralSkillsStore = create<CentralSkillsState>((set, get) => ({
     try {
       const skill = get().skills.find((s) => s.id === skillId);
       const isLinked = skill?.linked_agents.includes(agentId) ?? false;
-      const isReadOnly = skill?.read_only_agents?.includes(agentId) ?? false;
+      const isReadOnly =
+        (skill?.read_only_agents?.includes(agentId) ?? false) ||
+        (skill?.observed_agents?.includes(agentId) ?? false);
 
       if (isReadOnly) {
         set({ togglingAgentId: null });

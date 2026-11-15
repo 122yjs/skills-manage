@@ -107,6 +107,17 @@ function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
   );
 }
 
+function UnmanagedSourceBadge() {
+  const { t } = useTranslation();
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
+      <Lock className="size-3 shrink-0" />
+      {t("platform.unmanaged")}
+    </span>
+  );
+}
+
 function ReadOnlySourceBadge() {
   const { t, i18n } = useTranslation();
 
@@ -1406,9 +1417,14 @@ export function SkillDetailView({
                           {detail.source_kind && (
                             <SourceOriginBadge originKind={detail.source_kind} />
                           )}
-                          {detail.is_read_only && !detail.can_manage_origin && <ReadOnlySourceBadge />}
+                          {detail.is_managed === false && <UnmanagedSourceBadge />}
+                          {detail.is_read_only && !detail.can_manage_origin && detail.is_managed !== false && <ReadOnlySourceBadge />}
                         </div>
-                        {detail.is_read_only && detail.can_manage_origin ? (
+                        {detail.is_managed === false ? (
+                          <p className="text-xs leading-relaxed text-muted-foreground">
+                            {t("detail.unmanagedDesc")}
+                          </p>
+                        ) : detail.is_read_only && detail.can_manage_origin ? (
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.sharedOriginDesc")}
                           </p>

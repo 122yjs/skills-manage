@@ -1094,6 +1094,7 @@ pub async fn uninstall_skill_from_agent_impl(
     if agent_id == "central" {
         return Err("Cannot uninstall a Central skill through the platform installer".to_string());
     }
+    db::ensure_installation_managed(pool, skill_id, agent_id).await?;
 
     let requested_agent = db::get_agent_by_id(pool, agent_id)
         .await?

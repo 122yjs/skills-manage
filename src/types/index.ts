@@ -54,6 +54,8 @@ export interface ScannedSkill {
   source_root?: string | null;
   source_label?: string | null;
   is_read_only?: boolean;
+  /** `false`면 앱이 관리하지 않는 관찰 항목이다. */
+  is_managed?: boolean;
   conflict_group?: string | null;
   conflict_count?: number;
 }
@@ -89,6 +91,8 @@ export interface SkillDetail extends Omit<Skill, "content"> {
   source_root?: string | null;
   source_label?: string | null;
   is_read_only?: boolean;
+  /** `false`면 앱이 관리하지 않는 관찰 항목이다. */
+  is_managed?: boolean;
   /** 공유 원본의 GitHub 연결·업데이트 가능 여부. 플랫폼 설치 제어와 구분한다. */
   can_manage_origin?: boolean;
   conflict_group?: string | null;
@@ -222,6 +226,8 @@ export interface SkillWithLinks {
   linked_agents: string[];
   /** Agent IDs that can see this skill through a read-only compatibility root. */
   read_only_agents?: string[];
+  /** 같은 이름의 폴더가 있지만 앱이 관리하지 않는 플랫폼. 삭제해도 남는다. */
+  observed_agents?: string[];
   available_sources?: Record<string, string[]>;
   /** GitHub repository origin recorded when this skill was imported. */
   origin?: GitHubSkillOriginSummary | null;

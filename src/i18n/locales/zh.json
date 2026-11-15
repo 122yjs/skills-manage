@@ -238,7 +238,8 @@
       "all": "全部",
       "platform": "平台专用安装",
       "universal": "共享安装"
-    }
+    },
+    "unmanaged": "应用未管理"
   },
   "skillOrigin": {
     "confirmUpdate": "备份并更新至 {{commit}}？",
@@ -517,7 +518,9 @@
     "sortAscending": "正排",
     "sortDescending": "倒排",
     "sortByNewest": "最新",
-    "sortByOldest": "最早"
+    "sortByOldest": "最早",
+    "deleteObservedWarning": "以下平台有同名文件夹，但应用并未管理它，删除后仍会保留：{{platforms}}",
+    "deleteBundleObservedLabel": "删除后仍保留的文件夹（应用未管理）"
   },
   "centralBundleDrawer": {
     "titleFallback": "套件详情",
@@ -625,7 +628,8 @@
     "readOnlyDesc": "只读观测副本仅供查看，不能在这里安装、卸载或调整技能集。",
     "userManagedDesc": "此 Claude 用户副本会保留正常的安装状态与技能集管理能力。",
     "readOnlyInstallBlocked": "只读观测副本不可安装或卸载。",
-    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。"
+    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。",
+    "unmanagedDesc": "这是你自己放入的文件夹，应用不会管理它。它不会被移除、停用或覆盖，文件保持原样。"
   },
   "collection": {
     "edit": "编辑",

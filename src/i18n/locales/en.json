@@ -238,7 +238,8 @@
       "all": "All",
       "platform": "Platform install",
       "universal": "Shared install"
-    }
+    },
+    "unmanaged": "Not managed by the app"
   },
   "skillOrigin": {
     "confirmUpdate": "Back up and update to {{commit}}?",
@@ -517,7 +518,9 @@
     "sortAscending": "Asc",
     "sortDescending": "Desc",
     "sortByNewest": "Newest",
-    "sortByOldest": "Oldest"
+    "sortByOldest": "Oldest",
+    "deleteObservedWarning": "These platforms have a folder with the same name that the app does not manage, so it stays after deletion: {{platforms}}",
+    "deleteBundleObservedLabel": "Folders that stay (not managed by the app)"
   },
   "centralBundleDrawer": {
     "titleFallback": "Bundle detail",
@@ -625,7 +628,8 @@
     "readOnlyDesc": "Read-only observed copies are display-only here, so install, uninstall, and collection changes are unavailable.",
     "userManagedDesc": "This Claude user copy keeps the normal install-state and collection-management controls.",
     "readOnlyInstallBlocked": "Install and uninstall are unavailable for read-only observed copies.",
-    "readOnlyCollectionsBlocked": "Collection management is unavailable for read-only observed copies."
+    "readOnlyCollectionsBlocked": "Collection management is unavailable for read-only observed copies.",
+    "unmanagedDesc": "This folder was placed here by you, so the app does not manage it. It is never removed, paused, or overwritten, and its files stay as they are."
   },
   "collection": {
     "edit": "Edit",

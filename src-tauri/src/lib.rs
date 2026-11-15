@@ -36,6 +36,9 @@ pub fn run() {
                 db::init_database(&pool)
                     .await
                     .expect("Failed to initialize database schema");
+                commands::skill_duplicates::reclassify_copy_installations(&pool)
+                    .await
+                    .expect("Failed to reclassify existing copy installations");
                 commands::skill_origin::reconcile_incomplete_updates(&pool)
                     .await
                     .expect("Failed to reconcile interrupted skill updates");

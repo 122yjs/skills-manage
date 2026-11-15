@@ -238,7 +238,8 @@
       "all": "전체",
       "platform": "전용 설치",
       "universal": "공용 설치"
-    }
+    },
+    "unmanaged": "앱이 관리하지 않음"
   },
   "skillOrigin": {
     "confirmUpdate": "기존 파일을 백업하고 최신화할까요? ({{commit}})",
@@ -517,7 +518,9 @@
     "sortAscending": "오름차순",
     "sortDescending": "내림차순",
     "sortByNewest": "최신순",
-    "sortByOldest": "오래된순"
+    "sortByOldest": "오래된순",
+    "deleteObservedWarning": "다음 플랫폼에는 같은 이름의 폴더가 있지만 앱이 관리하지 않아 삭제 후에도 그대로 남습니다: {{platforms}}",
+    "deleteBundleObservedLabel": "삭제 후에도 남는 폴더 (앱이 관리하지 않음)"
   },
   "centralBundleDrawer": {
     "titleFallback": "묶음 상세 정보",
@@ -625,7 +628,8 @@
     "readOnlyDesc": "관찰된 읽기 전용 복사본은 여기에서 보기만 할 수 있으므로 설치와 설치 삭제, 직접 만든 모음 변경을 사용할 수 없습니다.",
     "userManagedDesc": "이 Claude 사용자 복사본에서는 일반적인 설치 상태와 직접 만든 모음 관리 기능을 사용할 수 있습니다.",
     "readOnlyInstallBlocked": "관찰된 읽기 전용 복사본은 설치하거나 설치를 삭제할 수 없습니다.",
-    "readOnlyCollectionsBlocked": "관찰된 읽기 전용 복사본은 직접 만든 모음을 관리할 수 없습니다."
+    "readOnlyCollectionsBlocked": "관찰된 읽기 전용 복사본은 직접 만든 모음을 관리할 수 없습니다.",
+    "unmanagedDesc": "직접 넣어 둔 폴더라 앱이 관리하지 않는 항목입니다. 제거·비활성·덮어쓰기 대상이 아니며 파일은 그대로 유지됩니다."
   },
   "collection": {
     "edit": "편집",
