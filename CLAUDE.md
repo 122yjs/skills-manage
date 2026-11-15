@@ -12,7 +12,7 @@
 
 ## 개발 명령
 
-Node.js 요구 버전은 `package.json`의 `engines`를 따른다. 현재 최소 버전은 22.13.0이다.
+Node.js 요구 버전은 `package.json`의 `engines`를 따른다. 현재 최소 버전은 22.13.0이다. pnpm 버전은 `package.json`의 `packageManager`에 고정되어 있고 CI도 같은 버전을 쓴다. 빌드 스크립트 허용 목록은 `pnpm-workspace.yaml`의 `allowBuilds` 한 곳에 둔다.
 
 ### 프런트엔드: React + TypeScript
 
@@ -24,7 +24,7 @@ pnpm build                # TypeScript 검사와 Vite 빌드
 pnpm test                 # 전체 Vitest 테스트
 pnpm exec vitest run src/test/skillStore.test.ts  # 특정 테스트 파일 실행
 pnpm test:watch           # 변경을 감지해 테스트 재실행
-pnpm typecheck            # TypeScript 타입 검사
+pnpm typecheck            # 앱 코드와 설정 파일(vite.config.ts, web-dashboard) 타입 검사
 pnpm lint                 # ESLint 검사
 ```
 
@@ -34,7 +34,8 @@ pnpm lint                 # ESLint 검사
 cd src-tauri && cargo check                 # Rust 컴파일 가능 여부 확인
 cd src-tauri && cargo test                  # 전체 Rust 테스트
 cd src-tauri && cargo test db::             # DB 모듈 테스트
-cd src-tauri && cargo clippy -- -D warnings  # 경고도 오류로 처리하는 정적 검사
+cd src-tauri && cargo clippy --all-targets -- -D warnings  # 테스트 코드까지 포함해 경고도 오류로 처리하는 정적 검사
+cd src-tauri && cargo fmt --check           # 포맷 검사
 ```
 
 ### 앱 실행과 빌드
