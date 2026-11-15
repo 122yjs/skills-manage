@@ -1458,28 +1458,34 @@ pub(crate) async fn download_repo_snapshot(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
 ) -> Result<GitHubRepoSnapshot, String> {
-    let archive = download_repository_archive(client, repo, auth_token, false).await?;
+    let archive = download_repository_archive(client, repo, auth_token).await?;
     snapshot_from_repository_archive(&archive)
-}
-
-pub(crate) async fn download_repo_snapshot_for_origin(
-    client: &reqwest::Client,
-    repo: &GitHubRepoRef,
-    auth_token: Option<&str>,
-) -> Result<GitHubRepoSnapshot, String> {
-    let archive = download_repository_archive(client, repo, auth_token, true).await?;
-    snapshot_from_repository_archive_with_limit(&archive, true)
 }
 
 const MAX_REPOSITORY_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPOSITORY_FILES: usize = 20_000;
 const MAX_REPOSITORY_UNPACKED_BYTES: usize = 256 * 1024 * 1024;
 
+/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
+fn archive_download_limit_error() -> String {
+    let mb = MAX_REPOSITORY_ARCHIVE_BYTES / (1024 * 1024);
+    format!(
+        "GitHub repository archive exceeds the safe download limit ({mb} MB). / GitHub 저장소 압축 파일이 안전 다운로드 한도({mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全下载上限（{mb} MB）。"
+    )
+}
+
+fn archive_extraction_limit_error() -> String {
+    let mb = MAX_REPOSITORY_UNPACKED_BYTES / (1024 * 1024);
+    let files = MAX_REPOSITORY_FILES;
+    format!(
+        "GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked). / GitHub 저장소 압축 파일이 안전 압축 해제 한도(파일 {files}개 또는 {mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全解压上限（{files} 个文件或解压后 {mb} MB）。"
+    )
+}
+
 async fn download_repository_archive(
     client: &reqwest::Client,
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
-    limited: bool,
 ) -> Result<Vec<u8>, String> {
     let mut response = send_github_request_with_fallback(
         client,
@@ -1517,12 +1523,11 @@ async fn download_repository_archive(
         }));
     }
 
-    if limited
-        && response
-            .content_length()
-            .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
     {
-        return Err("GitHub repository archive exceeds the safe download limit".into());
+        return Err(archive_download_limit_error());
     }
     let mut archive = Vec::new();
     while let Some(chunk) = response
@@ -1530,8 +1535,8 @@ async fn download_repository_archive(
         .await
         .map_err(|e| format!("Failed to read GitHub repository archive: {e}"))?
     {
-        if limited && archive.len().saturating_add(chunk.len()) > MAX_REPOSITORY_ARCHIVE_BYTES {
-            return Err("GitHub repository archive exceeds the safe download limit".into());
+        if archive.len().saturating_add(chunk.len()) > MAX_REPOSITORY_ARCHIVE_BYTES {
+            return Err(archive_download_limit_error());
         }
         archive.extend_from_slice(&chunk);
     }
@@ -1539,13 +1544,6 @@ async fn download_repository_archive(
 }
 
 fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSnapshot, String> {
-    snapshot_from_repository_archive_with_limit(archive_bytes, false)
-}
-
-fn snapshot_from_repository_archive_with_limit(
-    archive_bytes: &[u8],
-    limited: bool,
-) -> Result<GitHubRepoSnapshot, String> {
     let cursor = Cursor::new(archive_bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = tar::Archive::new(decoder);
@@ -1566,11 +1564,10 @@ fn snapshot_from_repository_archive_with_limit(
 
         file_count += 1;
         unpacked_bytes = unpacked_bytes.saturating_add(entry.size());
-        if limited
-            && (file_count > MAX_REPOSITORY_FILES
-                || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64)
+        if file_count > MAX_REPOSITORY_FILES
+            || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64
         {
-            return Err("GitHub repository archive exceeds the safe extraction limit".into());
+            return Err(archive_extraction_limit_error());
         }
 
         let relative_path = relative_archive_path(&entry)?;
@@ -2500,6 +2497,22 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_archive_with_too_many_files_by_default() {
+        let names: Vec<String> = (0..=MAX_REPOSITORY_FILES)
+            .map(|index| format!("files/{index}.txt"))
+            .collect();
+        let files: Vec<(&str, &[u8])> =
+            names.iter().map(|name| (name.as_str(), &b""[..])).collect();
+        let archive = repository_archive(&files);
+
+        let error = snapshot_from_repository_archive(&archive).unwrap_err();
+
+        assert!(error.contains("safe extraction limit"), "{error}");
+        assert!(error.contains("한도"), "{error}");
+        assert!(error.contains("上限"), "{error}");
+    }
+
+    #[test]
     fn snapshot_rejects_oversized_unpacked_entry_before_reading_it() {
         let mut header = tar::Header::new_gnu();
         header.set_path("repo/skills/demo/SKILL.md").unwrap();
@@ -2510,11 +2523,9 @@ mod tests {
         std::io::Write::write_all(&mut encoder, header.as_bytes()).unwrap();
         std::io::Write::write_all(&mut encoder, &[0; 1024]).unwrap();
         let compressed = encoder.finish().unwrap();
-        assert!(
-            snapshot_from_repository_archive_with_limit(&compressed, true)
-                .unwrap_err()
-                .contains("safe extraction limit")
-        );
+        assert!(snapshot_from_repository_archive(&compressed)
+            .unwrap_err()
+            .contains("safe extraction limit"));
     }
 
     #[cfg(unix)]
