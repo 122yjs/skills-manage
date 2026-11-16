@@ -111,7 +111,37 @@ pub fn symlink_target_path(from_dir: &Path, to_path: &Path) -> PathBuf {
     make_relative_path(from_dir, to_path)
 }
 
+/// `source`를 가리키는 설치 링크를 `agent_dir` 안의 `link` 자리에 만든다.
+///
+/// 플랫폼 폴더 자체가 링크일 수 있으므로, 링크가 실제로 놓이는 위치(`agent_dir`의 실제 경로)
+/// 기준의 상대 경로로 만든다. 기록 전에 만든 링크로 SKILL.md를 읽을 수 있는지 확인하고,
+/// 읽지 못하면 링크를 지우고 이유를 돌려준다.
+pub fn create_verified_symlink(agent_dir: &Path, source: &Path, link: &Path) -> Result<(), String> {
+    let link_parent = std::fs::canonicalize(agent_dir)
+        .map_err(|e| format!("Failed to resolve agent skills directory: {}", e))?;
+    let source = std::fs::canonicalize(source).map_err(|e| {
+        format!(
+            "Failed to resolve skill directory '{}': {}",
+            source.display(),
+            e
+        )
+    })?;
+    create_symlink(&symlink_target_path(&link_parent, &source), link)?;
+    if let Err(error) = std::fs::read(link.join("SKILL.md")) {
+        let _ = std::fs::remove_file(link);
+        return Err(format!(
+            "Installed link '{}' does not resolve to the skill: {}",
+            link.display(),
+            error
+        ));
+    }
+    Ok(())
+}
+
 // ─── Atomic Directory Copy ────────────────────────────────────────────────────
+
+/// 복사 임시 폴더 이름에 들어가는 표식. 스캐너가 이 폴더를 스킬로 읽지 않도록 같은 값을 쓴다.
+pub(crate) const COPY_STAGE_MARKER: &str = ".skillsmanage-copy-";
 
 /// 스킬 폴더를 `dst`로 "전부 되거나 아무것도 안 되게" 복사한다.
 ///
@@ -140,7 +170,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     })?;
     let name = dst.file_name().unwrap_or_default().to_string_lossy();
     let stage = parent.join(format!(
-        ".{name}.skillsmanage-copy-{}",
+        ".{name}{COPY_STAGE_MARKER}{}",
         uuid::Uuid::new_v4()
     ));
 
@@ -1105,20 +1135,7 @@ pub async fn install_skill_to_agent_impl(
         symlink_target: Some(canonical_dir.to_string_lossy().into_owned()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    // 플랫폼 폴더 자체가 링크일 수 있으므로, 링크가 실제로 놓이는 위치 기준으로 계산한다.
-    let link_parent = std::fs::canonicalize(&agent_dir)
-        .map_err(|e| format!("Failed to resolve agent skills directory: {}", e))?;
-    let relative_target = symlink_target_path(&link_parent, &canonical_dir);
-    if let Err(error) = create_symlink(&relative_target, &symlink_path) {
-        return Err(rollback_error(pool, &installation, &rollback, error).await);
-    }
-    // 기록 전에 만든 링크로 SKILL.md를 읽을 수 있는지 확인한다.
-    if let Err(error) = std::fs::read(symlink_path.join("SKILL.md")) {
-        let error = format!(
-            "Installed link '{}' does not resolve to the skill: {}",
-            symlink_path.display(),
-            error
-        );
+    if let Err(error) = create_verified_symlink(&agent_dir, &canonical_dir, &symlink_path) {
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;

@@ -496,6 +496,8 @@ export function SkillDetailView({
   const installingAgentId = useSkillDetailStore((s) => s.installingAgentId);
   const error = useSkillDetailStore((s) => s.error);
   const loadDetail = useSkillDetailStore((s) => s.loadDetail);
+  const listSkillDirectory = useSkillDetailStore((s) => s.listSkillDirectory);
+  const readSkillFile = useSkillDetailStore((s) => s.readSkillFile);
   const installSkill = useSkillDetailStore((s) => s.installSkill);
   const refreshInstallations = useSkillDetailStore((s) => s.refreshInstallations);
   const storeExplanation = useSkillDetailStore((s) => s.explanation);
@@ -587,6 +589,11 @@ export function SkillDetailView({
     return detail?.dir_path ?? null;
   }, [detail?.dir_path, discoverMetadata?.dirPath, filePath, isFileMode]);
   const skillFilePath = isFileMode ? filePath ?? null : detail?.file_path ?? null;
+  // 폴더 경로가 아니라 스킬 식별자로 서버가 스킬 폴더를 찾게 한다.
+  const skillFolderRequest = useMemo<SkillDetailRequest | null>(() => {
+    if (isFileMode) return discoverMetadata?.id ? { skillId: discoverMetadata.id } : null;
+    return detail?.id ? { skillId: detail.id, agentId, rowId: detail.row_id } : null;
+  }, [isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
 
   useEffect(() => {
     setRemovedAgentIds(new Set());
@@ -604,7 +611,7 @@ export function SkillDetailView({
     }
   }, [detail?.is_read_only, isCollectionPickerOpen]);
 
-  const fetchDirectoryTree = useCallback(async (dirPath: string) => {
+  const fetchDirectoryTree = useCallback(async (request: SkillDetailRequest) => {
     if (!isTauriRuntime()) {
       setDirectoryTree([]);
       setDirectoryTreeError(null);
@@ -615,32 +622,28 @@ export function SkillDetailView({
     setIsDirectoryTreeLoading(true);
     setDirectoryTreeError(null);
     try {
-      const tree = await invoke<SkillDirectoryNode[]>("list_skill_directory", { dirPath });
-      setDirectoryTree(tree);
+      setDirectoryTree(await listSkillDirectory(request));
     } catch (err) {
       setDirectoryTree([]);
       setDirectoryTreeError(String(err));
     } finally {
       setIsDirectoryTreeLoading(false);
     }
-  }, []);
+  }, [listSkillDirectory]);
 
   // ── File mode: load content from path ─────────────────────────────────
   const fetchFileContent = useCallback(async () => {
-    if (!filePath) return;
+    if (!filePath || !skillFolderRequest) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_skill_file", {
-        skillId: discoverMetadata?.id,
-        relativePath: "SKILL.md",
-      });
+      const text = await readSkillFile(skillFolderRequest, "SKILL.md");
       setFileContent(text);
     } catch {
       setFileContent(null);
     } finally {
       setFileIsLoading(false);
     }
-  }, [filePath, discoverMetadata?.id]);
+  }, [filePath, skillFolderRequest, readSkillFile]);
 
   useEffect(() => {
     if (isFileMode) {
@@ -680,7 +683,7 @@ export function SkillDetailView({
   }, [explanationRequestKey, skillContent, i18n.language, loadCachedExplanation]);
 
   useEffect(() => {
-    if (!currentDirectoryPath) {
+    if (!currentDirectoryPath || !skillFolderRequest) {
       setDirectoryTree([]);
       setDirectoryTreeError(null);
       return;
@@ -689,8 +692,8 @@ export function SkillDetailView({
     setSelectedFile(null);
     setSelectedFileContent(null);
     setExpandedDirectories(new Set());
-    void fetchDirectoryTree(currentDirectoryPath);
-  }, [currentDirectoryPath, contentRevision, fetchDirectoryTree]);
+    void fetchDirectoryTree(skillFolderRequest);
+  }, [currentDirectoryPath, skillFolderRequest, contentRevision, fetchDirectoryTree]);
 
   useEffect(() => {
     if (!origin) return;
@@ -716,7 +719,13 @@ export function SkillDetailView({
   }, [directoryTree, selectedFilePath, skillFilePath]);
 
   useEffect(() => {
-    if (!selectedFilePath || !skillFilePath || selectedFilePath === skillFilePath) {
+    if (
+      !selectedFilePath ||
+      !selectedRelativePath ||
+      !skillFilePath ||
+      !skillFolderRequest ||
+      selectedFilePath === skillFilePath
+    ) {
       setSelectedFileContent(null);
       setIsSelectedFileLoading(false);
       return;
@@ -729,12 +738,7 @@ export function SkillDetailView({
 
     let cancelled = false;
     setIsSelectedFileLoading(true);
-    invoke<string>("read_skill_file", {
-      ...(isFileMode
-        ? { skillId: discoverMetadata?.id }
-        : { skillId: detail?.id, agentId, rowId: detail?.row_id }),
-      relativePath: selectedRelativePath,
-    })
+    readSkillFile(skillFolderRequest, selectedRelativePath)
       .then((text) => {
         if (!cancelled) {
           setSelectedFileContent(text);
@@ -754,7 +758,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath, selectedRelativePath, skillFilePath, isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
+  }, [selectedFilePath, selectedRelativePath, skillFilePath, skillFolderRequest, readSkillFile]);
 
   // ── Derived values ───────────────────────────────────────────────────────
 

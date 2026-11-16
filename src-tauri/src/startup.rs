@@ -79,9 +79,6 @@ async fn initialize_pool(
     if let Err(error) = settings::migrate_legacy_secrets_impl(pool, secrets::shared()).await {
         eprintln!("Could not migrate legacy secrets: {error}");
     }
-    skill_duplicates::reclassify_copy_installations(pool)
-        .await
-        .map_err(|e| format!("기존 복사 설치 기록을 다시 분류할 수 없습니다: {e}"))?;
     skill_origin::reconcile_incomplete_updates(pool)
         .await
         .map_err(|e| format!("중단된 스킬 업데이트를 정리할 수 없습니다: {e}"))?;
@@ -99,7 +96,11 @@ async fn initialize_pool(
                 "보관함 폴더를 사용할 수 없습니다 ({}): {e}",
                 current.display()
             )
-        })
+        })?;
+    // 보관함 원본을 읽을 수 있게 된 뒤에 비교한다. 준비 전에 하면 원본을 못 찾아 모두 관찰 항목이 된다.
+    skill_duplicates::reclassify_copy_installations(pool)
+        .await
+        .map_err(|e| format!("기존 복사 설치 기록을 다시 분류할 수 없습니다: {e}"))
 }
 
 /// 실제 사용자 폴더 기준으로 초기화한다.
@@ -187,6 +188,82 @@ mod tests {
             .unwrap();
         assert_eq!(db::get_central_skills_dir(&pool).await.unwrap(), new_vault);
         assert!(new_vault.is_dir());
+    }
+
+    #[tokio::test]
+    async fn copy_installations_stay_managed_when_the_vault_is_not_ready() {
+        let temp = tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let default_central = data_dir.join("skills");
+        let legacy = temp.path().join("legacy");
+        let pool = initialize_app(&data_dir, &default_central, &legacy, None)
+            .await
+            .unwrap();
+        // 보관함 원본이 외장 디스크에 있어 지금은 읽을 수 없는 복사 설치
+        let offline_original = temp.path().join("offline/demo");
+        let installed = temp.path().join("agent/demo");
+        fs::create_dir_all(&installed).unwrap();
+        fs::write(installed.join("SKILL.md"), "demo").unwrap();
+        db::upsert_skill(
+            &pool,
+            &db::Skill {
+                id: "demo".to_string(),
+                name: "demo".to_string(),
+                description: None,
+                file_path: path_to_string(&offline_original.join("SKILL.md")),
+                canonical_path: Some(path_to_string(&offline_original)),
+                is_central: true,
+                source: None,
+                content: None,
+                scanned_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        db::upsert_skill_installation(
+            &pool,
+            &db::SkillInstallation {
+                skill_id: "demo".to_string(),
+                agent_id: "claude-code".to_string(),
+                installed_path: path_to_string(&installed),
+                link_type: "copy".to_string(),
+                symlink_target: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        // 업데이트 뒤 첫 실행: 재분류 완료 표시가 없고, 보관함 폴더는 만들 수 없다.
+        sqlx::query("DELETE FROM settings WHERE key = 'installations_reclassified'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let blocker = temp.path().join("blocker");
+        fs::write(&blocker, "file").unwrap();
+        db::set_setting(
+            &pool,
+            db::CENTRAL_SKILLS_PATH_SETTING,
+            &path_to_string(&blocker.join("vault")),
+        )
+        .await
+        .unwrap();
+        pool.close().await;
+
+        initialize_app(&data_dir, &default_central, &legacy, None)
+            .await
+            .unwrap_err();
+
+        let pool = db::create_pool(&path_to_string(&data_dir.join("db.sqlite")))
+            .await
+            .unwrap();
+        assert_eq!(
+            db::get_skill_installations(&pool, "demo")
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "보관함이 준비되기 전에는 복사 설치를 관찰 항목으로 낮추면 안 된다"
+        );
     }
 
     #[tokio::test]

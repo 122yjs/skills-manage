@@ -843,6 +843,7 @@
     "secretSavedPlaceholder": "Saved · enter a new value to replace it",
     "secretKeychainUnavailable": "The OS keychain is not available here, so secrets are not written to disk and are kept in memory only while the app is running. You will need to enter them again after restarting the app.",
     "aiApiKeyClear": "Clear key",
+    "aiApiKeySave": "Save key",
     "aiModelLabel": "Model",
     "aiModelPlaceholder": "Model name",
     "aiModelCustom": "Custom",
@@ -1154,7 +1155,10 @@
     "githubImportPostSyncFailed": "The skills were imported, but refreshing the app data failed. Retrying the refresh does not import anything again.",
     "githubImportPostSyncRetry": "Retry refresh",
     "githubImportSkippedOnlyTitle": "Nothing was imported",
-    "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow. If you hit a rate limit, you can also turn on the GitHub mirror fallback in Settings."
+    "githubPatSettingsHint": "Open Settings and save a GitHub Personal Access Token to use authenticated direct GitHub requests for this import flow. If you hit a rate limit, you can also turn on the GitHub mirror fallback in Settings.",
+    "githubMirrorDisabledError": "GitHub request limit reached. Retry later, or save a GitHub token or turn on the mirror fallback in Settings.",
+    "githubArchiveDownloadLimitError": "The GitHub repository archive exceeds the safe download limit.",
+    "githubArchiveExtractionLimitError": "The GitHub repository archive exceeds the safe extraction limit (file count or unpacked size)."
   },
   "libraryBrowser": {
     "folders": "Browse library",

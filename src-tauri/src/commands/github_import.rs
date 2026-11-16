@@ -17,16 +17,15 @@ use crate::{
 const GITHUB_TOKEN_HOSTS: &[&str] = &["api.github.com", "raw.githubusercontent.com"];
 
 fn is_github_token_host(url: &str) -> bool {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| GITHUB_TOKEN_HOSTS.contains(&host))
-        })
-        .unwrap_or(false)
+    reqwest::Url::parse(url).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| GITHUB_TOKEN_HOSTS.contains(&host))
+    })
 }
 
-/// 실제 요청 주소의 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
+/// 실제 요청 주소가 https이고 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
 pub(crate) fn github_request(
     client: &reqwest::Client,
     url: &str,
@@ -1606,11 +1605,16 @@ const MAX_REPOSITORY_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPOSITORY_FILES: usize = 20_000;
 const MAX_REPOSITORY_UNPACKED_BYTES: usize = 256 * 1024 * 1024;
 
-/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
+/// 백엔드는 화면 언어를 모르므로 `코드: 영어 설명`만 보내고, 화면이 코드를 보고
+/// `src/lib/backendErrors.ts`의 문구로 바꿔 보여 준다.
+const ARCHIVE_DOWNLOAD_LIMIT_CODE: &str = "GITHUB_ARCHIVE_DOWNLOAD_LIMIT";
+const ARCHIVE_EXTRACTION_LIMIT_CODE: &str = "GITHUB_ARCHIVE_EXTRACTION_LIMIT";
+const MIRROR_DISABLED_CODE: &str = "GITHUB_MIRROR_DISABLED";
+
 fn archive_download_limit_error() -> String {
     let mb = MAX_REPOSITORY_ARCHIVE_BYTES / (1024 * 1024);
     format!(
-        "GitHub repository archive exceeds the safe download limit ({mb} MB). / GitHub 저장소 압축 파일이 안전 다운로드 한도({mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全下载上限（{mb} MB）。"
+        "{ARCHIVE_DOWNLOAD_LIMIT_CODE}: GitHub repository archive exceeds the safe download limit ({mb} MB)."
     )
 }
 
@@ -1618,7 +1622,7 @@ fn archive_extraction_limit_error() -> String {
     let mb = MAX_REPOSITORY_UNPACKED_BYTES / (1024 * 1024);
     let files = MAX_REPOSITORY_FILES;
     format!(
-        "GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked). / GitHub 저장소 압축 파일이 안전 압축 해제 한도(파일 {files}개 또는 {mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全解压上限（{files} 个文件或解压后 {mb} MB）。"
+        "{ARCHIVE_EXTRACTION_LIMIT_CODE}: GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked)."
     )
 }
 
@@ -1884,6 +1888,41 @@ pub(crate) fn write_snapshot_source_to_target(
     Ok(())
 }
 
+/// 스냅샷의 스킬 폴더를 `target_dir` 옆 임시 폴더에 완성한 뒤 이름 바꾸기 한 번으로 확정한다.
+/// 중간에 실패하면 임시 폴더를 지우므로 `target_dir`에는 반쯤 쓰인 스킬이 남지 않는다.
+pub(crate) fn write_snapshot_source_atomically(
+    snapshot: &GitHubRepoSnapshot,
+    files: &[SnapshotSourceFile],
+    target_dir: &Path,
+    source_path: &str,
+    progress_state: &mut GitHubImportProgressState,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
+    let central_root = target_dir
+        .parent()
+        .ok_or_else(|| "Install target has no parent directory.".to_string())?;
+    let skill_id = target_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Install target has no directory name.".to_string())?;
+    let staging_container = unique_staging_container(central_root, skill_id, "stage");
+    let staging_dir = staging_container.join(skill_id);
+    let result = write_snapshot_source_to_target(
+        snapshot,
+        files,
+        &staging_dir,
+        source_path,
+        progress_state,
+        app,
+    )
+    .and_then(|()| {
+        std::fs::rename(&staging_dir, target_dir)
+            .map_err(|e| format!("Failed to install skill '{}': {}", skill_id, e))
+    });
+    remove_directory_if_present(&staging_container);
+    result
+}
+
 /// Git의 실행 여부만 반영하고, 현재 읽기 범위와 특수 권한은 확대하지 않는다.
 pub(crate) fn set_file_executable(path: &Path, executable: bool) -> Result<(), String> {
     #[cfg(unix)]
@@ -2077,7 +2116,8 @@ where
                         .map(|denial| denial.to_string())
                         .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status));
                     if !mirror_enabled && auth_token.is_none() && is_rate_limited {
-                        message.push_str(MIRROR_DISABLED_GUIDANCE);
+                        message =
+                            format!("{MIRROR_DISABLED_CODE}: {message}{MIRROR_DISABLED_GUIDANCE}");
                     }
                     return Err(message);
                 }
@@ -2152,8 +2192,8 @@ where
     ))
 }
 
-/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
-const MIRROR_DISABLED_GUIDANCE: &str = " Save a GitHub token in Settings or enable the mirror fallback in Settings. / 설정에서 GitHub 토큰을 저장하거나 미러 대체를 켜세요. / 请在设置中保存 GitHub 令牌，或开启镜像回退。";
+const MIRROR_DISABLED_GUIDANCE: &str =
+    " Save a GitHub token in Settings or enable the mirror fallback in Settings.";
 
 fn should_retry_via_mirror_status(
     surface: GitHubFetchSurface,
@@ -2424,6 +2464,31 @@ mod tests {
         entries
     }
 
+    #[test]
+    fn atomic_write_leaves_nothing_in_central_when_a_file_fails() {
+        let central = tempdir().unwrap();
+        let target = central.path().join("demo");
+        // 정렬 순서상 SKILL.md가 먼저 쓰이고, 그 뒤 안전하지 않은 경로에서 실패한다.
+        let snapshot = repo_snapshot(&[
+            ("skills/demo/SKILL.md", sample_frontmatter("demo", "demo")),
+            ("skills/demo/x/../../y.md", "bad".to_string()),
+        ]);
+        let files = collect_snapshot_source_files(&snapshot, "skills/demo").unwrap();
+
+        let result = write_snapshot_source_atomically(
+            &snapshot,
+            &files,
+            &target,
+            "skills/demo",
+            &mut GitHubImportProgressState::default(),
+            None,
+        );
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(central.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "보관함에 남은 것: {leftovers:?}");
+    }
+
     async fn setup_test_db() -> DbPool {
         let dir = tempdir().expect("tempdir");
         let db_path = dir.path().join("github-import.sqlite");
@@ -2676,9 +2741,11 @@ mod tests {
 
         let error = snapshot_from_repository_archive(&archive).unwrap_err();
 
+        assert!(
+            error.starts_with("GITHUB_ARCHIVE_EXTRACTION_LIMIT: "),
+            "{error}"
+        );
         assert!(error.contains("safe extraction limit"), "{error}");
-        assert!(error.contains("한도"), "{error}");
-        assert!(error.contains("上限"), "{error}");
     }
 
     #[test]
@@ -3931,48 +3998,26 @@ mod tests {
         (address, handle)
     }
 
-    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    #[test]
+    fn token_is_attached_only_to_https_github_hosts() {
+        let client = reqwest::Client::new();
+        let has_token = |url: &str| {
+            github_request(&client, url, Some("secret-token"))
+                .build()
+                .expect("request")
+                .headers()
+                .contains_key(reqwest::header::AUTHORIZATION)
+        };
 
-    fn has_bearer(request: &str, token: &str) -> bool {
-        request
-            .to_ascii_lowercase()
-            .contains(&format!("authorization: bearer {token}"))
-    }
-
-    #[tokio::test]
-    async fn token_is_attached_only_when_request_host_is_github() {
-        let (address, server) = serve_requests(2, |_| OK_RESPONSE.to_string());
-        // 호스트 이름만 로컬 서버로 연결해 실제 요청 주소의 호스트로 판단하는지 본다.
-        let client = reqwest::Client::builder()
-            .resolve("api.github.com", address)
-            .resolve("evil.example", address)
-            .build()
-            .expect("client");
-
-        for host in ["api.github.com", "evil.example"] {
-            let (response, via_mirror) = send_github_request_with_fallback(
-                &client,
-                GitHubFetchSurface::Api,
-                |_| format!("http://{host}:{}/probe", address.port()),
-                "request failed",
-                Some("secret-token"),
-                false,
-            )
-            .await
-            .expect("response");
-            assert!(response.status().is_success());
-            assert!(!via_mirror, "direct response is not a mirror response");
-        }
-
-        let captured = server.join().expect("server join");
+        assert!(has_token("https://api.github.com/repos/o/r"));
+        assert!(has_token(
+            "https://raw.githubusercontent.com/o/r/main/SKILL.md"
+        ));
         assert!(
-            has_bearer(&captured[0], "secret-token"),
-            "GitHub host should receive the token"
+            !has_token("http://api.github.com/repos/o/r"),
+            "평문 http에는 토큰을 붙이지 않는다"
         );
-        assert!(
-            !has_bearer(&captured[1], "secret-token"),
-            "non-GitHub host must not receive the token"
-        );
+        assert!(!has_token("https://evil.example/repos/o/r"));
     }
 
     #[tokio::test]
@@ -4042,19 +4087,10 @@ mod tests {
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /mirror"))
             .expect("captured mirror request");
-        assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct github request should include bearer auth"
-        );
         assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
@@ -4131,19 +4167,10 @@ mod tests {
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /raw-direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /raw-mirror"))
             .expect("captured mirror request");
-        assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct raw request should include bearer auth"
-        );
         assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
@@ -4188,6 +4215,7 @@ mod tests {
         .await
         .expect_err("rate limited without mirror must fail");
 
+        assert!(error.starts_with("GITHUB_MIRROR_DISABLED: "), "{error}");
         assert!(error.contains("rate limit"), "{error}");
         assert!(
             error.contains("GitHub token") && error.contains("mirror"),

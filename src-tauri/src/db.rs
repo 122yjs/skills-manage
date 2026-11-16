@@ -1831,7 +1831,8 @@ pub async fn delete_central_skill_records(
     skill_id: &str,
     skill_name: &str,
 ) -> Result<(), String> {
-    sqlx::query("DELETE FROM skill_installations WHERE skill_id = ?")
+    // 같은 이름의 관찰 항목은 보관함 삭제와 무관하므로 기록을 남긴다.
+    sqlx::query("DELETE FROM skill_installations WHERE skill_id = ? AND is_managed = 1")
         .bind(skill_id)
         .execute(pool)
         .await
@@ -4366,5 +4367,53 @@ mod tests {
             created_at_count, 1,
             "created_at column should appear exactly once after repeated init"
         );
+    }
+
+    #[tokio::test]
+    async fn test_delete_central_skill_records_keeps_observed_installations() {
+        let pool = setup_test_db().await;
+        upsert_skill(
+            &pool,
+            &Skill {
+                id: "demo".to_string(),
+                name: "demo".to_string(),
+                description: None,
+                file_path: "/central/demo/SKILL.md".to_string(),
+                canonical_path: Some("/central/demo".to_string()),
+                is_central: true,
+                source: None,
+                content: None,
+                scanned_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        let installation = |agent_id: &str, link_type: &str| SkillInstallation {
+            skill_id: "demo".to_string(),
+            agent_id: agent_id.to_string(),
+            installed_path: format!("/{agent_id}/demo"),
+            link_type: link_type.to_string(),
+            symlink_target: None,
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        };
+        upsert_skill_installation(&pool, &installation("claude-code", "symlink"))
+            .await
+            .unwrap();
+        // 스캐너가 발견한 일반 폴더(복사)는 관찰 항목이다.
+        upsert_scanned_installation(&pool, &installation("cursor", "copy"))
+            .await
+            .unwrap();
+
+        delete_central_skill_records(&pool, "demo", "demo")
+            .await
+            .unwrap();
+
+        assert!(get_skill_installations(&pool, "demo")
+            .await
+            .unwrap()
+            .is_empty());
+        let observed = get_unmanaged_installations(&pool, "demo").await.unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].agent_id, "cursor");
     }
 }

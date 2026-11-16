@@ -195,6 +195,22 @@ describe("skillDetailStore", () => {
     expect(useSkillDetailStore.getState().content).toBe(mockContent);
   });
 
+  it("lists the skill folder by skill identity instead of a folder path", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([]);
+
+    await useSkillDetailStore.getState().listSkillDirectory({
+      skillId: "frontend-design",
+      agentId: "claude-code",
+      rowId: "claude-code::plugin::frontend-design",
+    });
+
+    expect(invoke).toHaveBeenCalledWith("list_skill_directory", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+      rowId: "claude-code::plugin::frontend-design",
+    });
+  });
+
   it("stores detail and content after successful load", async () => {
     vi.mocked(invoke).mockResolvedValueOnce(mockDetail).mockResolvedValueOnce(mockContent);
     await useSkillDetailStore.getState().loadDetail({ skillId: "frontend-design" });
