@@ -1644,8 +1644,7 @@ async fn import_discovered_skill_to_platform_from_pool(
     let src_path = Path::new(&skill.dir_path);
     let installed_method = match install_method {
         DiscoveredPlatformInstallMethod::Auto => {
-            let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
-            match super::linker::create_symlink(&relative_target, &target_path) {
+            match super::linker::create_verified_symlink(&agent_dir, src_path, &target_path) {
                 Ok(()) => DiscoveredPlatformInstallMethod::Symlink,
                 Err(error) if super::linker::should_fallback_to_copy(&error) => {
                     super::linker::copy_dir_all(src_path, &target_path)?;
@@ -1655,8 +1654,7 @@ async fn import_discovered_skill_to_platform_from_pool(
             }
         }
         DiscoveredPlatformInstallMethod::Symlink => {
-            let relative_target = super::linker::symlink_target_path(&agent_dir, src_path);
-            super::linker::create_symlink(&relative_target, &target_path)?;
+            super::linker::create_verified_symlink(&agent_dir, src_path, &target_path)?;
             DiscoveredPlatformInstallMethod::Symlink
         }
         DiscoveredPlatformInstallMethod::Copy => {
@@ -2957,6 +2955,67 @@ mod tests {
         assert!(
             record.is_some(),
             "discovered skill record should be kept after platform install"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_import_to_symlinked_platform_dir_links_to_discovered_skill() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+
+        // 플랫폼 폴더가 깊이가 다른 위치를 가리키는 링크다.
+        let real_dir = tmp.path().join("deep/er/real-skills");
+        let agent_dir = tmp.path().join("claude/skills");
+        std::fs::create_dir_all(&real_dir).unwrap();
+        std::fs::create_dir_all(agent_dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &agent_dir).unwrap();
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'claude-code'")
+            .bind(agent_dir.to_str().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        mark_builtin_agent_installed(&agent_dir);
+
+        let skill_dir = tmp.path().join("project/.claude/skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A test skill\n---\n\n# My Skill\n",
+        )
+        .unwrap();
+        db::insert_discovered_skill(
+            &pool,
+            "claude-code__project__my-skill",
+            "my-skill",
+            Some("A test skill"),
+            &skill_dir.join("SKILL.md").to_string_lossy(),
+            &skill_dir.to_string_lossy(),
+            &tmp.path().join("project").to_string_lossy(),
+            "project",
+            "claude-code",
+            &Utc::now().to_rfc3339(),
+        )
+        .await
+        .unwrap();
+
+        import_discovered_skill_to_platform_from_pool(
+            &pool,
+            "claude-code__project__my-skill",
+            "claude-code",
+            Some("symlink"),
+        )
+        .await
+        .unwrap();
+
+        let link = agent_dir.join("my-skill");
+        assert!(
+            link.join("SKILL.md").exists(),
+            "설치 링크로 SKILL.md를 읽을 수 있어야 한다"
+        );
+        assert_eq!(
+            std::fs::canonicalize(&link).unwrap(),
+            std::fs::canonicalize(&skill_dir).unwrap()
         );
     }
 
