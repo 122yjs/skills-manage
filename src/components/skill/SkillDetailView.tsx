@@ -497,6 +497,7 @@ export function SkillDetailView({
   const error = useSkillDetailStore((s) => s.error);
   const loadDetail = useSkillDetailStore((s) => s.loadDetail);
   const listSkillDirectory = useSkillDetailStore((s) => s.listSkillDirectory);
+  const readSkillFile = useSkillDetailStore((s) => s.readSkillFile);
   const installSkill = useSkillDetailStore((s) => s.installSkill);
   const refreshInstallations = useSkillDetailStore((s) => s.refreshInstallations);
   const storeExplanation = useSkillDetailStore((s) => s.explanation);
@@ -632,20 +633,17 @@ export function SkillDetailView({
 
   // ── File mode: load content from path ─────────────────────────────────
   const fetchFileContent = useCallback(async () => {
-    if (!filePath) return;
+    if (!filePath || !skillFolderRequest) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_skill_file", {
-        skillId: discoverMetadata?.id,
-        relativePath: "SKILL.md",
-      });
+      const text = await readSkillFile(skillFolderRequest, "SKILL.md");
       setFileContent(text);
     } catch {
       setFileContent(null);
     } finally {
       setFileIsLoading(false);
     }
-  }, [filePath, discoverMetadata?.id]);
+  }, [filePath, skillFolderRequest, readSkillFile]);
 
   useEffect(() => {
     if (isFileMode) {
@@ -721,7 +719,13 @@ export function SkillDetailView({
   }, [directoryTree, selectedFilePath, skillFilePath]);
 
   useEffect(() => {
-    if (!selectedFilePath || !skillFilePath || selectedFilePath === skillFilePath) {
+    if (
+      !selectedFilePath ||
+      !selectedRelativePath ||
+      !skillFilePath ||
+      !skillFolderRequest ||
+      selectedFilePath === skillFilePath
+    ) {
       setSelectedFileContent(null);
       setIsSelectedFileLoading(false);
       return;
@@ -734,12 +738,7 @@ export function SkillDetailView({
 
     let cancelled = false;
     setIsSelectedFileLoading(true);
-    invoke<string>("read_skill_file", {
-      ...(isFileMode
-        ? { skillId: discoverMetadata?.id }
-        : { skillId: detail?.id, agentId, rowId: detail?.row_id }),
-      relativePath: selectedRelativePath,
-    })
+    readSkillFile(skillFolderRequest, selectedRelativePath)
       .then((text) => {
         if (!cancelled) {
           setSelectedFileContent(text);
@@ -759,7 +758,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath, selectedRelativePath, skillFilePath, isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
+  }, [selectedFilePath, selectedRelativePath, skillFilePath, skillFolderRequest, readSkillFile]);
 
   // ── Derived values ───────────────────────────────────────────────────────
 

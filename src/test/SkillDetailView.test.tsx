@@ -241,6 +241,8 @@ const mockSetSkillUsage = vi.fn();
 
 // 실제 store처럼 렌더링마다 같은 함수 참조를 돌려줘야 효과가 다시 실행되지 않는다.
 const mockListSkillDirectory = () => mockTauriInvoke("list_skill_directory");
+const mockReadSkillFile = (_request: unknown, relativePath: string) =>
+  mockTauriInvoke("read_skill_file", { relativePath });
 
 function buildDetailStoreState(overrides = {}) {
   return {
@@ -263,6 +265,7 @@ function buildDetailStoreState(overrides = {}) {
     uninstallSkill: mockUninstallSkill,
     refreshInstallations: mockRefreshInstallations,
     listSkillDirectory: mockListSkillDirectory,
+    readSkillFile: mockReadSkillFile,
     cleanupExplanationListeners: mockCleanupExplanationListeners,
     reset: mockReset,
     ...overrides,
