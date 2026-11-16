@@ -17,16 +17,15 @@ use crate::{
 const GITHUB_TOKEN_HOSTS: &[&str] = &["api.github.com", "raw.githubusercontent.com"];
 
 fn is_github_token_host(url: &str) -> bool {
-    reqwest::Url::parse(url)
-        .ok()
-        .and_then(|url| {
-            url.host_str()
-                .map(|host| GITHUB_TOKEN_HOSTS.contains(&host))
-        })
-        .unwrap_or(false)
+    reqwest::Url::parse(url).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| GITHUB_TOKEN_HOSTS.contains(&host))
+    })
 }
 
-/// 실제 요청 주소의 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
+/// 실제 요청 주소가 https이고 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
 pub(crate) fn github_request(
     client: &reqwest::Client,
     url: &str,
@@ -3991,48 +3990,26 @@ mod tests {
         (address, handle)
     }
 
-    const OK_RESPONSE: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
+    #[test]
+    fn token_is_attached_only_to_https_github_hosts() {
+        let client = reqwest::Client::new();
+        let has_token = |url: &str| {
+            github_request(&client, url, Some("secret-token"))
+                .build()
+                .expect("request")
+                .headers()
+                .contains_key(reqwest::header::AUTHORIZATION)
+        };
 
-    fn has_bearer(request: &str, token: &str) -> bool {
-        request
-            .to_ascii_lowercase()
-            .contains(&format!("authorization: bearer {token}"))
-    }
-
-    #[tokio::test]
-    async fn token_is_attached_only_when_request_host_is_github() {
-        let (address, server) = serve_requests(2, |_| OK_RESPONSE.to_string());
-        // 호스트 이름만 로컬 서버로 연결해 실제 요청 주소의 호스트로 판단하는지 본다.
-        let client = reqwest::Client::builder()
-            .resolve("api.github.com", address)
-            .resolve("evil.example", address)
-            .build()
-            .expect("client");
-
-        for host in ["api.github.com", "evil.example"] {
-            let (response, via_mirror) = send_github_request_with_fallback(
-                &client,
-                GitHubFetchSurface::Api,
-                |_| format!("http://{host}:{}/probe", address.port()),
-                "request failed",
-                Some("secret-token"),
-                false,
-            )
-            .await
-            .expect("response");
-            assert!(response.status().is_success());
-            assert!(!via_mirror, "direct response is not a mirror response");
-        }
-
-        let captured = server.join().expect("server join");
+        assert!(has_token("https://api.github.com/repos/o/r"));
+        assert!(has_token(
+            "https://raw.githubusercontent.com/o/r/main/SKILL.md"
+        ));
         assert!(
-            has_bearer(&captured[0], "secret-token"),
-            "GitHub host should receive the token"
+            !has_token("http://api.github.com/repos/o/r"),
+            "평문 http에는 토큰을 붙이지 않는다"
         );
-        assert!(
-            !has_bearer(&captured[1], "secret-token"),
-            "non-GitHub host must not receive the token"
-        );
+        assert!(!has_token("https://evil.example/repos/o/r"));
     }
 
     #[tokio::test]
@@ -4102,19 +4079,10 @@ mod tests {
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /mirror"))
             .expect("captured mirror request");
-        assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct github request should include bearer auth"
-        );
         assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
@@ -4191,19 +4159,10 @@ mod tests {
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /raw-direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /raw-mirror"))
             .expect("captured mirror request");
-        assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct raw request should include bearer auth"
-        );
         assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
