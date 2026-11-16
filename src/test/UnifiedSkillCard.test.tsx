@@ -387,6 +387,7 @@ describe("UnifiedSkillCard symlink source", () => {
     renderLinkCard("/Users/test/.skillsmanage/skills/samcheonpo");
     expect(screen.getByText("技能仓库")).toBeInTheDocument();
     expect(screen.getByText("指向的原文件：/Users/test/.skillsmanage/skills/samcheonpo")).toBeInTheDocument();
+    expect(screen.getByText("链接位置：/Users/test/.gemini/config/skills/anti-samcheonpo")).toBeInTheDocument();
   });
 
   it("보관함 밖을 가리키는 링크는 외부 원본 이름표와 풀어 쓴 원본 경로를 보여 준다", () => {

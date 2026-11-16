@@ -202,6 +202,8 @@
     "sourceExternal": "外部原文件",
     "sourceLinked": "链接的原文件",
     "symlinkTarget": "指向的原文件：{{path}}",
+    "linkLocation": "链接位置：{{path}}",
+    "managementLocation": "管理位置：{{path}}",
     "sourceStandalone": "独立安装",
     "sourceSymlinkLabel": "符号链接",
     "sourceCopyLabel": "复制安装",

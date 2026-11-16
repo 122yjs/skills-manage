@@ -667,8 +667,11 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     {isExternallyManaged ? <ExternalManagedBadge /> : isUniversalSource ? <UniversalSourceBadge /> : isReadOnly ? <ReadOnlyBadge /> : null}
                     {sourceType && <SourceIndicator sourceType={sourceType} linkTarget={linkTarget} />}
                     {linkTarget && <span className="break-all">{t("platform.symlinkTarget", { path: formatPathForDisplay(linkTarget) })}</span>}
+                    {linkTarget && installedPath && <span className="break-all">{t("platform.linkLocation", { path: formatPathForDisplay(installedPath) })}</span>}
                     {sharedControl && <span>{t("platform.confirmedPlatforms", { count: sharedControl.impact.confirmed_platforms.length })}</span>}
-                    {sharedControl && sharedControl.impact.management_path && <span className="break-all">{formatPathForDisplay(sharedControl.impact.management_path)}</span>}
+                    {sharedControl && sharedControl.impact.management_path
+                      && !(linkTarget && installedPath && isPathInside(sharedControl.impact.management_path, installedPath) && isPathInside(installedPath, sharedControl.impact.management_path))
+                      && <span className="break-all">{t("platform.managementLocation", { path: formatPathForDisplay(sharedControl.impact.management_path) })}</span>}
                     <SkillGroupLinks filePath={translation?.filePath} />
                   </div>
                 </details>

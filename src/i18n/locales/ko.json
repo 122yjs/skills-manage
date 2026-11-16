@@ -202,6 +202,8 @@
     "sourceExternal": "외부 원본",
     "sourceLinked": "연결된 원본",
     "symlinkTarget": "가리키는 원본: {{path}}",
+    "linkLocation": "링크 위치: {{path}}",
+    "managementLocation": "관리 위치: {{path}}",
     "sourceStandalone": "독립형",
     "sourceSymlinkLabel": "심볼릭 링크",
     "sourceCopyLabel": "복사본",
