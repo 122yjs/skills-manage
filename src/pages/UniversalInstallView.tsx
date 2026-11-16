@@ -229,7 +229,6 @@ export function UniversalInstallView() {
           return;
         }
         setSharedDialogOpen(false);
-        setSharedDialogImpacts([]);
         await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
         if (result.failed.length > 0) {
           toast.error(
@@ -259,7 +258,6 @@ export function UniversalInstallView() {
         return;
       }
       setSharedDialogOpen(false);
-      setSharedDialogImpacts([]);
       await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
@@ -492,6 +490,8 @@ export function UniversalInstallView() {
         onOpenChange={(open) => {
           if (sharedDialogConfirming) return;
           setSharedDialogOpen(open);
+        }}
+        onOpenChangeComplete={(open) => {
           if (!open) setSharedDialogImpacts([]);
         }}
         impacts={sharedDialogImpacts}

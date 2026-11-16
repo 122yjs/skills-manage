@@ -34,6 +34,8 @@ function sortSharedPlatforms<T extends SharedSkillConfirmedPlatform>(
 export interface SharedSkillImpactDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 닫힘 효과까지 끝난 뒤 호출된다. 닫는 도중 내용이 비어 보이지 않도록 정리는 여기서 한다. */
+  onOpenChangeComplete?: (open: boolean) => void;
   /** 단일 토글은 1건, 공용 일괄은 여러 건을 전달한다. */
   impacts: SharedSkillImpact[];
   currentAgentId?: string | null;
@@ -171,6 +173,7 @@ function ImpactSection({
 export function SharedSkillImpactDialog({
   open,
   onOpenChange,
+  onOpenChangeComplete,
   impacts,
   currentAgentId,
   isConfirming,
@@ -183,7 +186,7 @@ export function SharedSkillImpactDialog({
   const restricted = impacts.some((impact) => impact.reason != null && impact.reason !== "");
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={onOpenChange} onOpenChangeComplete={onOpenChangeComplete}>
       <DialogContent className="flex max-h-[80vh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle className="break-words">{title}</DialogTitle>

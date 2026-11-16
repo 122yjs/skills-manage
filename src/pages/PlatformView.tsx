@@ -357,7 +357,6 @@ export function PlatformView() {
         return;
       }
       setSharedDialogOpen(false);
-      setSharedDialogImpacts([]);
       setShowReloadHint(true);
       if (agentId) {
         await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
@@ -1117,6 +1116,8 @@ export function PlatformView() {
         onOpenChange={(open) => {
           if (sharedDialogConfirming) return;
           setSharedDialogOpen(open);
+        }}
+        onOpenChangeComplete={(open) => {
           if (!open) setSharedDialogImpacts([]);
         }}
         impacts={sharedDialogImpacts}
