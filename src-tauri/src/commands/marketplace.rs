@@ -130,6 +130,15 @@ fn marketplace_skills_from_candidates(
     skills
 }
 
+/// 설치할 때와 같은 폴더 이름(마켓플레이스 ID의 `<레지스트리>::` 뒤 부분)으로 설치 여부를 판정한다.
+/// 표시 이름(`name`)은 폴더 이름과 다를 수 있다.
+fn marketplace_skill_installed(central_dir: &std::path::Path, skill: &MarketplaceSkill) -> bool {
+    skill
+        .id
+        .strip_prefix(&format!("{}::", skill.registry_id))
+        .is_some_and(|folder| central_dir.join(folder).join("SKILL.md").exists())
+}
+
 // ─── IPC Commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -368,7 +377,7 @@ async fn sync_registry_impl(
 
     // Upsert skills into marketplace_skills
     for skill in &skills {
-        let is_installed = central_dir.join(&skill.name).join("SKILL.md").exists();
+        let is_installed = marketplace_skill_installed(&central_dir, skill);
 
         sqlx::query(
             "INSERT INTO marketplace_skills (id, registry_id, name, description, download_url, is_installed, synced_at, cache_updated_at)
@@ -2900,13 +2909,13 @@ mod tests {
         cache_skill_explanation, classify_reqwest_error, derive_models_url,
         detect_explanation_api_protocol, extract_dir_path, fallback_models, format_reqwest_error,
         get_fallback_endpoint, load_cached_skill_explanation,
-        load_english_skill_explanation_fallback, marketplace_skills_from_candidates,
-        models_fetch_url, normalize_translation_target, parse_models_dev_provider,
-        parse_models_response, parse_translation_response, registry_has_cached_skills,
-        resolve_api_protocol, resolve_custom_url, search_marketplace_skills_impl,
-        sync_registry_impl, translate_skill_description_impl, tree_entries_under_dir,
-        ExplanationApiProtocol, ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus,
-        SyncRegistryOptions,
+        load_english_skill_explanation_fallback, marketplace_skill_installed,
+        marketplace_skills_from_candidates, models_fetch_url, normalize_translation_target,
+        parse_models_dev_provider, parse_models_response, parse_translation_response,
+        registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
+        search_marketplace_skills_impl, sync_registry_impl, translate_skill_description_impl,
+        tree_entries_under_dir, ExplanationApiProtocol, ExplanationErrorKind,
+        RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
     use crate::commands::github_import;
     use crate::commands::github_import::RemoteSkillCandidate;
@@ -3106,6 +3115,31 @@ mod tests {
         assert!(!lower_request.contains("x-api-key:"));
         assert!(request.contains("English"));
         assert!(request.contains("배포 도우미"));
+    }
+
+    #[test]
+    fn installed_check_uses_the_install_folder_not_the_display_name() {
+        let central = tempdir().expect("create tempdir");
+        let skills = marketplace_skills_from_candidates(
+            "reg",
+            vec![RemoteSkillCandidate {
+                source_path: "skills/agent-planner".to_string(),
+                skill_id: "agent-planner".to_string(),
+                skill_name: "Agent Planner".to_string(),
+                description: None,
+                root_directory: "skills".to_string(),
+                skill_directory_name: "agent-planner".to_string(),
+                download_url:
+                    "https://raw.githubusercontent.com/o/r/main/skills/agent-planner/SKILL.md"
+                        .to_string(),
+            }],
+        );
+        assert!(!marketplace_skill_installed(central.path(), &skills[0]));
+
+        std::fs::create_dir_all(central.path().join("agent-planner")).unwrap();
+        std::fs::write(central.path().join("agent-planner/SKILL.md"), "x").unwrap();
+
+        assert!(marketplace_skill_installed(central.path(), &skills[0]));
     }
 
     #[test]
