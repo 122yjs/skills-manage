@@ -272,7 +272,12 @@ export function PlatformView() {
         sourcePath: skill.dir_path,
       });
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
-      toast.success(t("skillUsage.platformControlDeleteSuccess", { name: skill.name }));
+      toast.success(
+        t("skillUsage.platformControlDeleteSuccess", {
+          name: skill.name,
+          platform: agent?.display_name ?? agentId,
+        })
+      );
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.deleteError", { error: String(error) }));
@@ -293,21 +298,26 @@ export function PlatformView() {
         sourcePath: skill.dir_path,
       });
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
-      toast.success(t("skillUsage.platformControlReapplySuccess", { name: skill.name }));
+      toast.success(
+        t("skillUsage.platformControlReapplySuccess", {
+          name: skill.name,
+          platform: agent?.display_name ?? agentId,
+        })
+      );
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
       toast.error(t("skillUsage.updateError", { error: String(error) }));
     }
   }
 
-  async function handleDeleteSkill(skillId: string) {
+  async function handleDeleteSkill(skillId: string, skillName: string) {
     if (!agentId) return;
     try {
       await deleteSkillFromAgent(skillId, agentId);
       await Promise.all([refreshCounts(), getSkillsByAgent(agentId)]);
       toast.success(
         t("skillUsage.deleteSkillSuccess", {
-          name: skillId,
+          name: skillName,
           platform: agent?.display_name ?? agentId,
         })
       );
@@ -1052,7 +1062,7 @@ export function PlatformView() {
                           }
                           onUninstallFromPlatform={
                             isManagedInstallation && usage
-                              ? () => void handleDeleteSkill(skill.id)
+                              ? () => void handleDeleteSkill(skill.id, skill.name)
                               : platformControl?.can_delete
                                 ? () => void handleDeletePlatformControl(skill)
                                 : undefined
@@ -1120,7 +1130,9 @@ export function PlatformView() {
               : t("sharedImpact.titleDisable", { name: sharedDialogImpacts[0].skill_name })
             : t("sharedImpact.titleDisable", { name: "" })
         }
-        description={t("sharedImpact.description")}
+        description={t(
+          sharedDialogDesired ? "sharedImpact.descriptionEnable" : "sharedImpact.descriptionDisable"
+        )}
         confirmLabel={
           sharedDialogDesired ? t("sharedImpact.confirmEnable") : t("sharedImpact.confirmDisable")
         }

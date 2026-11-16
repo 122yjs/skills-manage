@@ -260,7 +260,7 @@ describe("UnifiedSkillCard shared control", () => {
   it("shows the individual toggle before the shared control", () => {
     const { onToggleShared, onIndividualToggle } = renderShared(false);
     const individual = screen.getByRole("switch", {
-      name: "仅在 Claude Code 切换 demo-skill",
+      name: "允许在 Claude Code 中使用 demo-skill",
     });
     const shared = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
     expect(screen.getByText("允许在 Claude Code 中使用")).toBeInTheDocument();
@@ -338,7 +338,7 @@ describe("UnifiedSkillCard shared control", () => {
     );
 
     const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
-    expect(screen.getByText("无法单独切换此平台")).toBeInTheDocument();
+    expect(screen.getByText("无法验证此平台的单个技能设置，因此无法单独切换")).toBeInTheDocument();
     expect(
       sharedSwitch.getAttribute("data-disabled") !== null ||
         sharedSwitch.getAttribute("aria-disabled") === "true"

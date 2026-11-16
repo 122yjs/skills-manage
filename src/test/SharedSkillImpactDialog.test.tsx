@@ -44,7 +44,7 @@ describe("SharedSkillImpactDialog", () => {
       impacts: [impact({ confirmed_platforms: [], separate_installs: [] })],
     });
 
-    expect(screen.getByText("已确认 0 个")).toBeInTheDocument();
+    expect(screen.getByText("已确认 0 个平台")).toBeInTheDocument();
     expect(
       screen.getByText("即使不在列表中，读取此路径的其他工具也可能受到影响。")
     ).toBeInTheDocument();
@@ -98,7 +98,7 @@ describe("SharedSkillImpactDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看详情" }));
     expect(screen.getByText("独立安装 (1 个)")).toBeInTheDocument();
     expect(
-      screen.getByText("独立安装指向相同内容但相互独立，此更改后仍可继续使用。")
+      screen.getByText("独立安装是与此公用安装分开、指向相同内容的安装。")
     ).toBeInTheDocument();
   });
 
@@ -189,7 +189,7 @@ describe("SharedSkillImpactDialog", () => {
     const { rerender } = renderDialog({
       impacts: [impact({ confirmed_platforms: [{ agent_id: "a", display_name: "A" }] })],
     });
-    expect(screen.getByText("已确认 1 个")).toBeInTheDocument();
+    expect(screen.getByText("已确认 1 个平台")).toBeInTheDocument();
 
     const refreshed = impact({
       confirmation_token: "token-2",
@@ -211,8 +211,8 @@ describe("SharedSkillImpactDialog", () => {
       />
     );
 
-    expect(screen.getByText("已确认 2 个")).toBeInTheDocument();
-    expect(screen.queryByText("已确认 1 个")).not.toBeInTheDocument();
+    expect(screen.getByText("已确认 2 个平台")).toBeInTheDocument();
+    expect(screen.queryByText("已确认 1 个平台")).not.toBeInTheDocument();
     expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirm" })).toBeEnabled();
   });
 

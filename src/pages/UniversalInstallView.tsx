@@ -511,7 +511,9 @@ export function UniversalInstallView() {
                 )
               : t("sharedImpact.titleDisable", { name: "" })
         }
-        description={t("sharedImpact.description")}
+        description={t(
+          sharedDialogDesired ? "sharedImpact.descriptionEnable" : "sharedImpact.descriptionDisable"
+        )}
         confirmLabel={
           sharedDialogDesired ? t("sharedImpact.confirmEnable") : t("sharedImpact.confirmDisable")
         }

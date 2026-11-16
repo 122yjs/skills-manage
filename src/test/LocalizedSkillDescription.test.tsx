@@ -167,7 +167,7 @@ describe("LocalizedSkillDescription", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "使用 API 翻译" }));
-    expect(screen.getByText("使用已配置的 API？可能产生费用")).toBeInTheDocument();
+    expect(screen.getByText("要将此说明发送到已配置的 API 进行翻译吗？可能产生费用。")).toBeInTheDocument();
     expect(mockInvoke).not.toHaveBeenCalledWith(
       "translate_skill_description_with_api",
       expect.anything()
