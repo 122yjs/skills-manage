@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { SharedInstallDeleteDialog } from "@/components/skill/SharedInstallDeleteDialog";
+import { useObservedImport } from "@/components/skill/ObservedImport";
 import { SkillFrontmatterCard } from "@/components/skill/SkillFrontmatterCard";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { useSkillDetailStore } from "@/stores/skillDetailStore";
@@ -534,6 +535,11 @@ export function SkillDetailView({
   const setSkillUsage = useSkillUsageStore((s) => s.setSkillUsage);
   const [sharedDeleteIds, setSharedDeleteIds] = useState<string[] | null>(null);
   const deleteSkillFromAgent = useSkillUsageStore((s) => s.deleteSkillFromAgent);
+  const observedImport = useObservedImport(async () => {
+    await refreshCounts();
+    if (skillId) await refreshInstallations(skillId);
+    await onInstallationsChange?.();
+  });
 
   // Local state for filePath mode
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -1043,6 +1049,7 @@ export function SkillDetailView({
 
   return (
     <div className={cn("flex flex-col h-full", variant === "drawer" && "min-h-0")}>
+      {observedImport.dialog}
       {sharedDeleteIds && <SharedInstallDeleteDialog skillIds={sharedDeleteIds}
         onClose={() => setSharedDeleteIds(null)} onDeleted={async () => {
           await refreshCounts();
@@ -1431,9 +1438,26 @@ export function SkillDetailView({
                           {detail.is_read_only && !detail.can_manage_origin && detail.is_managed !== false && <ReadOnlySourceBadge />}
                         </div>
                         {detail.is_managed === false ? (
-                          <p className="text-xs leading-relaxed text-muted-foreground">
-                            {t("detail.unmanagedDesc")}
-                          </p>
+                          <>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              {t("detail.unmanagedDesc")}
+                            </p>
+                            {agentId && skillId && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={observedImport.busyKey !== null}
+                                title={t("observedImport.buttonHint")}
+                                aria-label={t("observedImport.buttonLabel", { name: detail.name })}
+                                onClick={() => void observedImport.run(skillId, agentId, detail.name)}
+                              >
+                                {observedImport.busyKey !== null
+                                  ? t("observedImport.importing")
+                                  : t("observedImport.button")}
+                              </Button>
+                            )}
+                          </>
                         ) : detail.is_read_only && detail.can_manage_origin ? (
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.sharedOriginDesc")}

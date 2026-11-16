@@ -449,6 +449,35 @@ describe("SkillDetailView", () => {
     expect(screen.queryByText(/Install and uninstall are unavailable for read-only|只读观测副本不可安装/)).not.toBeInTheDocument();
   });
 
+  it("관찰 항목 상세에서 가져오기를 누르면 보관함으로 가져온 뒤 설치 상태를 다시 읽는다", async () => {
+    applyStoreMocks({
+      detail: {
+        ...mockDetail,
+        is_central: false,
+        is_read_only: true,
+        is_managed: false,
+        installations: [],
+      },
+    });
+    const base = mockTauriInvoke.getMockImplementation();
+    mockTauriInvoke.mockImplementation(async (command, args) =>
+      command === "import_observed_skill" ? null : base?.(command, args)
+    );
+    render(
+      <MemoryRouter>
+        <SkillDetailView skillId="frontend-design" agentId="claude-code" variant="drawer" />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 frontend-design" }));
+
+    await waitFor(() => expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design"));
+    expect(mockTauriInvoke).toHaveBeenCalledWith("import_observed_skill", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+    });
+  });
+
   it("shows a read-only plugin source state and blocks management actions", () => {
     applyStoreMocks({
       detail: mockPluginDetail,

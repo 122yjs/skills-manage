@@ -124,6 +124,7 @@ describe("UniversalInstallView", () => {
         loadingByAgent: { universal: false },
         pendingSkillActionKeys: {},
         compareLocations: vi.fn(),
+        importObserved: vi.fn(),
         error: null,
         getSkillsByAgent,
         uninstallSkillFromAgent,
@@ -160,6 +161,7 @@ describe("UniversalInstallView", () => {
       loadingByAgent: { universal: false },
       pendingSkillActionKeys: {},
       compareLocations: vi.fn(),
+      importObserved: vi.fn(),
       getSkillsByAgent,
     } as never));
     const impact = {

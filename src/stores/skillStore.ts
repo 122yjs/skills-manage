@@ -57,6 +57,8 @@ interface SkillState {
 
   // Actions
   compareLocations: (agentId: string, name: string) => Promise<DuplicateComparison>;
+  /** 관찰 항목을 보관함으로 가져온다. 같은 이름의 보관함 스킬이 있으면 가져오지 않고 비교 결과를 돌려준다. */
+  importObserved: (skillId: string, agentId: string) => Promise<DuplicateComparison | null>;
   getSkillsByAgent: (agentId: string) => Promise<void>;
   uninstallSkillFromAgent: (skillId: string, agentId: string) => Promise<void>;
 }
@@ -74,6 +76,9 @@ export const useSkillStore = create<SkillState>((set) => ({
   error: null,
 
   compareLocations: (agentId, name) => invoke<DuplicateComparison>("compare_skill_locations", { agentId, name }),
+
+  importObserved: (skillId, agentId) =>
+    invoke<DuplicateComparison | null>("import_observed_skill", { skillId, agentId }),
 
   /**
    * Fetch skills for a specific agent by invoking the Tauri backend command.

@@ -438,6 +438,18 @@
     "externallyManaged": "Managed manually",
     "externalHint": "Items not created by this app are marked as manually managed and are never deleted automatically."
   },
+  "observedImport": {
+    "button": "Import",
+    "buttonLabel": "Import {{name}}",
+    "buttonHint": "Copies the contents into the central library and turns this into a managed install. Files in this folder are not changed.",
+    "importing": "Importing…",
+    "success": "Imported {{name}} into the central library. The folder on this platform was left as is and is now recorded as a managed install.",
+    "error": "Import failed: {{error}}",
+    "conflictTitle": "A central skill with the same name exists",
+    "conflictDescription": "{{name}} was not imported over the skill of the same name already in the central library. Review the comparison below and decide which one to use. No files were changed.",
+    "paths": "Compared locations",
+    "close": "Close"
+  },
   "skillLocations": {
     "summary": "{{skills}} skill names · {{locations}} source locations",
     "selected": "{{count}} selected",
