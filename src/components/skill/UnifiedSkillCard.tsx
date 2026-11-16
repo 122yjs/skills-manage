@@ -33,7 +33,8 @@ import type {
 import { cn } from "@/lib/utils";
 import { getAgentDisplayName, getDistinctInstallTargetAgents } from "@/lib/agents";
 import { LocalizedSkillDescription } from "@/components/skill/LocalizedSkillDescription";
-import { formatPathForDisplay } from "@/lib/path";
+import { formatPathForDisplay, isPathInside, resolveSymlinkTarget } from "@/lib/path";
+import { useStorageStore } from "@/stores/storageStore";
 import { githubSkillSourceUrl } from "@/lib/skillOrigin";
 
 const FEATURED_CODING_AGENT_IDS = [
@@ -129,6 +130,9 @@ export interface UnifiedSkillCardProps {
 
   // ── platform variant ──
   sourceType?: "symlink" | "copy" | "native";
+  /** 링크가 가리키는 대상(상대 경로일 수 있음)과 링크 자신의 위치. */
+  symlinkTarget?: string | null;
+  installedPath?: string;
   originKind?: ClaudeSourceKind | null;
   isReadOnly?: boolean;
   /** 앱이 관리하지 않는 관찰 항목. 제거·비활성 같은 관리 동작을 열지 않는다. */
@@ -219,6 +223,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
     projectBadge,
     platformIcons,
     sourceType,
+    symlinkTarget,
+    installedPath,
     originKind,
     isReadOnly,
     isUnmanaged,
@@ -256,6 +262,9 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
   } = props;
 
   const isPlatformCard = Boolean(platformDisplayName || sharedControl || usageControl || sourceType);
+  const linkTarget = sourceType === "symlink" && symlinkTarget && installedPath
+    ? resolveSymlinkTarget(installedPath, symlinkTarget)
+    : undefined;
 
   // Determine variant features
   const hasCheckbox = !!checkbox;
@@ -308,7 +317,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
           >
             <div className="min-w-0 flex-1 space-y-1">
               <div className="font-medium text-sm text-foreground truncate">{name}</div>
-              {sourceType && <SourceIndicator sourceType={sourceType} />}
+              {sourceType && <SourceIndicator sourceType={sourceType} linkTarget={linkTarget} />}
             </div>
             <ChevronRight className="size-4 text-muted-foreground shrink-0 mt-0.5" />
           </button>
@@ -334,7 +343,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
               {description && (
                 <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{description}</p>
               )}
-              {sourceType && <SourceIndicator sourceType={sourceType} />}
+              {sourceType && <SourceIndicator sourceType={sourceType} linkTarget={linkTarget} />}
             </div>
             <ChevronRight className="size-4 text-muted-foreground shrink-0 mt-0.5" />
           </div>
@@ -656,7 +665,8 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
                     {origin && <GitHubOriginBadge origin={origin} installId={localSkillId} originalName={name} />}
                     {originKind && <SourceOriginBadge originKind={originKind} />}
                     {isExternallyManaged ? <ExternalManagedBadge /> : isUniversalSource ? <UniversalSourceBadge /> : isReadOnly ? <ReadOnlyBadge /> : null}
-                    {sourceType && <SourceIndicator sourceType={sourceType} />}
+                    {sourceType && <SourceIndicator sourceType={sourceType} linkTarget={linkTarget} />}
+                    {linkTarget && <span className="break-all">{t("platform.symlinkTarget", { path: formatPathForDisplay(linkTarget) })}</span>}
                     {sharedControl && <span>{t("platform.confirmedPlatforms", { count: sharedControl.impact.confirmed_platforms.length })}</span>}
                     {sharedControl && sharedControl.impact.management_path && <span className="break-all">{formatPathForDisplay(sharedControl.impact.management_path)}</span>}
                     <SkillGroupLinks filePath={translation?.filePath} />
@@ -802,7 +812,7 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
             )}
 
             {/* Source indicator (platform) */}
-            {sourceType && <SourceIndicator sourceType={sourceType} />}
+            {sourceType && <SourceIndicator sourceType={sourceType} linkTarget={linkTarget} />}
 
             {/* "Already in Central" badge */}
             {isCentral && (
@@ -937,11 +947,19 @@ export function UnifiedSkillCard(props: UnifiedSkillCardProps) {
 
 // ─── Source Indicator (internal) ──────────────────────────────────────────────
 
-function SourceIndicator({ sourceType }: { sourceType: string }) {
+function SourceIndicator({ sourceType, linkTarget }: { sourceType: string; linkTarget?: string }) {
   const { t, i18n } = useTranslation();
+  const centralPath = useStorageStore((state) => state.status?.central_path);
   const isSymlink = sourceType === "symlink";
   const isNative = sourceType === "native";
-  const primaryLabel = isSymlink ? t("platform.sourceCentral") : t("platform.sourceStandalone");
+  // 링크 대상이 보관함 안일 때만 "원본 스킬 보관함"이라고 쓴다. 대상이나 보관함 경로를 모르면 단정하지 않는다.
+  const primaryLabel = !isSymlink
+    ? t("platform.sourceStandalone")
+    : !linkTarget || !centralPath
+      ? t("platform.sourceLinked")
+      : isPathInside(linkTarget, centralPath)
+        ? t("platform.sourceCentral")
+        : t("platform.sourceExternal");
   const secondaryLabel = isSymlink
     ? t("platform.sourceSymlinkLabel")
     : isNative

@@ -953,6 +953,8 @@ export function PlatformView() {
                           sourceType={skill.file_path
                             ? skill.link_type as "symlink" | "copy" | "native"
                             : undefined}
+                          symlinkTarget={skill.symlink_target}
+                          installedPath={skill.dir_path}
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
                           isUnmanaged={skill.is_managed === false}

@@ -419,6 +419,8 @@ export function UniversalInstallView() {
                   sourceType={skill.file_path
                     ? skill.link_type as "symlink" | "copy" | "native"
                     : undefined}
+                  symlinkTarget={skill.symlink_target}
+                  installedPath={skill.dir_path}
                   isReadOnly={skill.is_read_only ?? false}
                   isUnmanaged={skill.is_managed === false}
                   onImportObserved={() =>

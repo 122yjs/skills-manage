@@ -82,6 +82,7 @@ import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import { SkillUsageBusyError, useSkillUsageStore } from "../stores/skillUsageStore";
+import { useStorageStore } from "../stores/storageStore";
 import * as tauriBridge from "@/lib/tauri";
 
 const userSourceText = /用户来源|User source/i;
@@ -421,6 +422,18 @@ describe("PlatformView", () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     testNavigate = null;
+    // 목업 링크들은 옛 보관함 위치(~/.agents/skills)를 가리킨다.
+    useStorageStore.setState({
+      status: {
+        central_path: "~/.agents/skills/",
+        default_central_path: "~/.skillsmanage/skills/",
+        legacy_path: "~/.agents/skills/",
+        universal_path: "~/.agents/skills/",
+        migration_state: "completed",
+        migration_required: false,
+        legacy_skill_count: 0,
+      },
+    });
     mockRefreshCounts.mockReset();
     mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
     mockSetSkillUsage.mockReset().mockResolvedValue(undefined);

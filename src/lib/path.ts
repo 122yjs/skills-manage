@@ -89,3 +89,26 @@ export function describeSkillsPattern(path: string): string {
   const compact = compactHomePath(path);
   return compact.startsWith("~/") ? compact.slice(2) : compact;
 }
+
+/** 심볼릭 링크 대상이 상대 경로면 링크가 있는 폴더를 기준으로 풀어 쓴다. */
+export function resolveSymlinkTarget(linkPath: string, target: string): string {
+  const normalizedTarget = normalizePathSeparators(target);
+  const isAbsolute = normalizedTarget.startsWith("/") || normalizedTarget.startsWith("~") || isWindowsPath(target);
+  const joined = isAbsolute
+    ? normalizedTarget
+    : `${normalizePathSeparators(linkPath).replace(/\/+$/, "")}/../${normalizedTarget}`;
+  const [root, ...rest] = joined.split("/");
+  const parts: string[] = [];
+  for (const part of rest) {
+    if (part === "..") parts.pop();
+    else if (part && part !== ".") parts.push(part);
+  }
+  return [root, ...parts].join("/");
+}
+
+/** `path`가 `root` 폴더 자신이거나 그 안에 있으면 참이다. */
+export function isPathInside(path: string, root: string): boolean {
+  const normalizedPath = normalizePathSeparators(path).replace(/\/+$/, "");
+  const normalizedRoot = normalizePathSeparators(root).replace(/\/+$/, "");
+  return normalizedPath === normalizedRoot || normalizedPath.startsWith(`${normalizedRoot}/`);
+}

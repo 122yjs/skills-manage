@@ -56,7 +56,24 @@ it("비교 전에는 같은 내용이라고 단정하지 않고 실제 비교 �
   expect(screen.queryByRole("status")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /paseo/ }));
   fireEvent.click(screen.getByRole("button", { name: "比较原文件与内容" }));
-  expect(await screen.findByRole("status")).toHaveTextContent("这些路径指向同一份原文件");
+  expect(await screen.findByRole("status")).toHaveTextContent("实际文件只有一份");
   expect(screen.getByText("同一份原文件")).toBeVisible();
   expect(compare).toHaveBeenCalledWith("cursor", "paseo");
+});
+
+it("같은 원본 묶음 머리에 링크들이 가리키는 공통 원본 경로를 보여 준다", async () => {
+  const { useSkillStore } = await import("@/stores/skillStore");
+  const links: ScannedSkill[] = ["samcheonpo", "anti-samcheonpo"].map((dir) => ({
+    ...skills[0],
+    row_id: dir,
+    name: "samcheonpo",
+    dir_path: `/home/.gemini/config/skills/${dir}`,
+    link_type: "symlink",
+    symlink_target: dir === "samcheonpo" ? "/home/.agents/skills/samcheonpo" : "../../../.agents/skills/samcheonpo",
+  }));
+  useSkillStore.setState({ compareLocations: vi.fn().mockResolvedValue({ relation: "same_origin", paths: links.map(s => s.dir_path) }) });
+  render(<SkillLocationGroup skills={links} agentId="antigravity"><p>경로별 관리</p></SkillLocationGroup>);
+  fireEvent.click(screen.getByRole("button", { name: /samcheonpo/ }));
+  fireEvent.click(screen.getByRole("button", { name: "比较原文件与内容" }));
+  expect(await screen.findByText("共同原文件：/home/.agents/skills/samcheonpo · 全部是链接，删除任意一个都会保留原文件")).toBeVisible();
 });
