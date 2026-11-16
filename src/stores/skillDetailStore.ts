@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import { SkillDetail, SkillDetailRequest } from "@/types";
+import { SkillDetail, SkillDetailRequest, SkillDirectoryNode } from "@/types";
 import {
   ExplanationErrorInfo,
   setupExplanationStreamListeners,
@@ -34,6 +34,8 @@ interface SkillDetailState {
   installSkill: (skillId: string, agentId: string) => Promise<boolean>;
   uninstallSkill: (skillId: string, agentId: string) => Promise<void>;
   refreshInstallations: (skillId: string) => Promise<boolean>;
+  /** 스킬 식별자로 서버가 찾은 스킬 폴더의 파일 트리를 읽는다. */
+  listSkillDirectory: (request: SkillDetailRequest) => Promise<SkillDirectoryNode[]>;
   cleanupExplanationListeners: () => void;
   reset: () => void;
 }
@@ -398,6 +400,9 @@ export const useSkillDetailStore = create<SkillDetailState>((set) => ({
   },
 
   cleanupExplanationListeners,
+
+  listSkillDirectory: (request: SkillDetailRequest) =>
+    invoke<SkillDirectoryNode[]>("list_skill_directory", buildDetailInvokeArgs(request)),
 
   /**
    * Reset the store to its initial state (called when leaving the detail page).

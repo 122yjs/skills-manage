@@ -1520,6 +1520,25 @@ pub async fn read_skill_content(
         .map_err(|e| format!("Failed to read '{}': {}", skill.file_path, e))
 }
 
+/// 스킬 식별자(발견된 프로젝트 스킬 ID 포함)로 스킬 폴더 경로를 찾는다.
+async fn skill_root_dir(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: Option<&str>,
+    row_id: Option<&str>,
+) -> Result<String, String> {
+    Ok(
+        match db::get_discovered_skill_by_id(pool, skill_id).await? {
+            Some(discovered) => discovered.dir_path,
+            None => {
+                get_skill_detail_with_row_impl(pool, skill_id, agent_id, row_id)
+                    .await?
+                    .dir_path
+            }
+        },
+    )
+}
+
 /// 스킬 식별자(발견된 프로젝트 스킬 ID 포함)로 스킬 폴더를 찾고, 그 폴더 기준
 /// 상대 경로의 파일만 읽는다. 화면이 임의 경로를 넘겨 폴더 밖 파일을 읽지 못하게 한다.
 pub(crate) async fn read_skill_file_impl(
@@ -1529,14 +1548,7 @@ pub(crate) async fn read_skill_file_impl(
     row_id: Option<&str>,
     relative_path: &str,
 ) -> Result<String, String> {
-    let root = match db::get_discovered_skill_by_id(pool, skill_id).await? {
-        Some(discovered) => discovered.dir_path,
-        None => {
-            get_skill_detail_with_row_impl(pool, skill_id, agent_id, row_id)
-                .await?
-                .dir_path
-        }
-    };
+    let root = skill_root_dir(pool, skill_id, agent_id, row_id).await?;
     let relative = Path::new(relative_path);
     if !relative
         .components()
@@ -1584,8 +1596,15 @@ pub async fn read_skill_file(
     .await
 }
 
-#[tauri::command]
-pub async fn list_skill_directory(dir_path: String) -> Result<Vec<SkillDirectoryNode>, String> {
+/// 스킬 식별자로 서버가 스킬 폴더를 찾아 그 안의 파일 트리만 돌려준다.
+/// 화면이 임의 경로를 넘겨 스킬 폴더 밖을 열람하지 못하게 한다.
+pub(crate) async fn list_skill_directory_impl(
+    pool: &DbPool,
+    skill_id: &str,
+    agent_id: Option<&str>,
+    row_id: Option<&str>,
+) -> Result<Vec<SkillDirectoryNode>, String> {
+    let dir_path = skill_root_dir(pool, skill_id, agent_id, row_id).await?;
     let root = Path::new(&dir_path);
     if !root.exists() {
         return Err(format!("Path does not exist: {}", dir_path));
@@ -1599,6 +1618,16 @@ pub async fn list_skill_directory(dir_path: String) -> Result<Vec<SkillDirectory
         .map_err(|e| format!("Failed to resolve directory '{}': {}", dir_path, e))?;
 
     build_skill_directory_nodes(root, root, &[canonical_root])
+}
+
+#[tauri::command]
+pub async fn list_skill_directory(
+    state: State<'_, AppState>,
+    skill_id: String,
+    agent_id: Option<String>,
+    row_id: Option<String>,
+) -> Result<Vec<SkillDirectoryNode>, String> {
+    list_skill_directory_impl(&state.db, &skill_id, agent_id.as_deref(), row_id.as_deref()).await
 }
 
 #[tauri::command]
@@ -3703,9 +3732,28 @@ mod tests {
         assert_eq!(content.unwrap(), "# Found");
     }
 
+    /// 폴더를 발견된 스킬로 등록해 식별자로 목록을 읽게 한다.
+    async fn register_skill_dir(pool: &SqlitePool, id: &str, root: &Path) {
+        db::insert_discovered_skill(
+            pool,
+            id,
+            id,
+            None,
+            &root.join("SKILL.md").to_string_lossy(),
+            &root.to_string_lossy(),
+            &root.parent().unwrap().to_string_lossy(),
+            "project",
+            "claude-code",
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn test_list_skill_directory_returns_nested_sorted_tree() {
         let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
         let root = tmp.path().join("frontend-design");
         let docs_dir = root.join("docs");
         let nested_dir = docs_dir.join("guides");
@@ -3715,8 +3763,9 @@ mod tests {
         fs::write(root.join("notes.txt"), "notes").unwrap();
         fs::write(docs_dir.join("README.md"), "# Docs").unwrap();
         fs::write(nested_dir.join("tips.md"), "# Tips").unwrap();
+        register_skill_dir(&pool, "frontend-design", &root).await;
 
-        let nodes = list_skill_directory(root.to_string_lossy().into_owned())
+        let nodes = list_skill_directory_impl(&pool, "frontend-design", None, None)
             .await
             .unwrap();
 
@@ -3738,8 +3787,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_list_skill_directory_rejects_missing_path() {
-        let result = list_skill_directory("/nonexistent/directory".to_string()).await;
+    async fn test_list_skill_directory_rejects_unknown_skill() {
+        let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
+        // 폴더는 실제로 있어도 앱이 아는 스킬이 아니면 열람할 수 없다.
+        let path = tmp.path().to_string_lossy().into_owned();
+
+        let result = list_skill_directory_impl(&pool, &path, None, None).await;
+
         assert!(result.is_err());
     }
 
@@ -3749,12 +3804,14 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let tmp = TempDir::new().unwrap();
+        let pool = setup_test_db().await;
         let root = tmp.path().join("planning-with-files-zh");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("SKILL.md"), "# Skill").unwrap();
         symlink(&root, root.join("planning-with-files-zh")).unwrap();
+        register_skill_dir(&pool, "planning-with-files-zh", &root).await;
 
-        let nodes = list_skill_directory(root.to_string_lossy().into_owned())
+        let nodes = list_skill_directory_impl(&pool, "planning-with-files-zh", None, None)
             .await
             .unwrap();
 

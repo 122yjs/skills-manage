@@ -239,6 +239,9 @@ const mockRefreshCounts = vi.fn();
 const mockRefreshInstallations = vi.fn();
 const mockSetSkillUsage = vi.fn();
 
+// 실제 store처럼 렌더링마다 같은 함수 참조를 돌려줘야 효과가 다시 실행되지 않는다.
+const mockListSkillDirectory = () => mockTauriInvoke("list_skill_directory");
+
 function buildDetailStoreState(overrides = {}) {
   return {
     detail: mockDetail,
@@ -259,6 +262,7 @@ function buildDetailStoreState(overrides = {}) {
     installSkill: mockInstallSkill,
     uninstallSkill: mockUninstallSkill,
     refreshInstallations: mockRefreshInstallations,
+    listSkillDirectory: mockListSkillDirectory,
     cleanupExplanationListeners: mockCleanupExplanationListeners,
     reset: mockReset,
     ...overrides,
