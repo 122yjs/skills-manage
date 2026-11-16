@@ -309,7 +309,7 @@ describe("SettingsView", () => {
     expect(invoke).not.toHaveBeenCalledWith("get_setting", { key: "ai_api_key__claude" });
   });
 
-  it("saves a typed AI key through the keychain command, not the settings table", async () => {
+  it("saves a typed AI key through the keychain command only when Save is pressed", async () => {
     vi.mocked(invoke).mockImplementation(async (command, args) => {
       if (command === "get_setting" && (args as { key: string }).key === "ai_provider") return "claude";
       return null;
@@ -318,7 +318,10 @@ describe("SettingsView", () => {
     setupMocks({ setSecret });
     renderSettingsView();
 
-    fireEvent.change(await screen.findByPlaceholderText("sk-..."), { target: { value: "sk-typed" } });
+    const keyInput = await screen.findByPlaceholderText("sk-...");
+    fireEvent.change(keyInput, { target: { value: "sk-typed" } });
+    expect(setSecret).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
 
     await waitFor(() => expect(setSecret).toHaveBeenCalledWith("ai_api_key__claude", "sk-typed"));
     expect(invoke).not.toHaveBeenCalledWith("set_setting", {

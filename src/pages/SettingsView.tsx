@@ -360,13 +360,16 @@ export function SettingsView() {
     save();
   }, [aiProvider, aiRegion, aiModel, aiMaxTokens, aiCustomUrl, aiProtocol, aiLoaded, hasUserInteracted]);
 
-  // 새로 입력한 API 키는 OS 키체인에 저장한다 (DB에는 설정 여부만 남는다)
-  useEffect(() => {
-    if (!aiLoaded || !hasUserInteracted || !aiApiKey.trim()) return;
-    setSecret(`ai_api_key__${aiProvider}`, aiApiKey)
-      .then(setAiKeyConfigured)
-      .catch(() => { /* ignore */ });
-  }, [aiProvider, aiApiKey, aiLoaded, hasUserInteracted, setSecret]);
+  // 입력한 API 키는 저장 버튼을 눌렀을 때만 OS 키체인에 저장한다 (DB에는 설정 여부만 남는다).
+  // 입력마다 저장하면 한 글자만 쳐도 기존 키를 덮어쓰기 때문이다.
+  async function handleSaveAiKey() {
+    try {
+      setAiKeyConfigured(await setSecret(`ai_api_key__${aiProvider}`, aiApiKey));
+      setAiApiKey("");
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
 
   async function handleClearAiKey() {
     try {
@@ -1050,6 +1053,11 @@ export function SettingsView() {
                   <button type="button" onClick={() => setShowKey(!showKey)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
                     {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
+                </div>
+                <div className="mt-2">
+                  <Button size="sm" onClick={handleSaveAiKey} disabled={!aiApiKey.trim()}>
+                    {t("settings.aiApiKeySave")}
+                  </Button>
                 </div>
                 {!secretKeychainAvailable ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.secretKeychainUnavailable")}</p>

@@ -843,6 +843,7 @@
     "secretSavedPlaceholder": "已保存 · 输入新值即可替换",
     "secretKeychainUnavailable": "此环境无法使用系统钥匙串，因此不会把密钥写入文件，只在应用运行期间保存在内存中。重新打开应用后需要再次输入。",
     "aiApiKeyClear": "清除密钥",
+    "aiApiKeySave": "保存密钥",
     "aiModelLabel": "模型",
     "aiModelPlaceholder": "模型名称",
     "aiModelCustom": "自定义",
