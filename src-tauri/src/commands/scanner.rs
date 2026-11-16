@@ -280,6 +280,7 @@ fn should_skip_nested_scan_dir(path: &Path) -> bool {
             NESTED_SCAN_SKIP_DIRS.contains(&name)
                 || name.contains(".skillsmanage-stage-")
                 || name.contains(".skillsmanage-old-")
+                || name.contains(super::linker::COPY_STAGE_MARKER)
         })
 }
 
@@ -1540,6 +1541,14 @@ mod tests {
             "old-skill",
             &valid_skill_md("Old Skill", "Must stay hidden"),
         );
+        // 복사 임시 폴더는 스킬 자체이므로 SKILL.md가 바로 들어 있다.
+        let copy_stage = tmp.path().join(".demo.skillsmanage-copy-789");
+        fs::create_dir_all(&copy_stage).unwrap();
+        fs::write(
+            copy_stage.join("SKILL.md"),
+            valid_skill_md("Copy Stage", "Must stay hidden"),
+        )
+        .unwrap();
 
         let skills = scan_skill_root(tmp.path(), false, ScanDirectoryOptions::nested());
 

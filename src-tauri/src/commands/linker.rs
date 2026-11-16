@@ -140,6 +140,9 @@ pub fn create_verified_symlink(agent_dir: &Path, source: &Path, link: &Path) -> 
 
 // ─── Atomic Directory Copy ────────────────────────────────────────────────────
 
+/// 복사 임시 폴더 이름에 들어가는 표식. 스캐너가 이 폴더를 스킬로 읽지 않도록 같은 값을 쓴다.
+pub(crate) const COPY_STAGE_MARKER: &str = ".skillsmanage-copy-";
+
 /// 스킬 폴더를 `dst`로 "전부 되거나 아무것도 안 되게" 복사한다.
 ///
 /// `dst` 옆의 임시 폴더에 전부 복사하고 원본과 비교해 검증한 뒤, 이름 바꾸기 한 번으로
@@ -167,7 +170,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     })?;
     let name = dst.file_name().unwrap_or_default().to_string_lossy();
     let stage = parent.join(format!(
-        ".{name}.skillsmanage-copy-{}",
+        ".{name}{COPY_STAGE_MARKER}{}",
         uuid::Uuid::new_v4()
     ));
 
