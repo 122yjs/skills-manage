@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
 import { setupExplanationStreamListeners } from "@/lib/explanationStream";
+import { localizeBackendError } from "@/lib/backendErrors";
 import {
   SkillRegistry,
   MarketplaceSkill,
@@ -317,7 +318,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     } catch (err) {
       const registries = await invoke<SkillRegistry[]>("list_registries").catch(() => null);
       set({
-        error: String(err),
+        error: localizeBackendError(err),
         registries: registries ?? get().registries,
         isSyncing: false,
       });
@@ -368,7 +369,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       set((s) => {
         const next = new Set(s.installingIds);
         next.delete(skillId);
-        return { installingIds: next, error: String(err) };
+        return { installingIds: next, error: localizeBackendError(err) };
       });
       throw err;
     }
@@ -464,8 +465,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           preview: null,
           importResult: null,
           previewedRepoUrl: repoUrl,
-          error: String(err),
-          previewError: String(err),
+          error: localizeBackendError(err),
+          previewError: localizeBackendError(err),
           importFailure: null,
           importProgress: null,
           importStartedAt: null,
@@ -535,7 +536,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         githubImport: {
           ...state.githubImport,
           isImporting: false,
-          error: importFailure?.message ?? String(err),
+          error: importFailure?.message ?? localizeBackendError(err),
           importFailure,
           importProgress: null,
           importStartedAt: null,
@@ -596,7 +597,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           ...state.githubImport,
           skillMarkdown: {
             ...state.githubImport.skillMarkdown,
-            [sourcePath]: { status: "error", error: String(err) },
+            [sourcePath]: { status: "error", error: localizeBackendError(err) },
           },
         },
       }));
@@ -780,7 +781,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       set((s) => {
         const next = new Set(s.installingIds);
         next.delete(skillId);
-        return { installingIds: next, error: String(err) };
+        return { installingIds: next, error: localizeBackendError(err) };
       });
       throw err;
     }

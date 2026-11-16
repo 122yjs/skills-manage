@@ -1605,11 +1605,16 @@ const MAX_REPOSITORY_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPOSITORY_FILES: usize = 20_000;
 const MAX_REPOSITORY_UNPACKED_BYTES: usize = 256 * 1024 * 1024;
 
-/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
+/// 백엔드는 화면 언어를 모르므로 `코드: 영어 설명`만 보내고, 화면이 코드를 보고
+/// `src/lib/backendErrors.ts`의 문구로 바꿔 보여 준다.
+const ARCHIVE_DOWNLOAD_LIMIT_CODE: &str = "GITHUB_ARCHIVE_DOWNLOAD_LIMIT";
+const ARCHIVE_EXTRACTION_LIMIT_CODE: &str = "GITHUB_ARCHIVE_EXTRACTION_LIMIT";
+const MIRROR_DISABLED_CODE: &str = "GITHUB_MIRROR_DISABLED";
+
 fn archive_download_limit_error() -> String {
     let mb = MAX_REPOSITORY_ARCHIVE_BYTES / (1024 * 1024);
     format!(
-        "GitHub repository archive exceeds the safe download limit ({mb} MB). / GitHub 저장소 압축 파일이 안전 다운로드 한도({mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全下载上限（{mb} MB）。"
+        "{ARCHIVE_DOWNLOAD_LIMIT_CODE}: GitHub repository archive exceeds the safe download limit ({mb} MB)."
     )
 }
 
@@ -1617,7 +1622,7 @@ fn archive_extraction_limit_error() -> String {
     let mb = MAX_REPOSITORY_UNPACKED_BYTES / (1024 * 1024);
     let files = MAX_REPOSITORY_FILES;
     format!(
-        "GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked). / GitHub 저장소 압축 파일이 안전 압축 해제 한도(파일 {files}개 또는 {mb}MB)를 넘었습니다. / GitHub 仓库压缩包超过安全解压上限（{files} 个文件或解压后 {mb} MB）。"
+        "{ARCHIVE_EXTRACTION_LIMIT_CODE}: GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked)."
     )
 }
 
@@ -2111,7 +2116,8 @@ where
                         .map(|denial| denial.to_string())
                         .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status));
                     if !mirror_enabled && auth_token.is_none() && is_rate_limited {
-                        message.push_str(MIRROR_DISABLED_GUIDANCE);
+                        message =
+                            format!("{MIRROR_DISABLED_CODE}: {message}{MIRROR_DISABLED_GUIDANCE}");
                     }
                     return Err(message);
                 }
@@ -2186,8 +2192,8 @@ where
     ))
 }
 
-/// 백엔드는 화면 언어를 모르므로 영어·한국어·중국어 문구를 함께 담는다.
-const MIRROR_DISABLED_GUIDANCE: &str = " Save a GitHub token in Settings or enable the mirror fallback in Settings. / 설정에서 GitHub 토큰을 저장하거나 미러 대체를 켜세요. / 请在设置中保存 GitHub 令牌，或开启镜像回退。";
+const MIRROR_DISABLED_GUIDANCE: &str =
+    " Save a GitHub token in Settings or enable the mirror fallback in Settings.";
 
 fn should_retry_via_mirror_status(
     surface: GitHubFetchSurface,
@@ -2735,9 +2741,11 @@ mod tests {
 
         let error = snapshot_from_repository_archive(&archive).unwrap_err();
 
+        assert!(
+            error.starts_with("GITHUB_ARCHIVE_EXTRACTION_LIMIT: "),
+            "{error}"
+        );
         assert!(error.contains("safe extraction limit"), "{error}");
-        assert!(error.contains("한도"), "{error}");
-        assert!(error.contains("上限"), "{error}");
     }
 
     #[test]
@@ -4207,6 +4215,7 @@ mod tests {
         .await
         .expect_err("rate limited without mirror must fail");
 
+        assert!(error.starts_with("GITHUB_MIRROR_DISABLED: "), "{error}");
         assert!(error.contains("rate limit"), "{error}");
         assert!(
             error.contains("GitHub token") && error.contains("mirror"),
