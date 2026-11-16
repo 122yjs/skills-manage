@@ -1134,7 +1134,7 @@ pub async fn install_from_skills_sh(
         .join(&skill_name);
     ensure_new_install_target(&state.db, &skill_name, &skill_dir).await?;
     let mut progress_state = github_import::GitHubImportProgressState::default();
-    github_import::write_snapshot_source_to_target(
+    github_import::write_snapshot_source_atomically(
         &snapshot,
         &source_files,
         &skill_dir,

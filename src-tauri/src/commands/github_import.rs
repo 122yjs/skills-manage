@@ -1884,6 +1884,41 @@ pub(crate) fn write_snapshot_source_to_target(
     Ok(())
 }
 
+/// 스냅샷의 스킬 폴더를 `target_dir` 옆 임시 폴더에 완성한 뒤 이름 바꾸기 한 번으로 확정한다.
+/// 중간에 실패하면 임시 폴더를 지우므로 `target_dir`에는 반쯤 쓰인 스킬이 남지 않는다.
+pub(crate) fn write_snapshot_source_atomically(
+    snapshot: &GitHubRepoSnapshot,
+    files: &[SnapshotSourceFile],
+    target_dir: &Path,
+    source_path: &str,
+    progress_state: &mut GitHubImportProgressState,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
+    let central_root = target_dir
+        .parent()
+        .ok_or_else(|| "Install target has no parent directory.".to_string())?;
+    let skill_id = target_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Install target has no directory name.".to_string())?;
+    let staging_container = unique_staging_container(central_root, skill_id, "stage");
+    let staging_dir = staging_container.join(skill_id);
+    let result = write_snapshot_source_to_target(
+        snapshot,
+        files,
+        &staging_dir,
+        source_path,
+        progress_state,
+        app,
+    )
+    .and_then(|()| {
+        std::fs::rename(&staging_dir, target_dir)
+            .map_err(|e| format!("Failed to install skill '{}': {}", skill_id, e))
+    });
+    remove_directory_if_present(&staging_container);
+    result
+}
+
 /// Git의 실행 여부만 반영하고, 현재 읽기 범위와 특수 권한은 확대하지 않는다.
 pub(crate) fn set_file_executable(path: &Path, executable: bool) -> Result<(), String> {
     #[cfg(unix)]
@@ -2422,6 +2457,31 @@ mod tests {
             .collect::<Vec<_>>();
         entries.sort();
         entries
+    }
+
+    #[test]
+    fn atomic_write_leaves_nothing_in_central_when_a_file_fails() {
+        let central = tempdir().unwrap();
+        let target = central.path().join("demo");
+        // 정렬 순서상 SKILL.md가 먼저 쓰이고, 그 뒤 안전하지 않은 경로에서 실패한다.
+        let snapshot = repo_snapshot(&[
+            ("skills/demo/SKILL.md", sample_frontmatter("demo", "demo")),
+            ("skills/demo/x/../../y.md", "bad".to_string()),
+        ]);
+        let files = collect_snapshot_source_files(&snapshot, "skills/demo").unwrap();
+
+        let result = write_snapshot_source_atomically(
+            &snapshot,
+            &files,
+            &target,
+            "skills/demo",
+            &mut GitHubImportProgressState::default(),
+            None,
+        );
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(central.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "보관함에 남은 것: {leftovers:?}");
     }
 
     async fn setup_test_db() -> DbPool {
