@@ -229,7 +229,6 @@ export function UniversalInstallView() {
           return;
         }
         setSharedDialogOpen(false);
-        setSharedDialogImpacts([]);
         await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
         if (result.failed.length > 0) {
           toast.error(
@@ -259,7 +258,6 @@ export function UniversalInstallView() {
         return;
       }
       setSharedDialogOpen(false);
-      setSharedDialogImpacts([]);
       await Promise.all([getSkillsByAgent(UNIVERSAL_AGENT_ID), refreshCounts()]);
     } catch (error) {
       if (isSkillUsageBusyError(error)) return;
@@ -419,6 +417,8 @@ export function UniversalInstallView() {
                   sourceType={skill.file_path
                     ? skill.link_type as "symlink" | "copy" | "native"
                     : undefined}
+                  symlinkTarget={skill.symlink_target}
+                  installedPath={skill.dir_path}
                   isReadOnly={skill.is_read_only ?? false}
                   isUnmanaged={skill.is_managed === false}
                   onImportObserved={() =>
@@ -490,6 +490,8 @@ export function UniversalInstallView() {
         onOpenChange={(open) => {
           if (sharedDialogConfirming) return;
           setSharedDialogOpen(open);
+        }}
+        onOpenChangeComplete={(open) => {
           if (!open) setSharedDialogImpacts([]);
         }}
         impacts={sharedDialogImpacts}
@@ -509,7 +511,9 @@ export function UniversalInstallView() {
                 )
               : t("sharedImpact.titleDisable", { name: "" })
         }
-        description={t("sharedImpact.description")}
+        description={t(
+          sharedDialogDesired ? "sharedImpact.descriptionEnable" : "sharedImpact.descriptionDisable"
+        )}
         confirmLabel={
           sharedDialogDesired ? t("sharedImpact.confirmEnable") : t("sharedImpact.confirmDisable")
         }

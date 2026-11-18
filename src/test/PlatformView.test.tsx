@@ -6,8 +6,13 @@ import {
   Routes,
   useNavigate,
 } from "react-router-dom";
+import { toast } from "sonner";
 import { PlatformView } from "../pages/PlatformView";
 import { AgentWithStatus, ScannedSkill } from "../types";
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+}));
 
 // Mock stores
 vi.mock("../stores/platformStore", () => ({
@@ -82,6 +87,7 @@ import { usePlatformStore } from "../stores/platformStore";
 import { useSkillStore } from "../stores/skillStore";
 import { useCentralSkillsStore } from "../stores/centralSkillsStore";
 import { SkillUsageBusyError, useSkillUsageStore } from "../stores/skillUsageStore";
+import { useStorageStore } from "../stores/storageStore";
 import * as tauriBridge from "@/lib/tauri";
 
 const userSourceText = /用户来源|User source/i;
@@ -421,6 +427,18 @@ describe("PlatformView", () => {
     vi.clearAllMocks();
     window.localStorage.clear();
     testNavigate = null;
+    // 목업 링크들은 옛 보관함 위치(~/.agents/skills)를 가리킨다.
+    useStorageStore.setState({
+      status: {
+        central_path: "~/.agents/skills/",
+        default_central_path: "~/.skillsmanage/skills/",
+        legacy_path: "~/.agents/skills/",
+        universal_path: "~/.agents/skills/",
+        migration_state: "completed",
+        migration_required: false,
+        legacy_skill_count: 0,
+      },
+    });
     mockRefreshCounts.mockReset();
     mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
     mockSetSkillUsage.mockReset().mockResolvedValue(undefined);
@@ -580,7 +598,7 @@ describe("PlatformView", () => {
         .length
     ).toBeGreaterThan(0);
     expect(
-      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "独立安装 - 复制安装")
+      screen.getAllByText((_, element) => element?.textContent?.replace(/\s+/g, " ").trim() === "未链接到原文件 - 复制安装")
         .length
     ).toBeGreaterThan(0);
   });
@@ -934,6 +952,61 @@ describe("PlatformView", () => {
     });
   });
 
+  it("플랫폼 제거 성공 알림에 플랫폼 이름이 채워진다", async () => {
+    const sharedSkill: ScannedSkill = {
+      id: "shared-public",
+      row_id: "claude-code::compatibility::shared-public",
+      name: "shared-public",
+      description: "Shared compatibility source",
+      file_path: "/Users/test/.agents/skills/shared-public/SKILL.md",
+      dir_path: "/Users/test/.agents/skills/shared-public",
+      link_type: "native",
+      is_central: false,
+      source_kind: "compatibility",
+      source_root: "/Users/test/.agents/skills",
+      is_read_only: true,
+    };
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({ skillsByAgent: { "claude-code": [sharedSkill] } });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+    useSkillUsageStore.setState({
+      platformControlsByAgent: {
+        "claude-code": [{
+          agent_id: "claude-code",
+          skill_id: sharedSkill.id,
+          row_id: sharedSkill.row_id!,
+          skill_name: sharedSkill.name,
+          source_path: sharedSkill.dir_path,
+          source_kind: "compatibility",
+          state: "active",
+          supported: true,
+          can_toggle: true,
+          can_delete: true,
+          can_reapply: false,
+          reason: null,
+          requires_reload: true,
+          scope: "name",
+          affected_source_count: 1,
+          adapter: "claude-skill-overrides",
+          config_path: "/Users/test/.claude/settings.json",
+        }],
+      },
+    });
+
+    renderPlatformView();
+
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code.*shared-public/ }));
+    fireEvent.click(screen.getByRole("button", { name: /仅从 Claude Code 移除 shared-public/ }));
+
+    await waitFor(() => expect(mockDeletePlatformSkillControl).toHaveBeenCalled());
+    await waitFor(() => expect(toast.success).toHaveBeenCalled());
+    const message = vi.mocked(toast.success).mock.calls[0][0] as string;
+    expect(message).toContain("Claude Code");
+    expect(message).not.toContain("{{");
+  });
+
   it("opens an impact dialog for shared installs and confirms with a fresh token", async () => {
     const impact = {
       shared_install_id: "~/.agents/skills/frontend-design",
@@ -991,10 +1064,10 @@ describe("PlatformView", () => {
       expect(mockLoadSharedSkillImpact).toHaveBeenCalledWith("~/.agents/skills/frontend-design");
     });
     expect(screen.getByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "停用公用" })).toBeEnabled();
-    expect(screen.getByText("已确认 1 个")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "停用公用安装" })).toBeEnabled();
+    expect(screen.getByText("已确认 1 个平台")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用公用安装" }));
 
     await waitFor(() => {
       expect(mockSetSharedSkillUsage).toHaveBeenCalledWith(
@@ -1108,7 +1181,7 @@ describe("PlatformView", () => {
     renderPlatformView();
 
     expect(screen.queryByRole("switch", { name: /deleted-public/i })).not.toBeInTheDocument();
-    const reapply = screen.getByRole("button", { name: /重新应用|Reapply|再次应用/i });
+    const reapply = screen.getByRole("button", { name: /重新激活|Reactivate/i });
     fireEvent.click(reapply);
     await waitFor(() => {
       expect(mockReapplyPlatformSkillControl).toHaveBeenCalledWith("claude-code", {
@@ -1216,7 +1289,7 @@ describe("PlatformView", () => {
     });
     expect(platformSwitch).not.toBeChecked();
     expect(platformSwitch).not.toBeDisabled();
-    expect(screen.getByText("恢复到全部设为未激活前的状态。")).toBeInTheDocument();
+    expect(screen.getByText("打开开关只会恢复因“全部设为未激活”而关闭的技能。此前已单独设为未激活的技能保持不变。")).toBeInTheDocument();
 
     fireEvent.click(platformSwitch);
 
@@ -1279,7 +1352,7 @@ describe("PlatformView", () => {
     });
     expect(setSharedPlatformUsage).not.toHaveBeenCalled();
     expect(mockLoadSharedSkillImpact).not.toHaveBeenCalled();
-    expect(screen.queryByRole("button", { name: "停用公用" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "停用公用安装" })).not.toBeInTheDocument();
   });
 
   it("swallows a busy rejection from platform-wide usage without a false failure path", async () => {
@@ -1316,7 +1389,7 @@ describe("PlatformView", () => {
       name: /切换 Claude Code 中全部受管理技能的激活状态/i,
     });
     expect(platformSwitch).toHaveAttribute("aria-disabled", "true");
-    expect(screen.getByText("所有受管理技能均已单独设为未激活。")).toBeInTheDocument();
+    expect(screen.getByText("所有受管理技能均已单独设为未激活，因此无法使用全部开关。请逐个设为激活。")).toBeInTheDocument();
 
     fireEvent.click(platformSwitch);
     expect(mockSetPlatformUsage).not.toHaveBeenCalled();
@@ -1352,7 +1425,7 @@ describe("PlatformView", () => {
       name: /切换 ponytail-audit 的激活状态/i,
     });
     expect(usageSwitch).not.toBeChecked();
-    expect(screen.getByText(/仍有 1 个外部提供的技能可用/)).toBeInTheDocument();
+    expect(screen.getByText(/来自其他来源的 1 个同名技能仍然存在/)).toBeInTheDocument();
 
     fireEvent.click(usageSwitch);
 
@@ -1430,7 +1503,7 @@ describe("PlatformView", () => {
     expect(screen.getByText("技能仓库中的原件会保留。")).toBeInTheDocument();
     expect(screen.getByText("不会删除其他来源的 1 个技能。这些技能不一定是公用安装。")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "删除受管理安装" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除全部受管理安装" }));
 
     await waitFor(() => {
       expect(mockDeletePlatformInstallations).toHaveBeenCalledWith("claude-code");
@@ -1800,7 +1873,7 @@ describe("PlatformView 공용 설치 판정", () => {
   const universalRoot = "/Users/test/.agents/skills";
   const universalBadgeText = "共享安装";
   const manageUniversalText = "管理共享安装";
-  const compatibilityBadgeText = /兼容来源/;
+  const compatibilityBadgeText = /兼容路径来源/;
   const installSourceTablist = "安装来源筛选";
 
   const universalAgent: AgentWithStatus = {

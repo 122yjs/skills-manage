@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { UnifiedSkillCard } from "../components/skill/UnifiedSkillCard";
+import { useStorageStore } from "../stores/storageStore";
 import type { AgentWithStatus } from "../types";
 
 const agents: AgentWithStatus[] = [
@@ -259,7 +260,7 @@ describe("UnifiedSkillCard shared control", () => {
   it("shows the individual toggle before the shared control", () => {
     const { onToggleShared, onIndividualToggle } = renderShared(false);
     const individual = screen.getByRole("switch", {
-      name: "仅在 Claude Code 切换 demo-skill",
+      name: "允许在 Claude Code 中使用 demo-skill",
     });
     const shared = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
     expect(screen.getByText("允许在 Claude Code 中使用")).toBeInTheDocument();
@@ -279,7 +280,7 @@ describe("UnifiedSkillCard shared control", () => {
     expect(details).not.toHaveAttribute("open");
     fireEvent.click(screen.getByText("来源与安装信息"));
     expect(details).toHaveAttribute("open");
-    expect(screen.getByText("技能仓库")).toBeInTheDocument();
+    expect(screen.getByText("链接的原文件")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "管理共享安装" }));
     expect(onManageUniversal).toHaveBeenCalledOnce();
   });
@@ -337,7 +338,7 @@ describe("UnifiedSkillCard shared control", () => {
     );
 
     const sharedSwitch = screen.getByRole("switch", { name: "切换 demo-skill 的公用状态" });
-    expect(screen.getByText("无法单独切换此平台")).toBeInTheDocument();
+    expect(screen.getByText("无法验证此平台的单个技能设置，因此无法单独切换")).toBeInTheDocument();
     expect(
       sharedSwitch.getAttribute("data-disabled") !== null ||
         sharedSwitch.getAttribute("aria-disabled") === "true"
@@ -359,5 +360,40 @@ describe("UnifiedSkillCard localized description", () => {
 
     expect(container.querySelector("button button")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "查看技能 demo-skill" })).toBeInTheDocument();
+  });
+});
+
+describe("UnifiedSkillCard symlink source", () => {
+  function renderLinkCard(symlinkTarget: string) {
+    useStorageStore.setState({
+      status: {
+        central_path: "/Users/test/.skillsmanage/skills",
+        default_central_path: "/Users/test/.skillsmanage/skills",
+        legacy_path: "/Users/test/.agents/skills",
+        universal_path: "/Users/test/.agents/skills",
+        migration_state: "completed",
+        migration_required: false,
+        legacy_skill_count: 0,
+      },
+    });
+    render(<UnifiedSkillCard name="samcheonpo" platformDisplayName="Antigravity" sourceType="symlink"
+      symlinkTarget={symlinkTarget} installedPath="/Users/test/.gemini/config/skills/anti-samcheonpo" />);
+    fireEvent.click(screen.getByText("来源与安装信息"));
+  }
+
+  afterEach(() => useStorageStore.setState({ status: null }));
+
+  it("보관함 안을 가리키는 링크는 보관함 이름표와 원본 경로를 보여 준다", () => {
+    renderLinkCard("/Users/test/.skillsmanage/skills/samcheonpo");
+    expect(screen.getByText("技能仓库")).toBeInTheDocument();
+    expect(screen.getByText("指向的原文件：/Users/test/.skillsmanage/skills/samcheonpo")).toBeInTheDocument();
+    expect(screen.getByText("链接位置：/Users/test/.gemini/config/skills/anti-samcheonpo")).toBeInTheDocument();
+  });
+
+  it("보관함 밖을 가리키는 링크는 외부 원본 이름표와 풀어 쓴 원본 경로를 보여 준다", () => {
+    renderLinkCard("../../../.agents/skills/samcheonpo");
+    expect(screen.queryByText("技能仓库")).not.toBeInTheDocument();
+    expect(screen.getByText("外部原文件")).toBeInTheDocument();
+    expect(screen.getByText("指向的原文件：/Users/test/.agents/skills/samcheonpo")).toBeInTheDocument();
   });
 });

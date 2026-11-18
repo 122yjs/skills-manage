@@ -149,7 +149,7 @@ describe("UniversalInstallView", () => {
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 
     expect(screen.getByRole("heading", { name: "共享安装 (.agents)" })).toBeInTheDocument();
-    expect(screen.getByText("手动管理")).toBeInTheDocument();
+    expect(screen.getByText("应用未管理")).toBeInTheDocument();
     expect(screen.getAllByRole("checkbox")).toHaveLength(3);
     expect(screen.queryByRole("button", { name: /删除 Manual skill 的共享安装/ })).not.toBeInTheDocument();
   });
@@ -194,14 +194,14 @@ describe("UniversalInstallView", () => {
 
     render(<MemoryRouter><UniversalInstallView /></MemoryRouter>);
 
-    expect(screen.queryByText("手动管理")).not.toBeInTheDocument();
+    expect(screen.queryByText("应用未管理")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除 Manual skill 的共享安装" })).toBeEnabled();
     const toggle = screen.getByRole("switch", { name: "切换 Manual skill 的公用状态" });
     expect(toggle).toBeEnabled();
     fireEvent.click(toggle);
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(setSharedSkillUsage).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用公用安装" }));
     await waitFor(() => expect(setSharedSkillUsage).toHaveBeenCalledWith(
       skill.dir_path, false, impact.confirmation_token
     ));
@@ -320,12 +320,12 @@ describe("UniversalInstallView", () => {
 
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(bulkImpactA.shared_install_id);
-    expect(screen.getByRole("button", { name: "停用公用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停用公用安装" })).toBeEnabled();
     expect(
       screen.getByText("即使不在列表中，读取此路径的其他工具也可能受到影响。")
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用公用安装" }));
 
     await waitFor(() => {
       expect(setSharedPlatformUsage).toHaveBeenCalledWith(false, [
@@ -362,7 +362,7 @@ describe("UniversalInstallView", () => {
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(bulkImpactA.shared_install_id);
     expect(loadSharedSkillImpact).not.toHaveBeenCalledWith(bulkImpactPaused.shared_install_id);
-    expect(screen.getByRole("button", { name: "停用公用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停用公用安装" })).toBeEnabled();
   });
 
   it("restores only bulk-paused installs", async () => {
@@ -401,9 +401,9 @@ describe("UniversalInstallView", () => {
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(bulkImpactA.shared_install_id);
     expect(loadSharedSkillImpact).not.toHaveBeenCalledWith(bulkImpactPaused.shared_install_id);
-    expect(screen.getByRole("button", { name: "启用公用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "启用公用安装" })).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "启用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "启用公用安装" }));
 
     await waitFor(() => {
       expect(setSharedPlatformUsage).toHaveBeenCalledWith(true, [
@@ -472,9 +472,9 @@ describe("UniversalInstallView", () => {
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(bulkImpactA.shared_install_id);
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(soloImpact.shared_install_id);
-    expect(screen.getByRole("button", { name: "停用公用" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "停用公用安装" })).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用公用安装" }));
 
     await waitFor(() => {
       expect(setSharedPlatformUsage).toHaveBeenCalledWith(false, [
@@ -558,7 +558,7 @@ describe("UniversalInstallView", () => {
     expect(loadSharedSkillImpact).toHaveBeenCalledWith(canonical.shared_install_id);
     expect(loadSharedSkillImpact).not.toHaveBeenCalledWith("/raw/managed");
 
-    fireEvent.click(screen.getByRole("button", { name: "停用公用" }));
+    fireEvent.click(screen.getByRole("button", { name: "停用公用安装" }));
 
     await waitFor(() => {
       expect(setSharedPlatformUsage).toHaveBeenCalledWith(false, [
@@ -591,7 +591,7 @@ describe("UniversalInstallView", () => {
 
     await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
     expect(screen.getByRole("alert")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "停用公用" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "停用公用安装" })).toBeDisabled();
     expect(setSharedPlatformUsage).not.toHaveBeenCalled();
   });
 
