@@ -1,6 +1,7 @@
 # 앱은 실제로 얼마나 무겁나: 85MB의 정체와 메모리·시작 시간
 
-> 조사 대상: `/Applications/skills-manage.app` (v0.12.3, 2026-09-29 생성 빌드) 및 저장소 `main` (`f1c1ba1`, 2026-11-19 기준)  
+> 조사 대상: `/Applications/skills-manage.app` (v0.12.3, 2026-09-29 생성 빌드) 및 저장소 `main` (`f1c1ba1`, 2026-11-19 기준)
+>
 > 관련 이슈: [#51](https://github.com/122yjs/skills-manage/issues/51), 지도 이슈 [#49](https://github.com/122yjs/skills-manage/issues/49), 연관 현상 [#46](https://github.com/122yjs/skills-manage/issues/46)
 
 ---
