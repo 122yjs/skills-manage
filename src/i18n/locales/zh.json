@@ -203,6 +203,8 @@
     "sourceSymlinkLabel": "符号链接",
     "sourceCopyLabel": "复制安装",
     "notFound": "未找到平台",
+    "unreadableTitle": "部分文件夹无法读取，已保留原有记录",
+    "unreadableHint": "请检查文件夹读取权限和磁盘连接状态，然后重新扫描。",
     "searchSkillLabel": "查看技能 {{name}}",
     "sourceFilterTabsLabel": "Claude 来源筛选",
     "sourceFilter": {
@@ -238,7 +240,8 @@
       "all": "全部",
       "platform": "平台专用安装",
       "universal": "共享安装"
-    }
+    },
+    "unmanaged": "应用未管理"
   },
   "skillOrigin": {
     "confirmUpdate": "备份并更新至 {{commit}}？",
@@ -305,7 +308,8 @@
     "latestVersion": "GitHub 最新版本",
     "unknownVersion": "未记录",
     "compareVersions": "在 GitHub 上查看版本差异",
-    "lastChecked": "上次检查：{{date}}"
+    "lastChecked": "上次检查：{{date}}",
+    "viaMirror": "通过第三方镜像下载，而非直接来自 GitHub"
   },
   "skillUsage": {
     "active": "已激活",
@@ -358,6 +362,13 @@
     "toggleIndividualSkill": "仅在 {{platform}} 切换 {{name}}",
     "sharedDesktopRequired": "公用安装需要在桌面应用中管理。"
   },
+  "startup": {
+    "title": "无法启动应用",
+    "description": "准备数据文件夹、数据库或技能仓库时出现问题。如果外接磁盘已断开，请重新连接后重试；如果该文件夹无法使用，请选择其他仓库路径。",
+    "pathLabel": "新的仓库路径",
+    "retry": "重试",
+    "changePath": "使用此路径并重试"
+  },
   "storage": {
     "title": "技能仓库位置",
     "description": "此文件夹保存所有技能原件。更改位置时会安全移动原件并更新已有安装链接。",
@@ -372,6 +383,11 @@
     "moving": "正在移动...",
     "changed": "已移动技能仓库和 {{count}} 个技能"
   },
+  "legacySecrets": {
+    "banner": "当前环境无法使用系统钥匙串，旧版本以明文留在数据库及其备份中的 AI API 密钥和 GitHub 令牌无法迁移到安全位置。删除后需要重新输入这些密钥。",
+    "clear": "删除旧值",
+    "later": "稍后处理"
+  },
   "migration": {
     "title": "分离技能仓库",
     "description": "把共享路径中的 {{count}} 个现有技能复制到独立仓库，同时保持共享安装状态。",
@@ -382,7 +398,11 @@
     "conflicts": "存在 {{count}} 个冲突，暂时无法迁移。",
     "later": "稍后处理",
     "start": "开始迁移",
-    "migrating": "正在迁移..."
+    "migrating": "正在迁移...",
+    "linkedSkills": "{{count}} 个以链接连接的技能",
+    "linkedSkillsResult": "迁移后仍保持为指向同一目标的链接，原始文件夹不会被修改。",
+    "unrecognizedItems": "{{count}} 个未被识别为技能的项目",
+    "unrecognizedItemsResult": "它们会被移入技能库，共享文件夹中会保留指向它们的链接，因此仍然可见。"
   },
   "sharedDelete": {
     "title": "删除共享安装及关联快捷链接？",
@@ -417,6 +437,18 @@
     "removePartial": "已删除 {{deleted}} 项共享安装；{{failed}} 项未能删除",
     "externallyManaged": "手动管理",
     "externalHint": "非本应用创建的项目标记为手动管理，不会被自动删除。"
+  },
+  "observedImport": {
+    "button": "导入",
+    "buttonLabel": "导入 {{name}}",
+    "buttonHint": "将内容复制为中央库原件，并转为受管理的安装。此文件夹中的文件不会改动。",
+    "importing": "正在导入…",
+    "success": "已将 {{name}} 导入中央库。该平台的文件夹保持原样，并已记录为受管理的安装。",
+    "error": "导入失败：{{error}}",
+    "conflictTitle": "中央库中已有同名技能",
+    "conflictDescription": "未将 {{name}} 导入到中央库中已有的同名技能之上。请查看下方比较结果，再决定使用哪一份。未改动任何文件。",
+    "paths": "已比较的位置",
+    "close": "关闭"
   },
   "skillLocations": {
     "summary": "{{skills}} 种技能 · {{locations}} 个来源位置",
@@ -517,7 +549,9 @@
     "sortAscending": "正排",
     "sortDescending": "倒排",
     "sortByNewest": "最新",
-    "sortByOldest": "最早"
+    "sortByOldest": "最早",
+    "deleteObservedWarning": "以下平台有同名文件夹，但应用并未管理它，删除后仍会保留：{{platforms}}",
+    "deleteBundleObservedLabel": "删除后仍保留的文件夹（应用未管理）"
   },
   "centralBundleDrawer": {
     "titleFallback": "套件详情",
@@ -625,7 +659,8 @@
     "readOnlyDesc": "只读观测副本仅供查看，不能在这里安装、卸载或调整技能集。",
     "userManagedDesc": "此 Claude 用户副本会保留正常的安装状态与技能集管理能力。",
     "readOnlyInstallBlocked": "只读观测副本不可安装或卸载。",
-    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。"
+    "readOnlyCollectionsBlocked": "只读观测副本不可调整技能集。",
+    "unmanagedDesc": "这是你自己放入的文件夹，应用不会管理它。它不会被移除、停用或覆盖，文件保持原样。"
   },
   "collection": {
     "edit": "编辑",
@@ -748,6 +783,9 @@
     "githubPatSaved": "GitHub 令牌已保存",
     "githubPatCleared": "GitHub 令牌已清除",
     "githubPatClear": "清除令牌",
+    "githubMirrorTitle": "GitHub 镜像回退",
+    "githubMirrorDesc": "当 GitHub 请求被限流或失败时，改为通过第三方镜像（ghfast.top、ghproxy.net 等）下载。默认关闭；通过镜像获得的内容可能并非直接来自 GitHub。关闭时，请求会失败，并提示保存 GitHub 令牌或开启此选项。",
+    "githubMirrorLabel": "启用 GitHub 镜像回退",
     "about": "关于",
     "appVersion": "应用版本",
     "dbPath": "数据库路径",
@@ -802,6 +840,10 @@
       "intl": "国际"
     },
     "aiApiKeyLabel": "API Key",
+    "secretSavedPlaceholder": "已保存 · 输入新值即可替换",
+    "secretKeychainUnavailable": "此环境无法使用系统钥匙串，因此不会把密钥写入文件，只在应用运行期间保存在内存中。重新打开应用后需要再次输入。",
+    "aiApiKeyClear": "清除密钥",
+    "aiApiKeySave": "保存密钥",
     "aiModelLabel": "模型",
     "aiModelPlaceholder": "模型名称",
     "aiModelCustom": "自定义",
@@ -843,6 +885,7 @@
     "adding": "添加中..."
   },
   "platformDialog": {
+    "removeBlockedByInstalls": "该平台上仍有应用安装的技能，无法删除。请先移除这些安装，再删除平台。",
     "addTitle": "添加自定义平台",
     "editTitle": "编辑自定义平台",
     "addDesc": "注册一个新的自定义平台，添加后将自动重新扫描。",
@@ -1090,6 +1133,10 @@
     "githubImportResultActionInstall": "继续配置平台安装",
     "githubImportResultActionCentral": "打开技能仓库",
     "previewInstallUnavailable": "此预览中找不到技能路径，无法导入到技能库。",
+    "githubImportFoldersTitle": "要一并安装的文件夹",
+    "githubImportFoldersDesc": "此仓库的根目录本身就是一个技能。请选择要一起安装的子文件夹。自带 SKILL.md 的文件夹（其他技能）以及 .git、.github 默认不选中。",
+    "githubImportFolderInclude": "包含文件夹 {{name}}",
+    "previewRootSkillOpenWizard": "这是仓库根目录技能，已打开文件夹选择界面。",
     "previewConflictOpenWizard": "已存在同名技能，已打开冲突处理界面。",
     "githubImportResultActionRestart": "开始新的导入",
     "githubImportResultSkippedTitle": "已跳过项目",
@@ -1108,7 +1155,10 @@
     "githubImportPostSyncFailed": "技能已导入，但刷新应用数据失败。重试刷新不会再次执行导入。",
     "githubImportPostSyncRetry": "重试刷新",
     "githubImportSkippedOnlyTitle": "没有导入任何技能",
-    "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。"
+    "githubPatSettingsHint": "请前往设置并保存 GitHub Personal Access Token，让该导入流程改用经过认证的直连 GitHub 请求。如遇限流，也可以在设置中开启 GitHub 镜像回退。",
+    "githubMirrorDisabledError": "已达到 GitHub 请求上限。请稍后重试，或在设置中保存 GitHub 令牌，或开启镜像回退。",
+    "githubArchiveDownloadLimitError": "GitHub 仓库压缩包超过安全下载上限。",
+    "githubArchiveExtractionLimitError": "GitHub 仓库压缩包超过安全解压上限（文件数量或解压后大小）。"
   },
   "libraryBrowser": {
     "folders": "浏览技能库",

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { UnlistenFn } from "@tauri-apps/api/event";
 import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
 import { setupExplanationStreamListeners } from "@/lib/explanationStream";
+import { localizeBackendError } from "@/lib/backendErrors";
 import {
   SkillRegistry,
   MarketplaceSkill,
@@ -11,7 +12,9 @@ import {
   GitHubSkillImportSelection,
   GitHubImportProgressPayload,
   GitHubImportFailure,
+  GitHubRepoRef,
   ImportedGitHubSkillSummary,
+  MarketplaceInstallOutcome,
 } from "@/types";
 
 interface GitHubImportState {
@@ -65,7 +68,7 @@ interface MarketplaceState {
   syncRegistry: (registryId: string, forceRefresh?: boolean) => Promise<void>;
   loadSkills: (registryId: string, query?: string) => Promise<void>;
   loadPreviewSkills: (registryId: string) => Promise<MarketplaceSkill[]>;
-  installSkill: (skillId: string) => Promise<void>;
+  installSkill: (skillId: string) => Promise<MarketplaceInstallOutcome>;
   addRegistry: (name: string, sourceType: string, url: string) => Promise<SkillRegistry>;
   removeRegistry: (registryId: string) => Promise<void>;
   getNormalizedRegistryIdentity: (url: string) => string | null;
@@ -104,6 +107,14 @@ const initialGitHubImportState = (): GitHubImportState => ({
   skillMarkdown: {},
   aiSummaries: {},
 });
+
+/** 같은 경로 스킬이 저장소마다 다른 요약을 갖도록 저장소 식별자를 붙인 캐시 키. */
+export function githubImportAiSummaryKey(
+  repo: Pick<GitHubRepoRef, "owner" | "repo">,
+  sourcePath: string
+): string {
+  return `${repo.owner}/${repo.repo}:${sourcePath}`;
+}
 
 let unlistenGitHubImportProgress: UnlistenFn | null = null;
 const githubImportAiUnlisteners = new Map<string, UnlistenFn>();
@@ -307,7 +318,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     } catch (err) {
       const registries = await invoke<SkillRegistry[]>("list_registries").catch(() => null);
       set({
-        error: String(err),
+        error: localizeBackendError(err),
         registries: registries ?? get().registries,
         isSyncing: false,
       });
@@ -338,23 +349,27 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
   installSkill: async (skillId: string) => {
     set((s) => ({ installingIds: new Set(s.installingIds).add(skillId) }));
     try {
-      await invoke("install_marketplace_skill", { skillId });
-      // Update the skill's is_installed status locally
+      const outcome = await invoke<MarketplaceInstallOutcome>("install_marketplace_skill", {
+        skillId,
+      });
+      // Update the skill's is_installed status locally (root skills are installed by the wizard)
+      const installed = outcome.status === "installed";
       set((s) => ({
-        skills: s.skills.map((sk) =>
-          sk.id === skillId ? { ...sk, is_installed: true } : sk
-        ),
+        skills: installed
+          ? s.skills.map((sk) => (sk.id === skillId ? { ...sk, is_installed: true } : sk))
+          : s.skills,
         installingIds: (() => {
           const next = new Set(s.installingIds);
           next.delete(skillId);
           return next;
         })(),
       }));
+      return outcome;
     } catch (err) {
       set((s) => {
         const next = new Set(s.installingIds);
         next.delete(skillId);
-        return { installingIds: next, error: String(err) };
+        return { installingIds: next, error: localizeBackendError(err) };
       });
       throw err;
     }
@@ -412,6 +427,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         ...state.githubImport,
         isPreviewLoading: true,
         preview: null,
+        skillMarkdown: {},
         importResult: null,
         previewedRepoUrl: repoUrl,
         error: null,
@@ -449,8 +465,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           preview: null,
           importResult: null,
           previewedRepoUrl: repoUrl,
-          error: String(err),
-          previewError: String(err),
+          error: localizeBackendError(err),
+          previewError: localizeBackendError(err),
           importFailure: null,
           importProgress: null,
           importStartedAt: null,
@@ -520,7 +536,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         githubImport: {
           ...state.githubImport,
           isImporting: false,
-          error: importFailure?.message ?? String(err),
+          error: importFailure?.message ?? localizeBackendError(err),
           importFailure,
           importProgress: null,
           importStartedAt: null,
@@ -581,7 +597,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           ...state.githubImport,
           skillMarkdown: {
             ...state.githubImport.skillMarkdown,
-            [sourcePath]: { status: "error", error: String(err) },
+            [sourcePath]: { status: "error", error: localizeBackendError(err) },
           },
         },
       }));
@@ -595,7 +611,10 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     lang: string,
     refresh = false
   ) => {
-    const existing = get().githubImport.aiSummaries[sourcePath];
+    const repo = get().githubImport.preview?.repo;
+    if (!repo) return;
+    const cacheKey = githubImportAiSummaryKey(repo, sourcePath);
+    const existing = get().githubImport.aiSummaries[cacheKey];
     if (!refresh && (existing?.isLoading || existing?.summary)) {
       return;
     }
@@ -606,7 +625,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           ...state.githubImport,
           aiSummaries: {
             ...state.githubImport.aiSummaries,
-            [sourcePath]: {
+            [cacheKey]: {
               summary: null,
               isLoading: false,
               isStreaming: false,
@@ -623,7 +642,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         ...state.githubImport,
         aiSummaries: {
           ...state.githubImport.aiSummaries,
-          [sourcePath]: {
+          [cacheKey]: {
             summary: null,
             isLoading: true,
             isStreaming: false,
@@ -634,7 +653,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
     }));
 
     try {
-      cleanupGitHubImportAiSummaryListener(sourcePath);
+      cleanupGitHubImportAiSummaryListener(cacheKey);
       const prompt = lang.startsWith("en")
         ? `Summarize this SKILL.md for import decisions in English. Use 3 short parts: 1) What it does 2) When to import it 3) Dependencies or cautions. Keep it concise.\n\nSkill: ${skillName}\n\n${content}`
         : lang.startsWith("ko")
@@ -642,7 +661,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         : `请基于下面的 SKILL.md 内容，生成适合导入决策的中文摘要。分成 3 个简短部分：1）做什么 2）什么时候值得导入 3）依赖或注意事项。保持简洁。\n\n技能名：${skillName}\n\n${content}`;
 
       const command = refresh ? "refresh_skill_explanation" : "explain_skill_stream";
-      const skillId = `github-import:${sourcePath}`;
+      const skillId = `github-import:${cacheKey}`;
       const stopListening = await setupExplanationStreamListeners(skillId, {
         onChunk: (chunkText) => {
           set((state) => ({
@@ -650,8 +669,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
               ...state.githubImport,
               aiSummaries: {
                 ...state.githubImport.aiSummaries,
-                [sourcePath]: {
-                  summary: `${state.githubImport.aiSummaries[sourcePath]?.summary ?? ""}${chunkText}`,
+                [cacheKey]: {
+                  summary: `${state.githubImport.aiSummaries[cacheKey]?.summary ?? ""}${chunkText}`,
                   isLoading: false,
                   isStreaming: true,
                   error: null,
@@ -661,9 +680,9 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           }));
         },
         onComplete: (payload) => {
-          cleanupGitHubImportAiSummaryListener(sourcePath);
+          cleanupGitHubImportAiSummaryListener(cacheKey);
           set((state) => {
-            const currentSummary = state.githubImport.aiSummaries[sourcePath]?.summary;
+            const currentSummary = state.githubImport.aiSummaries[cacheKey]?.summary;
             const nextSummary = payload.explanation ?? currentSummary ?? null;
             const hasSummary = Boolean(nextSummary?.trim());
             return {
@@ -671,7 +690,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
                 ...state.githubImport,
                 aiSummaries: {
                   ...state.githubImport.aiSummaries,
-                  [sourcePath]: {
+                  [cacheKey]: {
                     summary: hasSummary ? nextSummary : null,
                     isLoading: false,
                     isStreaming: false,
@@ -683,13 +702,13 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           });
         },
         onError: (payload) => {
-          cleanupGitHubImportAiSummaryListener(sourcePath);
+          cleanupGitHubImportAiSummaryListener(cacheKey);
           set((state) => ({
             githubImport: {
               ...state.githubImport,
               aiSummaries: {
                 ...state.githubImport.aiSummaries,
-                [sourcePath]: {
+                [cacheKey]: {
                   summary: null,
                   isLoading: false,
                   isStreaming: false,
@@ -700,7 +719,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           }));
         },
       });
-      githubImportAiUnlisteners.set(sourcePath, stopListening);
+      githubImportAiUnlisteners.set(cacheKey, stopListening);
       await invoke(command, { skillId, content: prompt, lang });
       const summary = await invoke<string | null>("get_skill_explanation", { skillId, lang }).catch(() => null);
       set((state) => ({
@@ -708,8 +727,8 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
           ...state.githubImport,
           aiSummaries: {
             ...state.githubImport.aiSummaries,
-            [sourcePath]: {
-              summary: summary ?? state.githubImport.aiSummaries[sourcePath]?.summary ?? null,
+            [cacheKey]: {
+              summary: summary ?? state.githubImport.aiSummaries[cacheKey]?.summary ?? null,
               isLoading: false,
               isStreaming: false,
               error: null,
@@ -718,13 +737,13 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
         },
       }));
     } catch (err) {
-      cleanupGitHubImportAiSummaryListener(sourcePath);
+      cleanupGitHubImportAiSummaryListener(cacheKey);
       set((state) => ({
         githubImport: {
           ...state.githubImport,
           aiSummaries: {
             ...state.githubImport.aiSummaries,
-            [sourcePath]: {
+            [cacheKey]: {
               summary: null,
               isLoading: false,
               isStreaming: false,
@@ -762,7 +781,7 @@ export const useMarketplaceStore = create<MarketplaceState>((set, get) => ({
       set((s) => {
         const next = new Set(s.installingIds);
         next.delete(skillId);
-        return { installingIds: next, error: String(err) };
+        return { installingIds: next, error: localizeBackendError(err) };
       });
       throw err;
     }

@@ -26,6 +26,7 @@ import { groupSkillLocations } from "@/lib/skillLocations";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
 import { SharedSkillImpactDialog } from "@/components/skill/SharedSkillImpactDialog";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
+import { useObservedImport } from "@/components/skill/ObservedImport";
 import {
   SkillFolderDrawer,
   type SkillFolderDrawerSkill,
@@ -40,8 +41,15 @@ import { formatPathForDisplay } from "@/lib/path";
 import { splitSkillsByTopLevel } from "@/lib/skillFolders";
 import { cn } from "@/lib/utils";
 import { isUniversalSource, UNIVERSAL_AGENT_ID } from "@/lib/agents";
-import { ScannedSkill, SkillWithLinks, type PlatformSkillControlStatus, type SharedSkillImpact } from "@/types";
+import {
+  ScannedSkill,
+  SkillWithLinks,
+  type PlatformSkillControlStatus,
+  type SharedSkillImpact,
+  type UnreadableRoot,
+} from "@/types";
 
+const EMPTY_UNREADABLE_ROOTS: UnreadableRoot[] = [];
 const EMPTY_PLATFORM_CONTROLS: PlatformSkillControlStatus[] = [];
 const EMPTY_PLATFORM_CONTROL_UPDATES: Record<string, boolean> = {};
 
@@ -76,6 +84,9 @@ export function PlatformView() {
   const { t, i18n } = useTranslation();
   const agents = usePlatformStore((state) => state.agents);
   const scanGeneration = usePlatformStore((state) => state.scanGeneration ?? 0);
+  const unreadableRoots = usePlatformStore(
+    (state) => state.unreadableRoots ?? EMPTY_UNREADABLE_ROOTS
+  );
 
   const skillsByAgent = useSkillStore((state) => state.skillsByAgent);
   const loadingByAgent = useSkillStore((state) => state.loadingByAgent);
@@ -176,6 +187,15 @@ export function PlatformView() {
       loadCentralSkills();
     }
   }, [centralSkills.length, loadCentralSkills]);
+
+  const observedImport = useObservedImport(() =>
+    Promise.all([
+      refreshCounts(),
+      loadCentralSkills(),
+      agentId ? getSkillsByAgent(agentId) : Promise.resolve(),
+      loadUsageStatus().catch(() => undefined),
+    ])
+  );
 
   async function handleInstallClick(skillId: string) {
     try {
@@ -679,6 +699,19 @@ export function PlatformView() {
         <p className="text-sm text-muted-foreground mt-0.5">
           {formatPathForDisplay(agent.global_skills_dir)}
         </p>
+        {unreadableRoots.some((root) => root.agent_id === agent.id) ? (
+          <div role="alert" className="mt-3 rounded-md border border-destructive/40 px-3 py-2 text-xs">
+            <p className="font-medium text-destructive">{t("platform.unreadableTitle")}</p>
+            <ul className="mt-1 text-muted-foreground">
+              {unreadableRoots
+                .filter((root) => root.agent_id === agent.id)
+                .map((root) => (
+                  <li key={root.path}>{formatPathForDisplay(root.path)}</li>
+                ))}
+            </ul>
+            <p className="mt-1 text-muted-foreground">{t("platform.unreadableHint")}</p>
+          </div>
+        ) : null}
         {usageStatus ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {usageStatus.skills.length > 0 ? (
@@ -922,6 +955,10 @@ export function PlatformView() {
                             : undefined}
                           originKind={skill.source_kind ?? null}
                           isReadOnly={skill.is_read_only ?? false}
+                          isUnmanaged={skill.is_managed === false}
+                          onImportObserved={agentId
+                            ? () => void observedImport.run(skill.id, agentId, skill.name)
+                            : undefined}
                           isUniversalSource={isUniversalSource(skill, universalRoot)}
                           platformDisplayName={agent.display_name}
                           usageControl={platformControl?.shared_install
@@ -988,7 +1025,8 @@ export function PlatformView() {
                           externalUsageCount={hasExternalCounterpart && usage && !usage.enabled ? 1 : 0}
                           isLoading={
                             agentId
-                              ? (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false) ||
+                              ? observedImport.busyKey === `${agentId}::${skill.id}` ||
+                                (pendingSkillActionKeys[`${agentId}::${skill.id}`] ?? false) ||
                                 (usageUpdatingSkillKeys[`${agentId}::${skill.id}`] ?? false) ||
                                 (usageUpdatingAgentIds[agentId] ?? false) ||
                                 (updatingPlatformControlKeys[`${agentId}::${skill.dir_path}`] ?? false) ||
@@ -1059,6 +1097,8 @@ export function PlatformView() {
           </div>
         )}
       </div>
+
+      {observedImport.dialog}
 
       <SharedSkillImpactDialog
         open={sharedDialogOpen}

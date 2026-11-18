@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
-import { ScanDirectory, AgentWithStatus, CustomAgentConfig, UpdateCustomAgentConfig } from "@/types";
+import { ScanDirectory, AgentWithStatus, CustomAgentConfig, UpdateCustomAgentConfig, SecretStatus } from "@/types";
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -8,9 +8,12 @@ interface SettingsState {
   scanDirectories: ScanDirectory[];
   isLoadingScanDirs: boolean;
   error: string | null;
-  githubPat: string;
+  githubPatConfigured: boolean;
+  /** false면 OS 키체인을 쓸 수 없어 비밀값이 실행 중 메모리에만 있다. */
+  secretKeychainAvailable: boolean;
   isLoadingGitHubPat: boolean;
   isSavingGitHubPat: boolean;
+  githubMirrorEnabled: boolean;
 
   // Actions — scan directories
   loadScanDirectories: () => Promise<void>;
@@ -18,10 +21,18 @@ interface SettingsState {
   removeScanDirectory: (path: string) => Promise<void>;
   toggleScanDirectory: (path: string, active: boolean) => Promise<void>;
 
+  // Actions — secrets (화면은 비밀값이 아니라 설정 여부만 받는다)
+  getSecretStatus: (key: string) => Promise<boolean>;
+  setSecret: (key: string, value: string) => Promise<boolean>;
+
   // Actions — GitHub PAT
   loadGitHubPat: () => Promise<void>;
   saveGitHubPat: (value: string) => Promise<void>;
   clearGitHubPat: () => Promise<void>;
+
+  // Actions — GitHub mirror fallback (default off)
+  loadGitHubMirror: () => Promise<void>;
+  setGitHubMirror: (enabled: boolean) => Promise<void>;
 
   // Actions — custom agents
   addCustomAgent: (config: CustomAgentConfig) => Promise<AgentWithStatus>;
@@ -33,13 +44,15 @@ interface SettingsState {
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
-export const useSettingsStore = create<SettingsState>((set) => ({
+export const useSettingsStore = create<SettingsState>((set, get) => ({
   scanDirectories: [],
   isLoadingScanDirs: false,
   error: null,
-  githubPat: "",
+  githubPatConfigured: false,
+  secretKeychainAvailable: true,
   isLoadingGitHubPat: false,
   isSavingGitHubPat: false,
+  githubMirrorEnabled: false,
 
   // ── Scan Directories ───────────────────────────────────────────────────────
 
@@ -95,16 +108,28 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     }));
   },
 
+  // ── Secrets ───────────────────────────────────────────────────────────────
+
+  getSecretStatus: async (key: string) => {
+    const status = await invoke<SecretStatus>("get_secret_status", { key });
+    set({ secretKeychainAvailable: status.keychainAvailable });
+    return status.configured;
+  },
+
+  /** 빈 값이면 지운다. 저장 뒤의 설정 여부를 반환한다. */
+  setSecret: async (key: string, value: string) => {
+    const status = await invoke<SecretStatus>("set_secret", { key, value });
+    set({ secretKeychainAvailable: status.keychainAvailable });
+    return status.configured;
+  },
+
   // ── GitHub PAT ────────────────────────────────────────────────────────────
 
   loadGitHubPat: async () => {
     set({ isLoadingGitHubPat: true, error: null });
     try {
-      const value = await invoke<string | null>("get_setting", { key: "github_pat" });
-      set({
-        githubPat: value ?? "",
-        isLoadingGitHubPat: false,
-      });
+      const configured = await get().getSecretStatus("github_pat");
+      set({ githubPatConfigured: configured, isLoadingGitHubPat: false });
     } catch (err) {
       set({
         error: String(err),
@@ -116,11 +141,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   saveGitHubPat: async (value: string) => {
     set({ isSavingGitHubPat: true, error: null });
     try {
-      await invoke("set_setting", { key: "github_pat", value });
-      set({
-        githubPat: value.trim(),
-        isSavingGitHubPat: false,
-      });
+      const configured = await get().setSecret("github_pat", value);
+      set({ githubPatConfigured: configured, isSavingGitHubPat: false });
     } catch (err) {
       set({
         error: String(err),
@@ -133,16 +155,34 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   clearGitHubPat: async () => {
     set({ isSavingGitHubPat: true, error: null });
     try {
-      await invoke("set_setting", { key: "github_pat", value: "" });
-      set({
-        githubPat: "",
-        isSavingGitHubPat: false,
-      });
+      const configured = await get().setSecret("github_pat", "");
+      set({ githubPatConfigured: configured, isSavingGitHubPat: false });
     } catch (err) {
       set({
         error: String(err),
         isSavingGitHubPat: false,
       });
+      throw err;
+    }
+  },
+
+  // ── GitHub mirror fallback ─────────────────────────────────────────────────
+
+  loadGitHubMirror: async () => {
+    try {
+      const value = await invoke<string | null>("get_setting", { key: "github_mirror_enabled" });
+      set({ githubMirrorEnabled: value === "true" });
+    } catch (err) {
+      set({ error: String(err) });
+    }
+  },
+
+  setGitHubMirror: async (enabled: boolean) => {
+    try {
+      await invoke("set_setting", { key: "github_mirror_enabled", value: String(enabled) });
+      set({ githubMirrorEnabled: enabled });
+    } catch (err) {
+      set({ error: String(err) });
       throw err;
     }
   },

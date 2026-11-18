@@ -1,9 +1,11 @@
 pub mod commands;
 pub mod db;
 pub mod path_utils;
+pub mod secrets;
+pub mod startup;
+pub mod text_utils;
 
 use db::DbPool;
-use std::fs;
 use tauri::Manager;
 
 /// Application state shared across Tauri commands.
@@ -19,38 +21,25 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
-            let db_dir = path_utils::app_data_dir();
-            fs::create_dir_all(&db_dir).expect("Failed to create ~/.skillsmanage directory");
-            let db_path = path_utils::path_to_string(&db_dir.join("db.sqlite"));
-
-            // Create pool and initialize schema
-            let pool = tauri::async_runtime::block_on(async {
-                db::create_pool(&db_path)
-                    .await
-                    .expect("Failed to open SQLite database")
-            });
-            tauri::async_runtime::block_on(async {
-                commands::recovery::snapshot_before_schema_change(&pool)
-                    .await
-                    .expect("Failed to back up the database before schema changes");
-                db::init_database(&pool)
-                    .await
-                    .expect("Failed to initialize database schema");
-                commands::skill_origin::reconcile_incomplete_updates(&pool)
-                    .await
-                    .expect("Failed to reconcile interrupted skill updates");
-                commands::storage::initialize_storage(&pool)
-                    .await
-                    .expect("Failed to initialize Central vault storage")
-            });
-
-            app.manage(AppState { db: pool });
+            // 초기화가 실패해도 앱을 끄지 않고 복구 화면이 원인을 조회할 수 있게 보관한다.
+            let startup = startup::StartupState::default();
+            match tauri::async_runtime::block_on(startup::initialize_default(None)) {
+                Ok(db) => {
+                    app.manage(AppState { db });
+                }
+                Err(error) => startup.set_failure(Some(error)),
+            }
+            app.manage(startup);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            // Startup recovery
+            startup::get_startup_status,
+            startup::retry_startup,
             // Scanner
             commands::scanner::scan_all_skills,
             commands::skill_duplicates::compare_skill_locations,
+            commands::observed_import::import_observed_skill,
             // Agents
             commands::agents::get_agents,
             commands::agents::detect_agents,
@@ -94,7 +83,7 @@ pub fn run() {
             commands::skills::delete_central_skill,
             commands::skills::get_skill_detail,
             commands::skills::read_skill_content,
-            commands::skills::read_file_by_path,
+            commands::skills::read_skill_file,
             commands::repository_descriptions::get_repository_skill_descriptions,
             commands::skills::list_skill_directory,
             commands::skills::open_in_file_manager,
@@ -126,6 +115,10 @@ pub fn run() {
             commands::settings::set_scan_directory_active,
             commands::settings::get_setting,
             commands::settings::set_setting,
+            commands::settings::get_secret_status,
+            commands::settings::set_secret,
+            commands::settings::has_legacy_secrets,
+            commands::settings::clear_legacy_secrets,
             commands::recovery::list_recovery_entries,
             commands::recovery::get_database_backup_directory,
             commands::recovery::restore_recovery_entry,

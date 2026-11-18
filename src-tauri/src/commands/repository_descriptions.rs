@@ -6,6 +6,10 @@ use std::{
 
 use serde::Serialize;
 use serde_yaml::Value;
+use tauri::State;
+
+use crate::db::DbPool;
+use crate::AppState;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -363,15 +367,43 @@ fn repository_skill_descriptions(
     }
 }
 
+/// 앱이 스캔해 저장한 스킬 파일 경로인지 확인한다.
+async fn is_known_skill_file(pool: &DbPool, file_path: &str) -> Result<bool, String> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM skills WHERE file_path = ?1)
+             OR EXISTS(SELECT 1 FROM agent_skill_observations WHERE file_path = ?1)
+             OR EXISTS(SELECT 1 FROM discovered_skills WHERE file_path = ?1)",
+    )
+    .bind(file_path)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// 앱이 아는 스킬 파일일 때만 읽고, 아니면 기존 설명만 돌려준다.
+/// 화면이 임의 경로를 넘겨 다른 파일이나 같은 폴더의 README를 읽지 못하게 한다.
+async fn known_skill_descriptions(
+    pool: &DbPool,
+    file_path: &str,
+    fallback_description: Option<String>,
+    target_locale: &str,
+) -> RepositorySkillDescriptions {
+    if !is_known_skill_file(pool, file_path).await.unwrap_or(false) {
+        return fallback_only(fallback_description);
+    }
+    repository_skill_descriptions(Path::new(file_path), fallback_description, target_locale)
+}
+
 /// SKILL.md와 같은 폴더의 README가 제공하는 짧은 언어별 설명을 읽는다.
 /// 파일을 읽을 수 없을 때도 화면이 깨지지 않도록 기존 설명만 반환한다.
 #[tauri::command]
-pub fn get_repository_skill_descriptions(
+pub async fn get_repository_skill_descriptions(
+    state: State<'_, AppState>,
     file_path: String,
     fallback_description: Option<String>,
     target_locale: String,
-) -> RepositorySkillDescriptions {
-    repository_skill_descriptions(Path::new(&file_path), fallback_description, &target_locale)
+) -> Result<RepositorySkillDescriptions, String> {
+    Ok(known_skill_descriptions(&state.db, &file_path, fallback_description, &target_locale).await)
 }
 
 #[cfg(test)]
@@ -383,6 +415,44 @@ mod tests {
         let path = directory.join("SKILL.md");
         fs::write(&path, format!("---\n{frontmatter}\n---\n\n# Skill\n")).unwrap();
         path
+    }
+
+    #[tokio::test]
+    async fn reads_only_skill_files_the_app_knows() {
+        let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
+        crate::db::init_database(&pool).await.unwrap();
+        let directory = tempdir().unwrap();
+        let skill = write_skill(directory.path(), "name: demo\ndescription_ko: 한국어 설명");
+        let path = skill.to_string_lossy().into_owned();
+
+        // 앱이 모르는 경로는 파일이 있어도 읽지 않고 기존 설명만 돌려준다.
+        let unknown =
+            known_skill_descriptions(&pool, &path, Some("기존 설명".to_string()), "ko").await;
+        assert!(unknown.localized_descriptions.is_empty());
+        assert_eq!(unknown.legacy_description.as_deref(), Some("기존 설명"));
+
+        crate::db::upsert_skill(
+            &pool,
+            &crate::db::Skill {
+                id: "demo".to_string(),
+                name: "demo".to_string(),
+                description: None,
+                file_path: path.clone(),
+                canonical_path: None,
+                is_central: true,
+                source: None,
+                content: None,
+                scanned_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let known = known_skill_descriptions(&pool, &path, None, "ko").await;
+        assert_eq!(
+            known.localized_descriptions.get("ko"),
+            Some(&"한국어 설명".to_string())
+        );
     }
 
     #[test]

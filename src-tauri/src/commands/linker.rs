@@ -111,14 +111,100 @@ pub fn symlink_target_path(from_dir: &Path, to_path: &Path) -> PathBuf {
     make_relative_path(from_dir, to_path)
 }
 
-// ─── Recursive Directory Copy ─────────────────────────────────────────────────
-
-/// Recursively copy a directory tree from `src` to `dst`.
+/// `source`를 가리키는 설치 링크를 `agent_dir` 안의 `link` 자리에 만든다.
 ///
-/// `dst` must not exist prior to the call (or may be an empty dir).
-/// The behaviour mirrors `cp -r src dst` on Unix.
+/// 플랫폼 폴더 자체가 링크일 수 있으므로, 링크가 실제로 놓이는 위치(`agent_dir`의 실제 경로)
+/// 기준의 상대 경로로 만든다. 기록 전에 만든 링크로 SKILL.md를 읽을 수 있는지 확인하고,
+/// 읽지 못하면 링크를 지우고 이유를 돌려준다.
+pub fn create_verified_symlink(agent_dir: &Path, source: &Path, link: &Path) -> Result<(), String> {
+    let link_parent = std::fs::canonicalize(agent_dir)
+        .map_err(|e| format!("Failed to resolve agent skills directory: {}", e))?;
+    let source = std::fs::canonicalize(source).map_err(|e| {
+        format!(
+            "Failed to resolve skill directory '{}': {}",
+            source.display(),
+            e
+        )
+    })?;
+    create_symlink(&symlink_target_path(&link_parent, &source), link)?;
+    if let Err(error) = std::fs::read(link.join("SKILL.md")) {
+        let _ = std::fs::remove_file(link);
+        return Err(format!(
+            "Installed link '{}' does not resolve to the skill: {}",
+            link.display(),
+            error
+        ));
+    }
+    Ok(())
+}
+
+// ─── Atomic Directory Copy ────────────────────────────────────────────────────
+
+/// 복사 임시 폴더 이름에 들어가는 표식. 스캐너가 이 폴더를 스킬로 읽지 않도록 같은 값을 쓴다.
+pub(crate) const COPY_STAGE_MARKER: &str = ".skillsmanage-copy-";
+
+/// 스킬 폴더를 `dst`로 "전부 되거나 아무것도 안 되게" 복사한다.
+///
+/// `dst` 옆의 임시 폴더에 전부 복사하고 원본과 비교해 검증한 뒤, 이름 바꾸기 한 번으로
+/// 확정한다. 중간에 실패하면 임시 폴더를 지우고 이유를 돌려주므로 `dst`에는 아무것도
+/// 남지 않는다. `dst`가 이미 있으면 기존 폴더와 섞어 쓰지 않고 중단한다.
+///
+/// 링크 규칙: 스킬 안을 가리키는 스킬 안의 링크는 링크로 보존하고, 스킬 밖을 가리키는
+/// 링크는 따라가지 않고 이유와 함께 중단한다. `src` 자체가 링크이면 가리키는 폴더를 스킬로 본다.
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
-    std::fs::create_dir_all(dst).map_err(|e| {
+    if std::fs::symlink_metadata(dst).is_ok() {
+        return Err(format!(
+            "대상 폴더가 이미 있어 복사를 중단했습니다. 기존 폴더와 섞어 쓰지 않습니다: '{}'",
+            dst.display()
+        ));
+    }
+    let parent = dst
+        .parent()
+        .ok_or_else(|| format!("대상 경로에 상위 폴더가 없습니다: '{}'", dst.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| {
+        format!(
+            "대상 상위 폴더를 만들 수 없습니다 '{}': {}",
+            parent.display(),
+            e
+        )
+    })?;
+    let name = dst.file_name().unwrap_or_default().to_string_lossy();
+    let stage = parent.join(format!(
+        ".{name}{COPY_STAGE_MARKER}{}",
+        uuid::Uuid::new_v4()
+    ));
+
+    let result = copy_into_stage(src, &stage).and_then(|()| {
+        std::fs::rename(&stage, dst).map_err(|e| {
+            format!(
+                "복사본을 '{}'(으)로 확정하지 못했습니다: {}",
+                dst.display(),
+                e
+            )
+        })
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&stage);
+    }
+    result
+}
+
+/// `stage`에 `src`의 복사본을 만들고 원본과 같은지 확인한다.
+fn copy_into_stage(src: &Path, stage: &Path) -> Result<(), String> {
+    let root = std::fs::canonicalize(src)
+        .map_err(|e| format!("원본 폴더를 열 수 없습니다 '{}': {}", src.display(), e))?;
+    copy_tree_into(&root, &root, stage)?;
+    if tree_snapshot(&root)? != tree_snapshot(stage)? {
+        return Err(format!(
+            "복사하는 동안 원본이 바뀌었거나 복사본이 원본과 달라 중단했습니다: '{}'",
+            src.display()
+        ));
+    }
+    Ok(())
+}
+
+fn copy_tree_into(root: &Path, src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::create_dir(dst).map_err(|e| {
         format!(
             "Failed to create destination directory '{}': {}",
             dst.display(),
@@ -132,14 +218,15 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-
         let file_type = entry
             .file_type()
             .map_err(|e| format!("Failed to determine file type: {}", e))?;
 
-        if file_type.is_dir() {
-            copy_dir_all(&src_path, &dst_path)?;
-        } else {
+        if file_type.is_symlink() {
+            copy_inner_link(root, &src_path, &dst_path)?;
+        } else if file_type.is_dir() {
+            copy_tree_into(root, &src_path, &dst_path)?;
+        } else if file_type.is_file() {
             std::fs::copy(&src_path, &dst_path).map_err(|e| {
                 format!(
                     "Failed to copy '{}' -> '{}': {}",
@@ -148,10 +235,80 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
                     e
                 )
             })?;
+        } else {
+            return Err(format!(
+                "복사할 수 없는 파일 종류입니다: '{}'",
+                src_path.display()
+            ));
         }
     }
 
     Ok(())
+}
+
+/// 스킬 안을 가리키는 링크를 링크로 만든다. 스킬 밖을 가리키거나 대상을 확인할 수 없으면 중단한다.
+fn copy_inner_link(root: &Path, src: &Path, dst: &Path) -> Result<(), String> {
+    let target = std::fs::read_link(src)
+        .map_err(|e| format!("링크를 읽을 수 없습니다 '{}': {}", src.display(), e))?;
+    let resolved = std::fs::canonicalize(src).map_err(|e| {
+        format!(
+            "링크 '{}'의 대상을 확인할 수 없어 복사를 중단했습니다: {}",
+            src.display(),
+            e
+        )
+    })?;
+    if !resolved.starts_with(root) {
+        return Err(format!(
+            "스킬 밖을 가리키는 링크 '{}' -> '{}'가 있어 복사를 중단했습니다. 링크는 따라가지 않습니다.",
+            src.display(),
+            target.display()
+        ));
+    }
+    // 절대 경로 링크는 복사본 안에서도 스킬 안을 가리키도록 상대 경로로 바꾼다.
+    let target = if target.is_absolute() {
+        let link_dir = std::fs::canonicalize(src.parent().unwrap_or(root))
+            .map_err(|e| format!("링크 위치를 확인할 수 없습니다 '{}': {}", src.display(), e))?;
+        make_relative_path(&link_dir, &resolved)
+    } else {
+        target
+    };
+    create_symlink(&target, dst)
+}
+
+/// 폴더 안 항목의 (상대 경로, 종류, 파일 크기) 목록. 복사본 검증에 쓴다.
+fn tree_snapshot(root: &Path) -> Result<Vec<(PathBuf, char, u64)>, String> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, char, u64)>) -> Result<(), String> {
+        for entry in std::fs::read_dir(dir)
+            .map_err(|e| format!("Failed to read directory '{}': {}", dir.display(), e))?
+        {
+            let path = entry
+                .map_err(|e| format!("Failed to read directory entry: {}", e))?
+                .path();
+            let meta = std::fs::symlink_metadata(&path)
+                .map_err(|e| format!("Failed to inspect '{}': {}", path.display(), e))?;
+            let (kind, len) = if meta.is_dir() {
+                ('d', 0)
+            } else if meta.file_type().is_symlink() {
+                ('l', 0)
+            } else {
+                ('f', meta.len())
+            };
+            out.push((
+                path.strip_prefix(root).unwrap_or(&path).to_path_buf(),
+                kind,
+                len,
+            ));
+            if kind == 'd' {
+                walk(root, &path, out)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut entries = Vec::new();
+    walk(root, root, &mut entries)?;
+    entries.sort();
+    Ok(entries)
 }
 
 // ─── Auto-centralize ─────────────────────────────────────────────────────────
@@ -168,14 +325,16 @@ async fn ensure_centralized(
     skill_id: &str,
     canonical_dir: &Path,
 ) -> Result<(), String> {
-    if canonical_dir.join("SKILL.md").exists() {
+    // Look up the skill's actual file location from the database.
+    let skill = db::get_skill_by_id(pool, skill_id).await?;
+
+    // SKILL.md가 있다는 것만으로 완성된 원본으로 보지 않는다. 보관함 스킬로 기록된 폴더이거나
+    // 기록 없이 보관함에 놓인 폴더만 확정된 원본이다. 그 밖의 폴더는 아래 복사가 섞어 쓰지 않고 중단한다.
+    if canonical_dir.join("SKILL.md").exists() && skill.as_ref().is_none_or(|s| s.is_central) {
         return Ok(());
     }
 
-    // Look up the skill's actual file location from the database.
-    let skill = db::get_skill_by_id(pool, skill_id)
-        .await?
-        .ok_or_else(|| format!("Skill '{}' not found in database", skill_id))?;
+    let skill = skill.ok_or_else(|| format!("Skill '{}' not found in database", skill_id))?;
 
     // Derive the source directory (parent of file_path).
     let source_file = PathBuf::from(&skill.file_path);
@@ -190,10 +349,21 @@ async fn ensure_centralized(
         ));
     }
 
+    centralize_from(pool, skill, source_dir, canonical_dir).await
+}
+
+/// `source_dir`을 보관함 원본 `canonical_dir`로 원자적으로 복사하고, 스킬 기록을 보관함 스킬로 바꾼다.
+pub(crate) async fn centralize_from(
+    pool: &DbPool,
+    skill: db::Skill,
+    source_dir: &Path,
+    canonical_dir: &Path,
+) -> Result<(), String> {
     // Copy to central directory.
     copy_dir_all(source_dir, canonical_dir)?;
 
     // Update the DB record to reflect centralization.
+    let skill_id = skill.id.clone();
     let mut updated = skill;
     updated.canonical_path = Some(canonical_dir.to_string_lossy().into_owned());
     updated.is_central = true;
@@ -203,7 +373,7 @@ async fn ensure_centralized(
         .into_owned();
     db::upsert_skill(pool, &updated).await?;
 
-    skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, skill_id, None).await?;
+    skill_origin::inherit_copied_origin(pool, source_dir, canonical_dir, &skill_id, None).await?;
     super::skill_groups::inherit_group_source(pool, source_dir, canonical_dir).await?;
 
     Ok(())
@@ -965,8 +1135,7 @@ pub async fn install_skill_to_agent_impl(
         symlink_target: Some(canonical_dir.to_string_lossy().into_owned()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
-    let relative_target = symlink_target_path(&agent_dir, &canonical_dir);
-    if let Err(error) = create_symlink(&relative_target, &symlink_path) {
+    if let Err(error) = create_verified_symlink(&agent_dir, &canonical_dir, &symlink_path) {
         return Err(rollback_error(pool, &installation, &rollback, error).await);
     }
     persist_install(pool, &installation, &universal_duplicates, &rollback).await?;
@@ -1094,6 +1263,7 @@ pub async fn uninstall_skill_from_agent_impl(
     if agent_id == "central" {
         return Err("Cannot uninstall a Central skill through the platform installer".to_string());
     }
+    db::ensure_installation_managed(pool, skill_id, agent_id).await?;
 
     let requested_agent = db::get_agent_by_id(pool, agent_id)
         .await?
@@ -2176,6 +2346,34 @@ mod tests {
             skill_md.exists(),
             "SKILL.md should be accessible via symlink"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_install_through_symlinked_platform_dir_points_to_central() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        // 플랫폼 폴더가 깊이가 다른 위치를 가리키는 링크다.
+        let real_dir = tmp.path().join("deep/er/real-skills");
+        let agent_dir = tmp.path().join("claude/skills");
+        fs::create_dir_all(&central_dir).unwrap();
+        fs::create_dir_all(&real_dir).unwrap();
+        fs::create_dir_all(agent_dir.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real_dir, &agent_dir).unwrap();
+
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        create_central_skill(&central_dir, "linked-dir-skill");
+
+        install_skill_to_agent_impl(&pool, "linked-dir-skill", "claude-code")
+            .await
+            .unwrap();
+
+        let link = agent_dir.join("linked-dir-skill");
+        assert_eq!(
+            fs::canonicalize(&link).unwrap(),
+            fs::canonicalize(central_dir.join("linked-dir-skill")).unwrap()
+        );
+        assert!(link.join("SKILL.md").exists());
     }
 
     #[tokio::test]
@@ -3265,5 +3463,227 @@ mod tests {
             .unwrap()
             .is_none());
         assert!(!claude_dir.join("first-good").exists());
+    }
+
+    // ── 원자적 복사와 링크 규칙 ───────────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn lock_file(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn unlock_file(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    fn write_skill_md(dir: &Path) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: foo\ndescription: Test skill\n---\n",
+        )
+        .unwrap();
+    }
+
+    fn dir_entry_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// 다른 플랫폼에만 있는 스킬(보관함 밖, 보관함 스킬이 아님)을 DB에 기록한다.
+    async fn seed_platform_only_skill(pool: &DbPool, source_dir: &Path) {
+        db::upsert_skill(
+            pool,
+            &db::Skill {
+                id: "foo".to_string(),
+                name: "foo".to_string(),
+                description: Some("Test skill".to_string()),
+                file_path: source_dir.join("SKILL.md").to_string_lossy().into_owned(),
+                canonical_path: None,
+                is_central: false,
+                source: Some("copy".to_string()),
+                content: None,
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_leaves_nothing_and_names_the_cause_when_a_file_cannot_be_read() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write_skill_md(&src);
+        fs::write(src.join("locked.txt"), "x").unwrap();
+        lock_file(&src.join("locked.txt"));
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+
+        let error = copy_dir_all(&src, &out.join("foo")).unwrap_err();
+
+        assert!(
+            error.contains("locked.txt"),
+            "reason should name the file: {error}"
+        );
+        assert!(
+            dir_entry_names(&out).is_empty(),
+            "nothing may remain in the destination parent"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_stops_at_a_link_pointing_outside_the_skill() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write_skill_md(&src);
+        let secret = tmp.path().join("secret.txt");
+        fs::write(&secret, "outside").unwrap();
+        std::os::unix::fs::symlink(&secret, src.join("notes.md")).unwrap();
+        let out = tmp.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+
+        let error = copy_dir_all(&src, &out.join("foo")).unwrap_err();
+
+        assert!(
+            error.contains("notes.md"),
+            "reason should name the link: {error}"
+        );
+        assert!(
+            dir_entry_names(&out).is_empty(),
+            "outside content must not be copied"
+        );
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "outside");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_keeps_links_that_stay_inside_the_skill() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write_skill_md(&src);
+        fs::create_dir_all(src.join("docs")).unwrap();
+        fs::write(src.join("docs/guide.md"), "guide").unwrap();
+        std::os::unix::fs::symlink("docs/guide.md", src.join("latest.md")).unwrap();
+        std::os::unix::fs::symlink(src.join("docs"), src.join("all-docs")).unwrap();
+        let dst = tmp.path().join("out/foo");
+
+        copy_dir_all(&src, &dst).unwrap();
+
+        let relative = fs::symlink_metadata(dst.join("latest.md")).unwrap();
+        assert!(relative.file_type().is_symlink());
+        assert_eq!(fs::read_to_string(dst.join("latest.md")).unwrap(), "guide");
+        // 절대 경로 링크도 복사본 안을 가리켜야 한다(원본 위치에 기대지 않는다).
+        let absolute = fs::symlink_metadata(dst.join("all-docs")).unwrap();
+        assert!(absolute.file_type().is_symlink());
+        assert!(fs::canonicalize(dst.join("all-docs"))
+            .unwrap()
+            .starts_with(fs::canonicalize(&dst).unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_all_does_not_mix_into_an_existing_destination() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write_skill_md(&src);
+        let outside = tmp.path().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        let dst = tmp.path().join("foo");
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(dst.join("keep.txt"), "keep").unwrap();
+        std::os::unix::fs::symlink(&outside, dst.join("SKILL.md")).unwrap();
+
+        let error = copy_dir_all(&src, &dst).unwrap_err();
+
+        assert!(
+            error.contains("이미 있"),
+            "reason should say the destination exists: {error}"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "outside");
+        assert_eq!(dir_entry_names(&dst), ["SKILL.md", "keep.txt"]);
+        assert_eq!(dir_entry_names(tmp.path()), ["foo", "outside.txt", "src"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_centralization_leaves_no_original_and_a_retry_completes_it() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let source = tmp.path().join("other-platform/foo");
+        write_skill_md(&source);
+        fs::write(source.join("reference.md"), "reference").unwrap();
+        lock_file(&source.join("reference.md"));
+        seed_platform_only_skill(&pool, &source).await;
+
+        let error = install_skill_to_agent_impl(&pool, "foo", "claude-code")
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.contains("reference.md"),
+            "reason should name the file: {error}"
+        );
+        assert!(
+            !central_dir.join("foo").exists(),
+            "no partial original may remain"
+        );
+        assert!(db::get_skill_installations(&pool, "foo")
+            .await
+            .unwrap()
+            .is_empty());
+
+        unlock_file(&source.join("reference.md"));
+        install_skill_to_agent_impl(&pool, "foo", "claude-code")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(central_dir.join("foo/reference.md")).unwrap(),
+            "reference"
+        );
+        assert!(
+            db::get_skill_by_id(&pool, "foo")
+                .await
+                .unwrap()
+                .unwrap()
+                .is_central
+        );
+    }
+
+    #[tokio::test]
+    async fn central_folder_with_only_skill_md_is_not_used_as_the_original() {
+        let tmp = TempDir::new().unwrap();
+        let central_dir = tmp.path().join("central");
+        let agent_dir = tmp.path().join("claude");
+        fs::create_dir_all(&central_dir).unwrap();
+        let pool = setup_db(&central_dir, &agent_dir).await;
+        let source = tmp.path().join("other-platform/foo");
+        write_skill_md(&source);
+        fs::write(source.join("reference.md"), "reference").unwrap();
+        seed_platform_only_skill(&pool, &source).await;
+        // 예전 실패한 복사가 남긴 것처럼 SKILL.md만 있는 보관함 폴더
+        write_skill_md(&central_dir.join("foo"));
+
+        let result = install_skill_to_agent_impl(&pool, "foo", "claude-code").await;
+
+        assert!(
+            result.is_err(),
+            "an unconfirmed central folder must not be installed from"
+        );
+        assert!(fs::symlink_metadata(agent_dir.join("foo")).is_err());
+        assert_eq!(dir_entry_names(&central_dir.join("foo")), ["SKILL.md"]);
     }
 }

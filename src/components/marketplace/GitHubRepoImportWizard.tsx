@@ -40,6 +40,7 @@ import { InstallDialog } from "@/components/central/InstallDialog";
 import { MarkdownPreview } from "@/components/marketplace/MarkdownPreview";
 import {
   useMarketplaceStore,
+  githubImportAiSummaryKey,
   toGitHubImportFailure,
   type GitHubImportAiSummaryEntry,
   type SkillMarkdownEntry,
@@ -68,6 +69,8 @@ type SelectionState = {
   selected: boolean;
   resolution: DuplicateResolution;
   renamedSkillId: string;
+  /** Top-level folders installed together with a repository-root skill. */
+  includedFolders: string[];
 };
 
 type DetailTab = "overview" | "ai";
@@ -122,6 +125,9 @@ function buildInitialSelections(
         selected: true,
         resolution: skill.conflict ? "skip" : "overwrite",
         renamedSkillId: skill.skillId,
+        includedFolders: (skill.subfolders ?? [])
+          .filter((folder) => folder.defaultSelected)
+          .map((folder) => folder.name),
       },
     ]),
   );
@@ -298,6 +304,12 @@ export function GitHubRepoImportWizard({
     }
     return preview.skills[0] ?? null;
   }, [preview, selectedSkillPath]);
+  const selectedAiSummary =
+    preview && selectedPreviewSkill
+      ? aiSummaries[
+          githubImportAiSummaryKey(preview.repo, selectedPreviewSkill.sourcePath)
+        ]
+      : undefined;
   const previewToolbarRepoHref = useMemo(() => {
     if (!preview) return null;
     return `https://github.com/${preview.repo.owner}/${preview.repo.repo}`;
@@ -508,6 +520,9 @@ export function GitHubRepoImportWizard({
           state?.resolution === "rename"
             ? state.renamedSkillId.trim() || null
             : null,
+        ...(skill.subfolders?.length
+          ? { includedFolders: state?.includedFolders ?? [] }
+          : {}),
       };
     });
   }, [selectedSkills, selectionState]);
@@ -2270,6 +2285,66 @@ export function GitHubRepoImportWizard({
                               >
                                 {detailTab === "overview" ? (
                                   <div data-testid="github-import-detail-panel-overview">
+                                    {selectedPreviewSkill.subfolders?.length ? (
+                                      <div
+                                        className="mb-4 rounded-lg border border-border/70 bg-muted/20 p-3"
+                                        data-testid="github-import-root-folders"
+                                      >
+                                        <div className="text-sm font-semibold">
+                                          {t("marketplace.githubImportFoldersTitle")}
+                                        </div>
+                                        <div className="mt-1 text-xs text-muted-foreground">
+                                          {t("marketplace.githubImportFoldersDesc")}
+                                        </div>
+                                        <ul className="mt-3 grid gap-1.5 sm:grid-cols-2">
+                                          {selectedPreviewSkill.subfolders.map(
+                                            (folder) => {
+                                              const included = (
+                                                currentSelection?.includedFolders ??
+                                                []
+                                              ).includes(folder.name);
+                                              return (
+                                                <li key={folder.name}>
+                                                  <div className="flex items-center gap-2 text-sm">
+                                                    <Checkbox
+                                                      checked={included}
+                                                      aria-label={t(
+                                                        "marketplace.githubImportFolderInclude",
+                                                        { name: folder.name },
+                                                      )}
+                                                      onCheckedChange={(checked) =>
+                                                        updateSelection(
+                                                          selectedPreviewSkill,
+                                                          {
+                                                            includedFolders: checked
+                                                              ? [
+                                                                  ...(currentSelection?.includedFolders ??
+                                                                    []),
+                                                                  folder.name,
+                                                                ]
+                                                              : (
+                                                                  currentSelection?.includedFolders ??
+                                                                  []
+                                                                ).filter(
+                                                                  (name) =>
+                                                                    name !==
+                                                                    folder.name,
+                                                                ),
+                                                          },
+                                                        )
+                                                      }
+                                                    />
+                                                    <code className="truncate font-mono text-xs">
+                                                      {folder.name}
+                                                    </code>
+                                                  </div>
+                                                </li>
+                                              );
+                                            },
+                                          )}
+                                        </ul>
+                                      </div>
+                                    ) : null}
                                     {browserMode ? (
                                       <div className="flex flex-col items-center gap-2 py-10 text-center text-sm text-muted-foreground">
                                         <FileQuestion className="size-6 text-muted-foreground/70" />
@@ -2390,9 +2465,7 @@ export function GitHubRepoImportWizard({
                                             );
                                           }}
                                           disabled={
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.isLoading
+                                            selectedAiSummary?.isLoading
                                           }
                                         >
                                           <RefreshCw className="size-3.5" />
@@ -2401,38 +2474,24 @@ export function GitHubRepoImportWizard({
                                           </span>
                                         </Button>
                                       </div>
-                                      {aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.isLoading || aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.isStreaming ? (
+                                      {selectedAiSummary?.isLoading || selectedAiSummary?.isStreaming ? (
                                         <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
                                           <RefreshCw className="size-4 animate-spin" />
-                                          {aiSummaries[
-                                            selectedPreviewSkill.sourcePath
-                                          ]?.summary
+                                          {selectedAiSummary?.summary
                                             ? t("detail.explanationStreaming")
                                             : t("detail.explanationLoading")}
                                         </div>
                                       ) : null}
-                                      {aiSummaries[
-                                        selectedPreviewSkill.sourcePath
-                                      ]?.summary ? (
+                                      {selectedAiSummary?.summary ? (
                                         <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
                                           {
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.summary
+                                            selectedAiSummary?.summary
                                           }
                                         </div>
-                                      ) : aiSummaries[
-                                          selectedPreviewSkill.sourcePath
-                                        ]?.error ? (
+                                      ) : selectedAiSummary?.error ? (
                                         <div className="mt-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
                                           {
-                                            aiSummaries[
-                                              selectedPreviewSkill.sourcePath
-                                            ]?.error
+                                            selectedAiSummary?.error
                                           }
                                         </div>
                                       ) : selectedPreviewSkill.description ? (

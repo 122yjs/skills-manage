@@ -195,12 +195,18 @@ export function SettingsView() {
   const addCustomAgent = useSettingsStore((s) => s.addCustomAgent);
   const updateCustomAgent = useSettingsStore((s) => s.updateCustomAgent);
   const removeCustomAgent = useSettingsStore((s) => s.removeCustomAgent);
-  const githubPat = useSettingsStore((s) => s.githubPat);
+  const githubPatConfigured = useSettingsStore((s) => s.githubPatConfigured);
+  const secretKeychainAvailable = useSettingsStore((s) => s.secretKeychainAvailable);
+  const getSecretStatus = useSettingsStore((s) => s.getSecretStatus);
+  const setSecret = useSettingsStore((s) => s.setSecret);
   const isLoadingGitHubPat = useSettingsStore((s) => s.isLoadingGitHubPat);
   const isSavingGitHubPat = useSettingsStore((s) => s.isSavingGitHubPat);
   const loadGitHubPat = useSettingsStore((s) => s.loadGitHubPat);
   const saveGitHubPat = useSettingsStore((s) => s.saveGitHubPat);
   const clearGitHubPat = useSettingsStore((s) => s.clearGitHubPat);
+  const githubMirrorEnabled = useSettingsStore((s) => s.githubMirrorEnabled);
+  const loadGitHubMirror = useSettingsStore((s) => s.loadGitHubMirror);
+  const setGitHubMirror = useSettingsStore((s) => s.setGitHubMirror);
 
   const agents = usePlatformStore((s) => s.agents);
 
@@ -234,7 +240,9 @@ export function SettingsView() {
   // AI Provider state
   const [aiProvider, setAiProvider] = useState("claude");
   const [aiRegion, setAiRegion] = useState<RegionId>("intl");
+  // 저장된 키는 화면으로 전달되지 않는다. 입력칸에는 이번에 새로 입력한 값만 있다.
   const [aiApiKey, setAiApiKey] = useState("");
+  const [aiKeyConfigured, setAiKeyConfigured] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [aiModel, setAiModel] = useState("");
   const [aiMaxTokens, setAiMaxTokens] = useState("");
@@ -309,12 +317,11 @@ export function SettingsView() {
         if (provider) setAiProvider(provider);
         if (region) setAiRegion(region as RegionId);
         if (provider) {
-          const key = await invoke<string | null>("get_setting", { key: `ai_api_key__${provider}` });
+          setAiKeyConfigured(await getSecretStatus(`ai_api_key__${provider}`));
           const model = await invoke<string | null>("get_setting", { key: `ai_model__${provider}` });
           setAiMaxTokens(await invoke<string | null>("get_setting", { key: `ai_max_tokens__${provider}` }) ?? "");
           const baseUrl = await invoke<string | null>("get_setting", { key: `ai_custom_base_url__${provider}` });
           const protocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${provider}` });
-          if (key) setAiApiKey(key);
           if (model) setAiModel(model);
           else {
             const p = AI_PROVIDERS.find((x) => x.id === provider);
@@ -333,7 +340,7 @@ export function SettingsView() {
       } catch { /* first run, no settings yet */ }
       setAiLoaded(true);
     })();
-  }, []);
+  }, [getSecretStatus]);
 
   // Save AI settings when changed (only after user interaction)
   useEffect(() => {
@@ -342,7 +349,6 @@ export function SettingsView() {
       try {
         await invoke("set_setting", { key: "ai_provider", value: aiProvider });
         await invoke("set_setting", { key: "ai_region", value: aiRegion });
-        await invoke("set_setting", { key: `ai_api_key__${aiProvider}`, value: aiApiKey });
         await invoke("set_setting", { key: `ai_model__${aiProvider}`, value: aiModel });
         await invoke("set_setting", { key: `ai_max_tokens__${aiProvider}`, value: aiMaxTokens });
         const url = resolveCustomUrl(aiCustomUrl, aiProtocol);
@@ -352,7 +358,27 @@ export function SettingsView() {
       } catch { /* ignore */ }
     };
     save();
-  }, [aiProvider, aiRegion, aiApiKey, aiModel, aiMaxTokens, aiCustomUrl, aiProtocol, aiLoaded, hasUserInteracted]);
+  }, [aiProvider, aiRegion, aiModel, aiMaxTokens, aiCustomUrl, aiProtocol, aiLoaded, hasUserInteracted]);
+
+  // 입력한 API 키는 저장 버튼을 눌렀을 때만 OS 키체인에 저장한다 (DB에는 설정 여부만 남는다).
+  // 입력마다 저장하면 한 글자만 쳐도 기존 키를 덮어쓰기 때문이다.
+  async function handleSaveAiKey() {
+    try {
+      setAiKeyConfigured(await setSecret(`ai_api_key__${aiProvider}`, aiApiKey));
+      setAiApiKey("");
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
+
+  async function handleClearAiKey() {
+    try {
+      setAiKeyConfigured(await setSecret(`ai_api_key__${aiProvider}`, ""));
+      setAiApiKey("");
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }
 
   // When provider or region changes, update model to default
   async function handleProviderChange(id: string) {
@@ -370,12 +396,13 @@ export function SettingsView() {
       }
     }
     try {
-      const key = await invoke<string | null>("get_setting", { key: `ai_api_key__${id}` });
+      const keyConfigured = await getSecretStatus(`ai_api_key__${id}`);
       const model = await invoke<string | null>("get_setting", { key: `ai_model__${id}` });
       setAiMaxTokens(await invoke<string | null>("get_setting", { key: `ai_max_tokens__${id}` }) ?? "");
       const protocol = await invoke<string | null>("get_setting", { key: `ai_protocol__${id}` });
       const baseUrl = await invoke<string | null>("get_setting", { key: `ai_custom_base_url__${id}` });
-      setAiApiKey(key ?? "");
+      setAiApiKey("");
+      setAiKeyConfigured(keyConfigured);
       setAiModel(model ?? p?.defaultModel ?? "");
       if (id === "custom") {
         setAiProtocol(protocol ? (protocol as ApiProtocol | "") : "");
@@ -390,6 +417,7 @@ export function SettingsView() {
       setModelsError(null);
     } catch {
       setAiApiKey("");
+      setAiKeyConfigured(false);
       setAiModel(p?.defaultModel ?? "");
       setAiMaxTokens("");
       setAiCustomUrl(p?.endpoints[nextRegion] ?? "");
@@ -431,6 +459,8 @@ export function SettingsView() {
     ? (currentProvider?.modelsUrls?.[aiRegion] ?? currentProvider?.modelsUrls?.intl ?? undefined)
     : undefined;
   const modelsRequireApiKey = currentProvider?.modelsRequireApiKey ?? true;
+  // 입력한 키가 없어도 키체인에 저장된 키가 있으면 키가 있는 것으로 본다
+  const hasAiKey = !!aiApiKey.trim() || aiKeyConfigured;
   const catalogProviderId =
     aiProvider === "custom"
       ? undefined
@@ -457,7 +487,7 @@ export function SettingsView() {
       if (showToast) toast.message(t("settings.aiModelOpenRouterSkip"));
       return;
     }
-    if (modelsRequireApiKey && !aiApiKey.trim()) {
+    if (modelsRequireApiKey && !hasAiKey) {
       if (!canUsePublicCatalog) {
         setModelsError(t("settings.aiModelNeedKey"));
         if (showToast) toast.error(t("settings.aiModelNeedKey"));
@@ -484,7 +514,8 @@ export function SettingsView() {
           error?: string | null;
         }>("list_ai_models", {
           request: {
-            apiKey: aiApiKey,
+            // 입력이 없으면 null을 보내 백엔드가 키체인에 저장된 키를 쓰게 한다
+            apiKey: aiApiKey || (aiKeyConfigured ? null : ""),
             apiUrl: resolvedUrl,
             protocol: resolvedProtocol || null,
             modelsUrl: resolvedModelsUrl ?? null,
@@ -540,7 +571,7 @@ export function SettingsView() {
       setModelsSource(providerModelOptions.length > 0 ? "fallback" : null);
       return;
     }
-    if (modelsRequireApiKey && !aiApiKey.trim() && !canUsePublicCatalog) {
+    if (modelsRequireApiKey && !hasAiKey && !canUsePublicCatalog) {
       setModelOptions(providerModelOptions);
       setModelsSource(providerModelOptions.length > 0 ? "fallback" : null);
       return;
@@ -554,7 +585,7 @@ export function SettingsView() {
   }, [aiLoaded, providerLoading, aiProvider, aiRegion, resolvedUrl, resolvedProtocol, resolvedModelsUrl]);
 
   const canRefreshModels =
-    (!modelsRequireApiKey || !!aiApiKey.trim() || canUsePublicCatalog) &&
+    (!modelsRequireApiKey || hasAiKey || canUsePublicCatalog) &&
     !!resolvedUrl.trim() &&
     aiProvider !== "openrouter";
 
@@ -577,7 +608,7 @@ export function SettingsView() {
       .then((status) => { if (active) setGitHubAuthStatus(status ?? "unavailable"); })
       .catch(() => { if (active) setGitHubAuthStatus("unavailable"); });
     return () => { active = false; };
-  }, [githubPat, githubAuthRefresh]);
+  }, [githubPatConfigured, githubAuthRefresh]);
 
   const [githubPatMessage, setGitHubPatMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
@@ -586,13 +617,11 @@ export function SettingsView() {
   useEffect(() => {
     loadScanDirectories();
     loadGitHubPat();
-  }, [loadScanDirectories, loadGitHubPat]);
+    loadGitHubMirror();
+  }, [loadScanDirectories, loadGitHubPat, loadGitHubMirror]);
 
-  useEffect(() => {
-    setGitHubPatInput(githubPat);
-  }, [githubPat]);
-
-  const isGitHubPatDirty = useMemo(() => githubPatInput.trim() !== githubPat, [githubPatInput, githubPat]);
+  // 입력칸에는 이번에 새로 입력한 토큰만 있다. 저장된 토큰은 화면으로 전달되지 않는다.
+  const isGitHubPatDirty = githubPatInput.trim() !== "";
 
   // ── Scan Directories Handlers ──────────────────────────────────────────────
 
@@ -700,8 +729,11 @@ export function SettingsView() {
       await rescan();
       toast.success(t("common.delete") + " ✓");
     } catch (err) {
-      setPlatformError(String(err));
-      toast.error(String(err));
+      const message = String(err).includes("PLATFORM_HAS_MANAGED_INSTALLS")
+        ? t("platformDialog.removeBlockedByInstalls")
+        : String(err);
+      setPlatformError(message);
+      toast.error(message);
     } finally {
       setRemovingAgent(null);
     }
@@ -711,6 +743,7 @@ export function SettingsView() {
     setGitHubPatMessage(null);
     try {
       await saveGitHubPat(githubPatInput);
+      setGitHubPatInput("");
       setGitHubPatMessage({
         type: "success",
         text: t("settings.githubPatSaved"),
@@ -857,7 +890,7 @@ export function SettingsView() {
                 <Input
                   id="github-pat"
                   type="password"
-                  placeholder="github_pat_..."
+                  placeholder={githubPatConfigured ? t("settings.secretSavedPlaceholder") : "github_pat_..."}
                   value={githubPatInput}
                   onChange={(event) => setGitHubPatInput(event.target.value)}
                   disabled={isLoadingGitHubPat || isSavingGitHubPat}
@@ -868,6 +901,10 @@ export function SettingsView() {
                 <p>{t("settings.githubPatDirectOnly")}</p>
                 <p className="mt-2">{t("settings.githubPatRateLimitHint")}</p>
               </div>
+
+              {!secretKeychainAvailable ? (
+                <p className="text-sm text-muted-foreground">{t("settings.secretKeychainUnavailable")}</p>
+              ) : null}
 
               {githubPatMessage ? (
                 <p
@@ -889,7 +926,7 @@ export function SettingsView() {
                 <Button
                   variant="outline"
                   onClick={handleClearGitHubPat}
-                  disabled={isLoadingGitHubPat || isSavingGitHubPat || !githubPat}
+                  disabled={isLoadingGitHubPat || isSavingGitHubPat || !githubPatConfigured}
                 >
                   <span>{t("settings.githubPatClear")}</span>
                 </Button>
@@ -897,6 +934,33 @@ export function SettingsView() {
                   <span className="text-xs text-muted-foreground">{t("settings.loading")}</span>
                 ) : null}
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* ── GitHub mirror fallback (default off) ───────────────────────── */}
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Globe className="size-5 text-muted-foreground" />
+              <div>
+                <CardTitle>{t("settings.githubMirrorTitle")}</CardTitle>
+                <CardDescription className="mt-1">
+                  {t("settings.githubMirrorDesc")}
+                </CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={githubMirrorEnabled}
+                onCheckedChange={(enabled) => {
+                  setGitHubMirror(enabled).catch((err) => toast.error(String(err)));
+                }}
+                aria-label={t("settings.githubMirrorLabel")}
+              />
+              <span className="text-sm">{t("settings.githubMirrorLabel")}</span>
             </div>
           </CardContent>
         </Card>
@@ -956,17 +1020,28 @@ export function SettingsView() {
                 </div>
               )}
               <div>
-                <label className="text-xs text-muted-foreground mb-1 block">{t("settings.aiApiKeyLabel")}</label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="text-xs text-muted-foreground">{t("settings.aiApiKeyLabel")}</label>
+                  {aiKeyConfigured ? (
+                    <button
+                      type="button"
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                      onClick={handleClearAiKey}
+                    >
+                      {t("settings.aiApiKeyClear")}
+                    </button>
+                  ) : null}
+                </div>
                 <div className="relative">
                   <Input
                     type={showKey ? "text" : "password"}
-                    placeholder="sk-..."
+                    placeholder={aiKeyConfigured ? t("settings.secretSavedPlaceholder") : "sk-..."}
                     value={aiApiKey}
                     onChange={(e) => { setHasUserInteracted(true); setAiApiKey(e.target.value); }}
                     onBlur={() => {
                       // 키 입력이 끝나면 그때 모델 목록 로드
                       if (
-                        (!modelsRequireApiKey || aiApiKey.trim() || canUsePublicCatalog) &&
+                        (!modelsRequireApiKey || hasAiKey || canUsePublicCatalog) &&
                         resolvedUrl.trim() &&
                         aiProvider !== "openrouter"
                       ) {
@@ -979,6 +1054,14 @@ export function SettingsView() {
                     {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
                 </div>
+                <div className="mt-2">
+                  <Button size="sm" onClick={handleSaveAiKey} disabled={!aiApiKey.trim()}>
+                    {t("settings.aiApiKeySave")}
+                  </Button>
+                </div>
+                {!secretKeychainAvailable ? (
+                  <p className="mt-1 text-[11px] text-muted-foreground">{t("settings.secretKeychainUnavailable")}</p>
+                ) : null}
               </div>
               <div>
                 <div className="flex items-center justify-between gap-2 mb-1">
@@ -991,7 +1074,7 @@ export function SettingsView() {
                     title={
                       aiProvider === "openrouter"
                         ? t("settings.aiModelOpenRouterSkip")
-                        : modelsRequireApiKey && !aiApiKey.trim() && !canUsePublicCatalog
+                        : modelsRequireApiKey && !hasAiKey && !canUsePublicCatalog
                           ? t("settings.aiModelNeedKey")
                           : !resolvedUrl.trim()
                             ? t("settings.aiTestEnterUrl")
@@ -1043,7 +1126,7 @@ export function SettingsView() {
                 ) : null}
                 {!canRefreshModels && aiProvider !== "openrouter" ? (
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    {modelsRequireApiKey && !aiApiKey.trim()
+                    {modelsRequireApiKey && !hasAiKey
                       ? t("settings.aiModelNeedKey")
                       : t("settings.aiTestEnterUrl")}
                   </p>
@@ -1109,7 +1192,7 @@ export function SettingsView() {
                 <Button
                   variant="outline"
                   size="sm"
-                  disabled={aiTesting || !aiApiKey || !resolvedUrl}
+                  disabled={aiTesting || !hasAiKey || !resolvedUrl}
                   onClick={async () => {
                     setAiTesting(true); setAiTestResult(null); setShowAiTestDetails(false);
                     try {

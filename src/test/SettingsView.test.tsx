@@ -84,12 +84,18 @@ function setupMocks({
   addCustomAgent = vi.fn(),
   updateCustomAgent = vi.fn(),
   removeCustomAgent = vi.fn(),
-  githubPat = "",
+  githubPatConfigured = false,
+  secretKeychainAvailable = true,
+  getSecretStatus = vi.fn().mockResolvedValue(false),
+  setSecret = vi.fn().mockResolvedValue(true),
   isLoadingGitHubPat = false,
   isSavingGitHubPat = false,
   loadGitHubPat = vi.fn(),
   saveGitHubPat = vi.fn(),
   clearGitHubPat = vi.fn(),
+  githubMirrorEnabled = false,
+  loadGitHubMirror = vi.fn(),
+  setGitHubMirror = vi.fn(),
   rescan = vi.fn(),
   refreshCounts = vi.fn(),
   flavor = "mocha" as const,
@@ -109,12 +115,18 @@ function setupMocks({
       addCustomAgent,
       updateCustomAgent,
       removeCustomAgent,
-      githubPat,
+      githubPatConfigured,
+      secretKeychainAvailable,
+      getSecretStatus,
+      setSecret,
       isLoadingGitHubPat,
       isSavingGitHubPat,
       loadGitHubPat,
       saveGitHubPat,
       clearGitHubPat,
+      githubMirrorEnabled,
+      loadGitHubMirror,
+      setGitHubMirror,
       clearError: vi.fn(),
     })
   );
@@ -223,18 +235,26 @@ describe("SettingsView", () => {
     expect(loadGitHubPat).toHaveBeenCalled();
   });
 
-  it("renders the saved github pat value and explanation copy", () => {
-    setupMocks({ githubPat: "github_pat_saved" });
+  it("shows that a github pat is saved without putting its value in the form", () => {
+    setupMocks({ githubPatConfigured: true });
     renderSettingsView();
 
-    expect(screen.getByLabelText("GitHub Personal Access Token")).toHaveValue("github_pat_saved");
+    expect(screen.getByLabelText("GitHub Personal Access Token")).toHaveValue("");
+    expect(screen.getByPlaceholderText("已保存 · 输入新值即可替换")).toBeTruthy();
     expect(screen.getByText(/它绝不会被发送到公共镜像或代理回退链路/)).toBeTruthy();
     expect(screen.getByText(/当 GitHub 预览\/导入遇到限流/)).toBeTruthy();
   });
 
+  it("explains that secrets stay in memory when the OS keychain is unavailable", () => {
+    setupMocks({ secretKeychainAvailable: false });
+    renderSettingsView();
+
+    expect(screen.getAllByText(/无法使用系统钥匙串/).length).toBeGreaterThan(0);
+  });
+
   it("saves the github pat from settings", async () => {
     const saveGitHubPat = vi.fn().mockResolvedValue(undefined);
-    setupMocks({ githubPat: "", saveGitHubPat });
+    setupMocks({ saveGitHubPat });
     renderSettingsView();
 
     fireEvent.change(screen.getByLabelText("GitHub Personal Access Token"), {
@@ -250,7 +270,7 @@ describe("SettingsView", () => {
 
   it("clears the github pat from settings", async () => {
     const clearGitHubPat = vi.fn().mockResolvedValue(undefined);
-    setupMocks({ githubPat: "github_pat_saved", clearGitHubPat });
+    setupMocks({ githubPatConfigured: true, clearGitHubPat });
     renderSettingsView();
 
     fireEvent.click(screen.getByRole("button", { name: "清除令牌" }));
@@ -259,6 +279,55 @@ describe("SettingsView", () => {
       expect(clearGitHubPat).toHaveBeenCalled();
     });
     expect(await screen.findByText("GitHub 令牌已清除")).toBeTruthy();
+  });
+
+  it("shows the mirror fallback as off and turns it on from settings", async () => {
+    const setGitHubMirror = vi.fn().mockResolvedValue(undefined);
+    setupMocks({ githubMirrorEnabled: false, setGitHubMirror });
+    renderSettingsView();
+
+    const toggle = screen.getByRole("switch", { name: "启用 GitHub 镜像回退" });
+    expect(toggle).toHaveAttribute("aria-checked", "false");
+    fireEvent.click(toggle);
+
+    await waitFor(() => {
+      expect(setGitHubMirror).toHaveBeenCalledWith(true);
+    });
+  });
+
+  it("shows a saved AI key as configured without loading its value into the form", async () => {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "get_setting" && (args as { key: string }).key === "ai_provider") return "claude";
+      return null;
+    });
+    const getSecretStatus = vi.fn().mockResolvedValue(true);
+    setupMocks({ getSecretStatus });
+    renderSettingsView();
+
+    await waitFor(() => expect(getSecretStatus).toHaveBeenCalledWith("ai_api_key__claude"));
+    expect(await screen.findByPlaceholderText("已保存 · 输入新值即可替换")).toHaveValue("");
+    expect(invoke).not.toHaveBeenCalledWith("get_setting", { key: "ai_api_key__claude" });
+  });
+
+  it("saves a typed AI key through the keychain command only when Save is pressed", async () => {
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "get_setting" && (args as { key: string }).key === "ai_provider") return "claude";
+      return null;
+    });
+    const setSecret = vi.fn().mockResolvedValue(true);
+    setupMocks({ setSecret });
+    renderSettingsView();
+
+    const keyInput = await screen.findByPlaceholderText("sk-...");
+    fireEvent.change(keyInput, { target: { value: "sk-typed" } });
+    expect(setSecret).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "保存密钥" }));
+
+    await waitFor(() => expect(setSecret).toHaveBeenCalledWith("ai_api_key__claude", "sk-typed"));
+    expect(invoke).not.toHaveBeenCalledWith("set_setting", {
+      key: "ai_api_key__claude",
+      value: "sk-typed",
+    });
   });
 
   it("loads the public OpenCode Go model catalog without an API key", async () => {
@@ -393,13 +462,13 @@ describe("SettingsView", () => {
   it("shows toggle for custom directories", () => {
     setupMocks({ scanDirs: [mockCustomDir] });
     renderSettingsView();
-    expect(screen.getByRole("switch")).toBeTruthy();
+    expect(screen.getByRole("switch", { name: /my-project/ })).toBeTruthy();
   });
 
   it("does not show toggle for builtin directories", () => {
     setupMocks({ scanDirs: [mockBuiltinDir] });
     renderSettingsView();
-    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByRole("switch", { name: /\.agents\/skills/ })).toBeNull();
   });
 
   it("shows 启用 label when directory is active", () => {
@@ -552,6 +621,30 @@ describe("SettingsView", () => {
 
     await waitFor(() => {
       expect(removeCustomAgent).toHaveBeenCalledWith(mockCustomAgent.id);
+    });
+  });
+
+  it("explains in the UI language why a platform with managed installs cannot be removed", async () => {
+    const removeCustomAgent = vi
+      .fn()
+      .mockRejectedValue("PLATFORM_HAS_MANAGED_INSTALLS: 이 플랫폼에 설치된 스킬이 있어");
+    setupMocks({
+      agents: [mockBuiltinAgent, mockCustomAgent],
+      removeCustomAgent,
+    });
+    renderSettingsView();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: `删除平台 ${mockCustomAgent.display_name}` })
+    );
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(
+          "该平台上仍有应用安装的技能，无法删除。请先移除这些安装，再删除平台。"
+        ).length
+      ).toBeGreaterThan(0);
     });
   });
 

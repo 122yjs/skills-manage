@@ -657,6 +657,27 @@ describe("PlatformView", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows which platform folder could not be read", () => {
+    mockUsePlatformStore.mockImplementation((selector?: unknown) => {
+      const state = buildPlatformStoreState({
+        unreadableRoots: [{ agent_id: "claude-code", path: "/locked/claude/skills" }],
+      });
+      if (typeof selector === "function") return selector(state);
+      return state;
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/platform/claude-code"]}>
+        <Routes>
+          <Route path="/platform/:agentId" element={<PlatformView />} />
+        </Routes>
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent("/locked/claude/skills");
+    expect(screen.getByRole("alert")).toHaveTextContent(/无法读取/);
+  });
+
   // ── Platform Not Found ────────────────────────────────────────────────────
 
   it("shows not found when agent doesn't exist", () => {
@@ -2022,4 +2043,72 @@ it("중복 출처만 보기에서 단일 출처를 숨기고 다시 모두 표�
   expect(screen.getByRole("button", { name: /查看 shared-skill 的 2 个来源位置/ })).toBeInTheDocument();
   fireEvent.click(filter);
   expect(screen.getByRole("button", { name: /查看 frontend-design 的详情/ })).toBeInTheDocument();
+});
+
+describe("PlatformView observed item import", () => {
+  const observedSkill: ScannedSkill = {
+    id: "my-notes",
+    name: "my-notes",
+    description: "직접 만든 스킬",
+    file_path: "/Users/test/.claude/skills/my-notes/SKILL.md",
+    dir_path: "/Users/test/.claude/skills/my-notes",
+    link_type: "copy",
+    is_central: false,
+    is_read_only: true,
+    is_managed: false,
+  };
+  const mockImportObserved = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockImportObserved.mockReset();
+    mockRefreshCounts.mockReset().mockResolvedValue(undefined);
+    mockLoadUsageStatus.mockReset().mockResolvedValue(undefined);
+    mockLoadCentralSkills.mockReset().mockResolvedValue(undefined);
+    mockGetSkillsByAgent.mockReset().mockResolvedValue(undefined);
+    useSkillUsageStore.setState({
+      statuses: [],
+      loadUsageStatus: mockLoadUsageStatus,
+      platformControlsByAgent: {},
+    });
+    installDefaultStoreMocks();
+    mockUseSkillStore.mockImplementation((selector?: unknown) => {
+      const state = buildSkillStoreState({
+        skillsByAgent: { "claude-code": [observedSkill] },
+        importObserved: mockImportObserved,
+      });
+      return typeof selector === "function" ? selector(state) : state;
+    });
+  });
+
+  it("같은 이름의 보관함 스킬이 있으면 가져오지 않고 중복 출처 비교를 보여 준다", async () => {
+    mockImportObserved.mockResolvedValue({
+      relation: "different",
+      paths: ["/Users/test/.claude/skills/my-notes", "/Users/test/.skillsmanage/skills/my-notes"],
+    });
+    renderPlatformView();
+    mockLoadCentralSkills.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 my-notes" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(mockImportObserved).toHaveBeenCalledWith("my-notes", "claude-code");
+    expect(within(dialog).getByText("中央库中已有同名技能")).toBeInTheDocument();
+    expect(within(dialog).getByText("内容不同")).toBeInTheDocument();
+    expect(within(dialog).getByText("/Users/test/.skillsmanage/skills/my-notes")).toBeInTheDocument();
+    expect(mockLoadCentralSkills).not.toHaveBeenCalled();
+  });
+
+  it("가져오기에 성공하면 비교 창 없이 목록과 보관함을 다시 읽는다", async () => {
+    mockImportObserved.mockResolvedValue(null);
+    renderPlatformView();
+    mockGetSkillsByAgent.mockClear();
+    mockLoadCentralSkills.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 my-notes" }));
+
+    await waitFor(() => expect(mockGetSkillsByAgent).toHaveBeenCalledWith("claude-code"));
+    expect(mockLoadCentralSkills).toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
 });

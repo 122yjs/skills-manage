@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { SkillDetailDrawer } from "@/components/skill/SkillDetailDrawer";
 import { SkillTransferToolbar } from "@/components/skill/SkillTransferToolbar";
 import { UnifiedSkillCard } from "@/components/skill/UnifiedSkillCard";
+import { useObservedImport } from "@/components/skill/ObservedImport";
 import { Button } from "@/components/ui/button";
 import { useSkillSelection } from "@/hooks/useSkillSelection";
 import { Switch } from "@/components/ui/switch";
@@ -72,6 +73,13 @@ export function UniversalInstallView() {
   const [sharedDialogBulk, setSharedDialogBulk] = useState(false);
   const [sharedDialogConfirming, setSharedDialogConfirming] = useState(false);
   const agent = agents.find((candidate) => candidate.id === UNIVERSAL_AGENT_ID);
+  const observedImport = useObservedImport(() =>
+    Promise.all([
+      refreshCounts(),
+      getSkillsByAgent(UNIVERSAL_AGENT_ID),
+      loadUsageStatus().catch(() => undefined),
+    ])
+  );
 
   useEffect(() => {
     void getSkillsByAgent(UNIVERSAL_AGENT_ID);
@@ -412,6 +420,9 @@ export function UniversalInstallView() {
                     ? skill.link_type as "symlink" | "copy" | "native"
                     : undefined}
                   isReadOnly={skill.is_read_only ?? false}
+                  isUnmanaged={skill.is_managed === false}
+                  onImportObserved={() =>
+                    void observedImport.run(skill.id, UNIVERSAL_AGENT_ID, skill.name)}
                   isExternallyManaged={skill.source_kind === "unmanaged"}
                   sharedControl={sharedImpact
                     ? {
@@ -447,6 +458,7 @@ export function UniversalInstallView() {
                   uninstallFromLabel={t("universal.removeOne", { skill: skill.name })}
                   isLoading={
                     isMutationInProgress ||
+                    observedImport.busyKey === `${UNIVERSAL_AGENT_ID}::${skill.id}` ||
                     (pendingActions[`${UNIVERSAL_AGENT_ID}::${skill.id}`] ?? false) ||
                     (sharedImpact
                       ? (updatingSharedKeys[
@@ -460,6 +472,8 @@ export function UniversalInstallView() {
           </div>
         )}
       </div>
+
+      {observedImport.dialog}
 
       {deleteIds && <SharedInstallDeleteDialog
         skillIds={deleteIds}

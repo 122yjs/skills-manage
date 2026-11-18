@@ -13,6 +13,19 @@ use crate::{
     AppState,
 };
 
+/// 토큰을 보내도 되는 호스트. 미러·프록시와 그 밖의 주소에는 토큰을 붙이지 않는다.
+const GITHUB_TOKEN_HOSTS: &[&str] = &["api.github.com", "raw.githubusercontent.com"];
+
+fn is_github_token_host(url: &str) -> bool {
+    reqwest::Url::parse(url).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| GITHUB_TOKEN_HOSTS.contains(&host))
+    })
+}
+
+/// 실제 요청 주소가 https이고 호스트가 GitHub 허용 목록에 있을 때만 토큰을 붙인다.
 pub(crate) fn github_request(
     client: &reqwest::Client,
     url: &str,
@@ -20,8 +33,8 @@ pub(crate) fn github_request(
 ) -> reqwest::RequestBuilder {
     let req = client.get(url);
     match token {
-        Some(t) => req.bearer_auth(t),
-        None => req,
+        Some(t) if is_github_token_host(url) => req.bearer_auth(t),
+        _ => req,
     }
 }
 
@@ -83,6 +96,14 @@ pub struct GitHubSkillConflict {
     pub existing_path: String,
 }
 
+/// 루트 스킬에 포함할 수 있는 최상위 하위 폴더. 미리보기에서 사용자가 고른다.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHubSkillSubfolder {
+    pub name: String,
+    pub default_selected: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHubSkillPreview {
@@ -94,6 +115,8 @@ pub struct GitHubSkillPreview {
     pub skill_directory_name: String,
     pub download_url: String,
     pub conflict: Option<GitHubSkillConflict>,
+    /// 루트 스킬(`source_path == "."`)만 채워진다.
+    pub subfolders: Vec<GitHubSkillSubfolder>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -109,6 +132,9 @@ pub struct GitHubSkillImportSelection {
     pub source_path: String,
     pub resolution: DuplicateResolution,
     pub renamed_skill_id: Option<String>,
+    /// 루트 스킬에 함께 설치할 최상위 하위 폴더 이름. 비어 있으면 루트 파일만 설치한다.
+    #[serde(default)]
+    pub included_folders: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -163,6 +189,13 @@ impl GitHubImportError {
     fn plain(message: impl Into<String>) -> Self {
         Self::Message(message.into())
     }
+
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            Self::Message(message) => message,
+            Self::Failure(failure) => failure.message,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -205,6 +238,8 @@ pub(crate) struct RemoteSkillCandidate {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct GitHubRepoSnapshot {
     pub(crate) files: HashMap<String, SnapshotFile>,
+    /// 압축 파일을 GitHub가 아닌 미러에서 받았는지 여부. 출처 기록에 남긴다.
+    pub(crate) via_mirror: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -213,7 +248,16 @@ pub(crate) struct SnapshotFile {
     pub(crate) executable: bool,
 }
 
-const GITHUB_PAT_SETTING_KEY: &str = "github_pat";
+const GITHUB_PAT_SETTING_KEY: &str = crate::secrets::GITHUB_PAT_KEY;
+const GITHUB_MIRROR_SETTING_KEY: &str = "github_mirror_enabled";
+
+/// 제3자 미러로 대체할지 여부. 설정이 없으면 꺼짐이다.
+pub(crate) async fn github_mirror_enabled(pool: &DbPool) -> Result<bool, String> {
+    Ok(db::get_setting(pool, GITHUB_MIRROR_SETTING_KEY)
+        .await?
+        .as_deref()
+        == Some("true"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GitHubAccessDenialKind {
@@ -348,7 +392,8 @@ pub async fn fetch_github_skill_markdown(
 ) -> Result<String, String> {
     let client = github_client()?;
     let auth = github_direct_auth_from_settings(&state.db).await?;
-    fetch_raw_text(&client, &download_url, auth.as_deref()).await
+    let mirror = github_mirror_enabled(&state.db).await?;
+    fetch_raw_text(&client, &download_url, auth.as_deref(), mirror).await
 }
 
 async fn preview_github_repo_import_impl(
@@ -356,10 +401,13 @@ async fn preview_github_repo_import_impl(
     repo_url: &str,
 ) -> Result<GitHubRepoPreview, String> {
     let auth = github_direct_auth_from_settings(pool).await?;
-    let repo = resolve_repo_ref(repo_url, auth.as_deref()).await?;
-    let candidates = fetch_repo_skill_candidates(&repo, auth.as_deref()).await?;
+    let mirror = github_mirror_enabled(pool).await?;
+    let repo = resolve_repo_ref(repo_url, auth.as_deref(), mirror).await?;
+    let snapshot =
+        download_repo_snapshot(&github_client()?, &repo, auth.as_deref(), mirror).await?;
+    let candidates = build_repo_skill_candidates_from_snapshot(&repo, &snapshot)?;
     let central_root = central_skills_root(pool).await?;
-    let skills = build_preview_skills(pool, &central_root, &candidates).await?;
+    let skills = build_preview_skills(pool, &central_root, &candidates, &snapshot).await?;
 
     if skills.is_empty() {
         return Err(
@@ -393,14 +441,19 @@ async fn import_github_repo_skills_impl(
     let auth = github_direct_auth_from_settings(pool)
         .await
         .map_err(GitHubImportError::plain)?;
-    let repo = resolve_repo_ref(repo_url, auth.as_deref())
+    let mirror = github_mirror_enabled(pool)
+        .await
+        .map_err(GitHubImportError::plain)?;
+    let repo = resolve_repo_ref(repo_url, auth.as_deref(), mirror)
         .await
         .map_err(GitHubImportError::plain)?;
     let client = github_client().map_err(GitHubImportError::plain)?;
 
     // 확인한 커밋이 있으면 그 커밋으로 고정해 내려받는다. 조회에 실패하면 기본
     // 브랜치로 진행하되, 검증된 기준으로 기록하지 않는다.
-    let commit_oid = resolve_repo_commit_oid(&repo, auth.as_deref()).await.ok();
+    let commit_oid = resolve_repo_commit_oid(&repo, auth.as_deref(), mirror)
+        .await
+        .ok();
     let download_ref = match &commit_oid {
         Some(commit) => GitHubRepoRef {
             branch: commit.clone(),
@@ -408,7 +461,7 @@ async fn import_github_repo_skills_impl(
         },
         None => repo.clone(),
     };
-    let snapshot = download_repo_snapshot(&client, &download_ref, auth.as_deref())
+    let snapshot = download_repo_snapshot(&client, &download_ref, auth.as_deref(), mirror)
         .await
         .map_err(GitHubImportError::plain)?;
     let candidates = build_repo_skill_candidates_from_snapshot(&download_ref, &snapshot)
@@ -436,12 +489,12 @@ async fn import_github_repo_skills_impl(
 /// 이미 내려받은 저장소 내용으로 설치만 수행하는 요청. 테스트가 네트워크 없이
 /// 실제 설치 경로를 실행할 수 있도록 분리했다.
 #[derive(Debug, Clone)]
-struct RepoSnapshotImportRequest {
-    repo: GitHubRepoRef,
-    commit_oid: Option<String>,
-    snapshot: GitHubRepoSnapshot,
-    candidates: Vec<RemoteSkillCandidate>,
-    selections: Vec<GitHubSkillImportSelection>,
+pub(crate) struct RepoSnapshotImportRequest {
+    pub(crate) repo: GitHubRepoRef,
+    pub(crate) commit_oid: Option<String>,
+    pub(crate) snapshot: GitHubRepoSnapshot,
+    pub(crate) candidates: Vec<RemoteSkillCandidate>,
+    pub(crate) selections: Vec<GitHubSkillImportSelection>,
 }
 
 #[derive(Debug, Clone)]
@@ -452,6 +505,7 @@ struct StagedImport {
     target_dir: PathBuf,
     /// 기존 중앙 레코드가 대상을 소유해 교체할 수 있는지 여부.
     owned_target: bool,
+    included_folders: Vec<String>,
     source_files: Vec<SnapshotSourceFile>,
 }
 
@@ -505,7 +559,7 @@ impl ImportBatchProgress {
 /// 첫 쓰기 전에 모든 대상 경로를 검증한다. 각 스킬은 대상 옆의 스테이징
 /// 디렉터리에 먼저 쓰고 나서 교체하므로, 실패해도 반쯤 쓰인 스킬이 남지 않는다.
 /// 뒤 스킬이 실패해도 앞서 완료된 스킬은 되돌리지 않고 그대로 보고한다.
-async fn install_repo_skills_from_snapshot(
+pub(crate) async fn install_repo_skills_from_snapshot(
     pool: &DbPool,
     request: RepoSnapshotImportRequest,
     app: Option<&AppHandle>,
@@ -550,17 +604,19 @@ async fn install_repo_skills_from_snapshot(
     }
 
     for op in &mut staging_ops {
-        op.source_files =
-            collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path).map_err(
-                |message| {
-                    progress.blocked(
-                        message,
-                        Some(op.candidate.source_path.as_str()),
-                        Some(op.final_skill_id.as_str()),
-                        Some(op.target_dir.clone()),
-                    )
-                },
-            )?;
+        let collected = if op.candidate.source_path == "." {
+            collect_root_skill_files(&request.snapshot, &op.included_folders)
+        } else {
+            collect_snapshot_source_files(&request.snapshot, &op.candidate.source_path)
+        };
+        op.source_files = collected.map_err(|message| {
+            progress.blocked(
+                message,
+                Some(op.candidate.source_path.as_str()),
+                Some(op.final_skill_id.as_str()),
+                Some(op.target_dir.clone()),
+            )
+        })?;
     }
 
     let total_files = staging_ops
@@ -702,6 +758,7 @@ async fn install_repo_skills_from_snapshot(
             &request.repo,
             &op.candidate.source_path,
             request.commit_oid.as_deref(),
+            request.snapshot.via_mirror,
         )
         .await
         {
@@ -892,6 +949,7 @@ async fn stage_import_target(
         resolution: selection.resolution.clone(),
         target_dir,
         owned_target,
+        included_folders: selection.included_folders.clone(),
         source_files: Vec::new(),
     })
 }
@@ -1020,6 +1078,7 @@ async fn build_preview_skills(
     pool: &DbPool,
     central_root: &Path,
     candidates: &[RemoteSkillCandidate],
+    snapshot: &GitHubRepoSnapshot,
 ) -> Result<Vec<GitHubSkillPreview>, String> {
     let mut skills = Vec::with_capacity(candidates.len());
     for candidate in candidates {
@@ -1043,9 +1102,71 @@ async fn build_preview_skills(
             skill_directory_name: candidate.skill_directory_name.clone(),
             download_url: candidate.download_url.clone(),
             conflict,
+            subfolders: if candidate.source_path == "." {
+                root_skill_subfolders(snapshot)
+            } else {
+                Vec::new()
+            },
         });
     }
     Ok(skills)
+}
+
+/// 루트 스킬 옆의 최상위 폴더 목록. 자기 SKILL.md가 있는 폴더(다른 스킬)와
+/// `.git`·`.github`는 기본으로 제외하고 나머지는 기본으로 포함한다.
+fn root_skill_subfolders(snapshot: &GitHubRepoSnapshot) -> Vec<GitHubSkillSubfolder> {
+    let mut folders: std::collections::BTreeMap<&str, bool> = std::collections::BTreeMap::new();
+    for path in snapshot.files.keys() {
+        let Some((folder, rest)) = path.split_once('/') else {
+            continue;
+        };
+        let has_skill_md = rest
+            .rsplit('/')
+            .next()
+            .is_some_and(|file| file.eq_ignore_ascii_case("SKILL.md"));
+        let entry = folders.entry(folder).or_insert(true);
+        *entry &= !has_skill_md && folder != ".git" && folder != ".github";
+    }
+    folders
+        .into_iter()
+        .map(|(name, default_selected)| GitHubSkillSubfolder {
+            name: name.to_string(),
+            default_selected,
+        })
+        .collect()
+}
+
+/// 루트 스킬의 파일에 선택한 최상위 폴더의 파일을 더한다. 스냅샷에 없는 폴더나
+/// 폴더 하나가 아닌 이름은 거부해 선택하지 않은 경로가 섞이지 않게 한다.
+fn collect_root_skill_files(
+    snapshot: &GitHubRepoSnapshot,
+    included_folders: &[String],
+) -> Result<Vec<SnapshotSourceFile>, String> {
+    let known = root_skill_subfolders(snapshot);
+    let mut files = collect_snapshot_source_files(snapshot, ".")?;
+    for folder in included_folders {
+        if !known.iter().any(|known| &known.name == folder) {
+            return Err(format!(
+                "Folder '{}' is not a top-level folder of this repository.",
+                folder
+            ));
+        }
+        let prefix = format!("{folder}/");
+        for (path, file) in snapshot
+            .files
+            .iter()
+            .filter(|(path, _)| path.starts_with(&prefix))
+        {
+            files.push(SnapshotSourceFile {
+                repo_path: path.clone(),
+                relative_path: path.clone(),
+                byte_len: file.bytes.len(),
+            });
+        }
+    }
+    files.sort_by(|left, right| left.repo_path.cmp(&right.repo_path));
+    files.dedup_by(|left, right| left.repo_path == right.repo_path);
+    Ok(files)
 }
 
 /// 중앙 레코드가 있어도 실제 대상 자리까지 확인한다. 레코드가 소유하지 않은
@@ -1132,10 +1253,11 @@ fn target_is_owned_by_record(record: &Skill, target_dir: &Path) -> bool {
 pub(crate) async fn resolve_repo_ref(
     repo_url: &str,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<GitHubRepoRef, String> {
     let (owner, repo) = parse_github_url(repo_url)?;
     let client = github_client()?;
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         &client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1147,6 +1269,7 @@ pub(crate) async fn resolve_repo_ref(
         },
         "Failed to inspect GitHub repository",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1182,9 +1305,10 @@ pub(crate) async fn resolve_repo_ref(
 pub(crate) async fn resolve_repo_commit_oid(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<String, String> {
     let client = github_client()?;
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         &client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1199,6 +1323,7 @@ pub(crate) async fn resolve_repo_commit_oid(
         },
         "Failed to resolve the repository commit",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1227,7 +1352,7 @@ struct GitHubAuth {
 fn github_cli_path() -> Option<PathBuf> {
     // 테스트가 개발자 PC의 실제 GitHub CLI를 실행하지 않게 한다.
     // CLI 동작은 resolve_github_auth에 가짜 CLI 경로를 넘겨 시험한다.
-    if cfg!(test) {
+    if cfg!(any(test, feature = "test-isolation")) {
         return None;
     }
     let name = if cfg!(windows) { "gh.exe" } else { "gh" };
@@ -1238,9 +1363,12 @@ fn github_cli_path() -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-async fn resolve_github_auth(pool: &DbPool, cli: Option<&Path>) -> Result<GitHubAuth, String> {
-    let saved = db::get_setting(pool, GITHUB_PAT_SETTING_KEY)
-        .await?
+async fn resolve_github_auth(
+    secrets: &crate::secrets::Secrets,
+    cli: Option<&Path>,
+) -> Result<GitHubAuth, String> {
+    let saved = secrets
+        .get(GITHUB_PAT_SETTING_KEY)
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty());
     if saved.is_some() {
@@ -1280,20 +1408,25 @@ async fn resolve_github_auth(pool: &DbPool, cli: Option<&Path>) -> Result<GitHub
     Ok(GitHubAuth { token, source })
 }
 
+// 저장한 토큰은 DB가 아니라 OS 키체인에 있다. `pool`은 호출부를 바꾸지 않으려고 남긴 인자다.
 pub(crate) async fn github_direct_auth_from_settings(
-    pool: &DbPool,
+    _pool: &DbPool,
 ) -> Result<Option<String>, String> {
-    Ok(resolve_github_auth(pool, github_cli_path().as_deref())
-        .await?
-        .token)
+    Ok(
+        resolve_github_auth(crate::secrets::shared(), github_cli_path().as_deref())
+            .await?
+            .token,
+    )
 }
 
 #[tauri::command]
-pub async fn get_github_auth_status(state: State<'_, AppState>) -> Result<String, String> {
-    Ok(resolve_github_auth(&state.db, github_cli_path().as_deref())
-        .await?
-        .source
-        .to_string())
+pub async fn get_github_auth_status() -> Result<String, String> {
+    Ok(
+        resolve_github_auth(crate::secrets::shared(), github_cli_path().as_deref())
+            .await?
+            .source
+            .to_string(),
+    )
 }
 
 fn github_client() -> Result<reqwest::Client, String> {
@@ -1338,9 +1471,10 @@ fn parse_github_url(url: &str) -> Result<(String, String), String> {
 pub(crate) async fn fetch_repo_skill_candidates(
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<Vec<RemoteSkillCandidate>, String> {
     let client = github_client()?;
-    let snapshot = download_repo_snapshot(&client, repo, auth_token).await?;
+    let snapshot = download_repo_snapshot(&client, repo, auth_token, mirror_enabled).await?;
     build_repo_skill_candidates_from_snapshot(repo, &snapshot)
 }
 
@@ -1457,31 +1591,49 @@ pub(crate) async fn download_repo_snapshot(
     client: &reqwest::Client,
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<GitHubRepoSnapshot, String> {
-    let archive = download_repository_archive(client, repo, auth_token, false).await?;
-    snapshot_from_repository_archive(&archive)
-}
-
-pub(crate) async fn download_repo_snapshot_for_origin(
-    client: &reqwest::Client,
-    repo: &GitHubRepoRef,
-    auth_token: Option<&str>,
-) -> Result<GitHubRepoSnapshot, String> {
-    let archive = download_repository_archive(client, repo, auth_token, true).await?;
-    snapshot_from_repository_archive_with_limit(&archive, true)
+    let (archive, via_mirror) =
+        download_repository_archive(client, repo, auth_token, mirror_enabled).await?;
+    Ok(GitHubRepoSnapshot {
+        via_mirror,
+        ..snapshot_from_repository_archive(&archive)?
+    })
 }
 
 const MAX_REPOSITORY_ARCHIVE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_REPOSITORY_FILES: usize = 20_000;
 const MAX_REPOSITORY_UNPACKED_BYTES: usize = 256 * 1024 * 1024;
 
+/// 백엔드는 화면 언어를 모르므로 `코드: 영어 설명`만 보내고, 화면이 코드를 보고
+/// `src/lib/backendErrors.ts`의 문구로 바꿔 보여 준다.
+const ARCHIVE_DOWNLOAD_LIMIT_CODE: &str = "GITHUB_ARCHIVE_DOWNLOAD_LIMIT";
+const ARCHIVE_EXTRACTION_LIMIT_CODE: &str = "GITHUB_ARCHIVE_EXTRACTION_LIMIT";
+const MIRROR_DISABLED_CODE: &str = "GITHUB_MIRROR_DISABLED";
+
+fn archive_download_limit_error() -> String {
+    let mb = MAX_REPOSITORY_ARCHIVE_BYTES / (1024 * 1024);
+    format!(
+        "{ARCHIVE_DOWNLOAD_LIMIT_CODE}: GitHub repository archive exceeds the safe download limit ({mb} MB)."
+    )
+}
+
+fn archive_extraction_limit_error() -> String {
+    let mb = MAX_REPOSITORY_UNPACKED_BYTES / (1024 * 1024);
+    let files = MAX_REPOSITORY_FILES;
+    format!(
+        "{ARCHIVE_EXTRACTION_LIMIT_CODE}: GitHub repository archive exceeds the safe extraction limit ({files} files or {mb} MB unpacked)."
+    )
+}
+
+/// 압축 파일 바이트와, 그것을 미러에서 받았는지 여부를 돌려준다.
 async fn download_repository_archive(
     client: &reqwest::Client,
     repo: &GitHubRepoRef,
     auth_token: Option<&str>,
-    limited: bool,
-) -> Result<Vec<u8>, String> {
-    let mut response = send_github_request_with_fallback(
+    mirror_enabled: bool,
+) -> Result<(Vec<u8>, bool), String> {
+    let (mut response, via_mirror) = send_github_request_with_fallback(
         client,
         GitHubFetchSurface::Api,
         |endpoint| {
@@ -1496,6 +1648,7 @@ async fn download_repository_archive(
         },
         "Failed to download GitHub repository archive",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1517,12 +1670,11 @@ async fn download_repository_archive(
         }));
     }
 
-    if limited
-        && response
-            .content_length()
-            .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_REPOSITORY_ARCHIVE_BYTES as u64)
     {
-        return Err("GitHub repository archive exceeds the safe download limit".into());
+        return Err(archive_download_limit_error());
     }
     let mut archive = Vec::new();
     while let Some(chunk) = response
@@ -1530,22 +1682,15 @@ async fn download_repository_archive(
         .await
         .map_err(|e| format!("Failed to read GitHub repository archive: {e}"))?
     {
-        if limited && archive.len().saturating_add(chunk.len()) > MAX_REPOSITORY_ARCHIVE_BYTES {
-            return Err("GitHub repository archive exceeds the safe download limit".into());
+        if archive.len().saturating_add(chunk.len()) > MAX_REPOSITORY_ARCHIVE_BYTES {
+            return Err(archive_download_limit_error());
         }
         archive.extend_from_slice(&chunk);
     }
-    Ok(archive)
+    Ok((archive, via_mirror))
 }
 
 fn snapshot_from_repository_archive(archive_bytes: &[u8]) -> Result<GitHubRepoSnapshot, String> {
-    snapshot_from_repository_archive_with_limit(archive_bytes, false)
-}
-
-fn snapshot_from_repository_archive_with_limit(
-    archive_bytes: &[u8],
-    limited: bool,
-) -> Result<GitHubRepoSnapshot, String> {
     let cursor = Cursor::new(archive_bytes);
     let decoder = GzDecoder::new(cursor);
     let mut archive = tar::Archive::new(decoder);
@@ -1566,11 +1711,10 @@ fn snapshot_from_repository_archive_with_limit(
 
         file_count += 1;
         unpacked_bytes = unpacked_bytes.saturating_add(entry.size());
-        if limited
-            && (file_count > MAX_REPOSITORY_FILES
-                || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64)
+        if file_count > MAX_REPOSITORY_FILES
+            || unpacked_bytes > MAX_REPOSITORY_UNPACKED_BYTES as u64
         {
-            return Err("GitHub repository archive exceeds the safe extraction limit".into());
+            return Err(archive_extraction_limit_error());
         }
 
         let relative_path = relative_archive_path(&entry)?;
@@ -1593,7 +1737,10 @@ fn snapshot_from_repository_archive_with_limit(
         );
     }
 
-    Ok(GitHubRepoSnapshot { files })
+    Ok(GitHubRepoSnapshot {
+        files,
+        via_mirror: false,
+    })
 }
 
 fn relative_archive_path<R: Read>(entry: &tar::Entry<'_, R>) -> Result<String, String> {
@@ -1741,6 +1888,41 @@ pub(crate) fn write_snapshot_source_to_target(
     Ok(())
 }
 
+/// 스냅샷의 스킬 폴더를 `target_dir` 옆 임시 폴더에 완성한 뒤 이름 바꾸기 한 번으로 확정한다.
+/// 중간에 실패하면 임시 폴더를 지우므로 `target_dir`에는 반쯤 쓰인 스킬이 남지 않는다.
+pub(crate) fn write_snapshot_source_atomically(
+    snapshot: &GitHubRepoSnapshot,
+    files: &[SnapshotSourceFile],
+    target_dir: &Path,
+    source_path: &str,
+    progress_state: &mut GitHubImportProgressState,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
+    let central_root = target_dir
+        .parent()
+        .ok_or_else(|| "Install target has no parent directory.".to_string())?;
+    let skill_id = target_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Install target has no directory name.".to_string())?;
+    let staging_container = unique_staging_container(central_root, skill_id, "stage");
+    let staging_dir = staging_container.join(skill_id);
+    let result = write_snapshot_source_to_target(
+        snapshot,
+        files,
+        &staging_dir,
+        source_path,
+        progress_state,
+        app,
+    )
+    .and_then(|()| {
+        std::fs::rename(&staging_dir, target_dir)
+            .map_err(|e| format!("Failed to install skill '{}': {}", skill_id, e))
+    });
+    remove_directory_if_present(&staging_container);
+    result
+}
+
 /// Git의 실행 여부만 반영하고, 현재 읽기 범위와 특수 권한은 확대하지 않는다.
 pub(crate) fn set_file_executable(path: &Path, executable: bool) -> Result<(), String> {
     #[cfg(unix)]
@@ -1788,8 +1970,9 @@ async fn fetch_raw_text(
     client: &reqwest::Client,
     url: &str,
     auth_token: Option<&str>,
+    mirror_enabled: bool,
 ) -> Result<String, String> {
-    let response = send_github_request_with_fallback(
+    let (response, _) = send_github_request_with_fallback(
         client,
         GitHubFetchSurface::Raw,
         |endpoint| {
@@ -1801,6 +1984,7 @@ async fn fetch_raw_text(
         },
         "Failed to download skill metadata",
         auth_token,
+        mirror_enabled,
     )
     .await?;
 
@@ -1874,28 +2058,32 @@ fn raw_file_url(endpoint: &GitHubMirrorEndpoint, repo: &GitHubRepoRef, file_path
     )
 }
 
+/// GitHub에 요청한다. 미러 대체가 켜져 있을 때만 실패한 요청을 미러로 넘기고,
+/// 응답이 미러에서 왔는지도 함께 돌려준다.
 async fn send_github_request_with_fallback<F>(
     client: &reqwest::Client,
     surface: GitHubFetchSurface,
     build_url: F,
     failure_prefix: &str,
     auth_token: Option<&str>,
-) -> Result<reqwest::Response, String>
+    mirror_enabled: bool,
+) -> Result<(reqwest::Response, bool), String>
 where
     F: Fn(&GitHubMirrorEndpoint) -> String,
 {
     let mut attempts = Vec::new();
     let mut last_retryable_denial = None;
+    // 첫 항목이 GitHub 직접 주소이고 나머지는 제3자 미러다.
+    let endpoints = if mirror_enabled {
+        GITHUB_MIRROR_ENDPOINTS
+    } else {
+        &GITHUB_MIRROR_ENDPOINTS[..1]
+    };
 
-    for endpoint in GITHUB_MIRROR_ENDPOINTS {
+    for (index, endpoint) in endpoints.iter().enumerate() {
+        let via_mirror = index > 0;
         let url = build_url(endpoint);
-        let mut request = client.get(url);
-        if endpoint.label == "github" {
-            if let Some(token) = auth_token {
-                request = request.bearer_auth(token);
-            }
-        }
-        match request.send().await {
+        match github_request(client, &url, auth_token).send().await {
             Ok(response) => {
                 let status = response.status();
                 if matches!(
@@ -1905,10 +2093,11 @@ where
                         | reqwest::StatusCode::TOO_MANY_REQUESTS
                 ) {
                     let denial = parse_github_denial_response(response, "contacting GitHub").await;
-                    let can_retry_public_mirror = auth_token.is_none()
-                        && denial.as_ref().is_some_and(|denial| {
-                            matches!(denial.kind, GitHubAccessDenialKind::RateLimited { .. })
-                        });
+                    let is_rate_limited = denial.as_ref().is_some_and(|denial| {
+                        matches!(denial.kind, GitHubAccessDenialKind::RateLimited { .. })
+                    });
+                    let can_retry_public_mirror =
+                        mirror_enabled && auth_token.is_none() && is_rate_limited;
                     if can_retry_public_mirror {
                         last_retryable_denial = denial;
                         attempts.push(MirrorAttemptOutcome {
@@ -1923,13 +2112,18 @@ where
                         continue;
                     }
 
-                    return Err(denial
+                    let mut message = denial
                         .map(|denial| denial.to_string())
-                        .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status)));
+                        .unwrap_or_else(|| format!("{}: HTTP {}", failure_prefix, status));
+                    if !mirror_enabled && auth_token.is_none() && is_rate_limited {
+                        message =
+                            format!("{MIRROR_DISABLED_CODE}: {message}{MIRROR_DISABLED_GUIDANCE}");
+                    }
+                    return Err(message);
                 }
 
                 if status.is_success() {
-                    return Ok(response);
+                    return Ok((response, via_mirror));
                 }
 
                 if status == reqwest::StatusCode::NOT_FOUND {
@@ -1944,7 +2138,7 @@ where
                         });
                         continue;
                     }
-                    return Ok(response);
+                    return Ok((response, via_mirror));
                 }
 
                 if should_retry_via_mirror_status(surface, status) {
@@ -1985,12 +2179,21 @@ where
         return Err(denial.to_string());
     }
 
+    let unreachable = if mirror_enabled {
+        "Direct GitHub access and built-in mirrors were unreachable. Retry later or try a different network path."
+    } else {
+        "GitHub was unreachable and the mirror fallback is off. Retry later, try a different network path, or enable the mirror fallback in Settings."
+    };
     Err(format!(
-        "{}. Direct GitHub access and built-in mirrors were unreachable. Retry later or try a different network path. Last errors: {}",
+        "{}. {} Last errors: {}",
         failure_prefix,
+        unreachable,
         summarize_mirror_attempts(&attempts)
     ))
 }
+
+const MIRROR_DISABLED_GUIDANCE: &str =
+    " Save a GitHub token in Settings or enable the mirror fallback in Settings.";
 
 fn should_retry_via_mirror_status(
     surface: GitHubFetchSurface,
@@ -2169,6 +2372,7 @@ mod tests {
             source_path: source_path.to_string(),
             resolution,
             renamed_skill_id: None,
+            included_folders: Vec::new(),
         }
     }
 
@@ -2180,6 +2384,7 @@ mod tests {
             source_path: source_path.to_string(),
             resolution: DuplicateResolution::Rename,
             renamed_skill_id: Some(renamed_skill_id.to_string()),
+            included_folders: Vec::new(),
         }
     }
 
@@ -2259,6 +2464,31 @@ mod tests {
         entries
     }
 
+    #[test]
+    fn atomic_write_leaves_nothing_in_central_when_a_file_fails() {
+        let central = tempdir().unwrap();
+        let target = central.path().join("demo");
+        // 정렬 순서상 SKILL.md가 먼저 쓰이고, 그 뒤 안전하지 않은 경로에서 실패한다.
+        let snapshot = repo_snapshot(&[
+            ("skills/demo/SKILL.md", sample_frontmatter("demo", "demo")),
+            ("skills/demo/x/../../y.md", "bad".to_string()),
+        ]);
+        let files = collect_snapshot_source_files(&snapshot, "skills/demo").unwrap();
+
+        let result = write_snapshot_source_atomically(
+            &snapshot,
+            &files,
+            &target,
+            "skills/demo",
+            &mut GitHubImportProgressState::default(),
+            None,
+        );
+
+        assert!(result.is_err());
+        let leftovers: Vec<_> = std::fs::read_dir(central.path()).unwrap().collect();
+        assert!(leftovers.is_empty(), "보관함에 남은 것: {leftovers:?}");
+    }
+
     async fn setup_test_db() -> DbPool {
         let dir = tempdir().expect("tempdir");
         let db_path = dir.path().join("github-import.sqlite");
@@ -2288,6 +2518,7 @@ mod tests {
                     )
                 })
                 .collect::<HashMap<_, _>>(),
+            ..Default::default()
         }
     }
 
@@ -2500,6 +2731,24 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_rejects_archive_with_too_many_files_by_default() {
+        let names: Vec<String> = (0..=MAX_REPOSITORY_FILES)
+            .map(|index| format!("files/{index}.txt"))
+            .collect();
+        let files: Vec<(&str, &[u8])> =
+            names.iter().map(|name| (name.as_str(), &b""[..])).collect();
+        let archive = repository_archive(&files);
+
+        let error = snapshot_from_repository_archive(&archive).unwrap_err();
+
+        assert!(
+            error.starts_with("GITHUB_ARCHIVE_EXTRACTION_LIMIT: "),
+            "{error}"
+        );
+        assert!(error.contains("safe extraction limit"), "{error}");
+    }
+
+    #[test]
     fn snapshot_rejects_oversized_unpacked_entry_before_reading_it() {
         let mut header = tar::Header::new_gnu();
         header.set_path("repo/skills/demo/SKILL.md").unwrap();
@@ -2510,11 +2759,9 @@ mod tests {
         std::io::Write::write_all(&mut encoder, header.as_bytes()).unwrap();
         std::io::Write::write_all(&mut encoder, &[0; 1024]).unwrap();
         let compressed = encoder.finish().unwrap();
-        assert!(
-            snapshot_from_repository_archive_with_limit(&compressed, true)
-                .unwrap_err()
-                .contains("safe extraction limit")
-        );
+        assert!(snapshot_from_repository_archive(&compressed)
+            .unwrap_err()
+            .contains("safe extraction limit"));
     }
 
     #[cfg(unix)]
@@ -2579,6 +2826,98 @@ mod tests {
         }
     }
 
+    fn root_skill_with_folders_snapshot() -> GitHubRepoSnapshot {
+        repo_snapshot(&[
+            ("SKILL.md", sample_frontmatter("root-demo", "root skill")),
+            ("README.md", "# repo\n".to_string()),
+            ("docs/guide.md", "guide\n".to_string()),
+            ("scripts/run.sh", "echo hi\n".to_string()),
+            (".github/workflows/ci.yml", "on: push\n".to_string()),
+            (".git/config", "[core]\n".to_string()),
+            (
+                "other/SKILL.md",
+                sample_frontmatter("other", "another skill"),
+            ),
+            ("other/notes.md", "notes\n".to_string()),
+        ])
+    }
+
+    #[tokio::test]
+    async fn root_skill_preview_lists_folders_with_safe_defaults() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let snapshot = root_skill_with_folders_snapshot();
+        let candidates = build_repo_skill_candidates_from_snapshot(&import_repo(), &snapshot)
+            .expect("candidates");
+
+        let skills = build_preview_skills(&pool, central_root.path(), &candidates, &snapshot)
+            .await
+            .expect("preview skills");
+
+        let folders = |source_path: &str| {
+            skills
+                .iter()
+                .find(|skill| skill.source_path == source_path)
+                .expect("skill")
+                .subfolders
+                .iter()
+                .map(|folder| (folder.name.as_str(), folder.default_selected))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            folders("."),
+            vec![
+                (".git", false),
+                (".github", false),
+                ("docs", true),
+                ("other", false),
+                ("scripts", true),
+            ]
+        );
+        assert!(folders("other").is_empty());
+    }
+
+    #[tokio::test]
+    async fn root_skill_import_installs_only_selected_folders() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        let mut selection = import_selection(".", DuplicateResolution::Overwrite);
+        selection.included_folders = vec!["docs".to_string()];
+
+        install_snapshot(&pool, root_skill_with_folders_snapshot(), vec![selection])
+            .await
+            .expect("import");
+
+        let target = central_root.path().join("skills");
+        assert!(target.join("SKILL.md").is_file());
+        assert!(target.join("README.md").is_file());
+        assert!(target.join("docs/guide.md").is_file());
+        for excluded in ["scripts", ".github", ".git", "other"] {
+            assert!(
+                !target.join(excluded).exists(),
+                "{excluded} must not be installed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn root_skill_import_rejects_unknown_or_escaping_folders() {
+        let pool = setup_test_db().await;
+        let central_root = setup_central_dir(&pool).await;
+        for folder in ["missing", "../escape", "docs/sub"] {
+            let mut selection = import_selection(".", DuplicateResolution::Overwrite);
+            selection.included_folders = vec![folder.to_string()];
+
+            let error =
+                install_snapshot(&pool, root_skill_with_folders_snapshot(), vec![selection])
+                    .await
+                    .expect_err("invalid folder must be blocked");
+
+            assert_eq!(import_failure(error).code, GitHubImportFailureCode::Blocked);
+        }
+        assert!(central_entries(central_root.path()).is_empty());
+    }
+
     #[tokio::test]
     async fn preview_marks_canonical_conflicts_without_writing() {
         let pool = setup_test_db().await;
@@ -2624,9 +2963,14 @@ mod tests {
             .expect("candidates");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("preview skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("preview skills"),
         };
 
         assert!(!preview.skills.is_empty());
@@ -2781,6 +3125,7 @@ mod tests {
                 source_path: "skills/private-skill".to_string(),
                 resolution: DuplicateResolution::Overwrite,
                 renamed_skill_id: None,
+                included_folders: Vec::new(),
             }],
             None,
         )
@@ -2829,9 +3174,14 @@ mod tests {
         let repo = import_repo();
         let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
             .expect("candidates");
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
 
         let commit = preview
             .iter()
@@ -2878,9 +3228,14 @@ mod tests {
             &sample_frontmatter("Agent Planner", "existing"),
         )
         .await;
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "agent-planner")
@@ -2906,9 +3261,14 @@ mod tests {
         std::fs::create_dir_all(&mismatched_dir).expect("mkdir");
         std::fs::write(mismatched_dir.join("SKILL.md"), "mismatched").expect("write");
 
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "commit")
@@ -2945,9 +3305,14 @@ mod tests {
         let repo = import_repo();
         let candidates = build_repo_skill_candidates_from_snapshot(&repo, &multi_skill_snapshot())
             .expect("candidates");
-        let preview = build_preview_skills(&pool, central_root.path(), &candidates)
-            .await
-            .expect("preview");
+        let preview = build_preview_skills(
+            &pool,
+            central_root.path(),
+            &candidates,
+            &root_repo_snapshot(),
+        )
+        .await
+        .expect("preview");
         let conflict = preview
             .iter()
             .find(|skill| skill.skill_id == "agent-planner")
@@ -3223,6 +3588,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_records_mirror_use_only_when_archive_came_from_mirror() {
+        let pool = setup_test_db().await;
+        let _central_root = setup_central_dir(&pool).await;
+
+        for (skill, via_mirror) in [("commit", true), ("agent-planner", false)] {
+            let mut snapshot = multi_skill_snapshot();
+            snapshot.via_mirror = via_mirror;
+            install_snapshot(
+                &pool,
+                snapshot,
+                vec![import_selection(
+                    &format!("skills/{skill}"),
+                    DuplicateResolution::Overwrite,
+                )],
+            )
+            .await
+            .expect("import from snapshot");
+
+            let row = sqlx::query("SELECT via_mirror FROM skill_origins WHERE skill_id = ?")
+                .bind(skill)
+                .fetch_one(&pool)
+                .await
+                .expect("origin row");
+            assert_eq!(row.get::<bool, _>("via_mirror"), via_mirror, "{skill}");
+        }
+    }
+
+    #[tokio::test]
     async fn import_blocks_intra_batch_target_collisions_in_both_orders() {
         let pool = setup_test_db().await;
         let central_root = setup_central_dir(&pool).await;
@@ -3451,9 +3844,14 @@ mod tests {
         let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("skills"),
         };
 
         assert!(preview
@@ -3501,9 +3899,14 @@ mod tests {
         let central_root = tempdir().expect("central");
         let preview = GitHubRepoPreview {
             repo,
-            skills: build_preview_skills(&pool, central_root.path(), &candidates)
-                .await
-                .expect("preview skills"),
+            skills: build_preview_skills(
+                &pool,
+                central_root.path(),
+                &candidates,
+                &root_repo_snapshot(),
+            )
+            .await
+            .expect("preview skills"),
         };
 
         assert!(preview
@@ -3516,66 +3919,105 @@ mod tests {
             .any(|skill| skill.source_path == "skills/.system/skill-creator"));
     }
 
+    fn memory_secrets() -> crate::secrets::Secrets {
+        crate::secrets::Secrets::new(std::sync::Arc::new(crate::secrets::MemoryStore::default()))
+    }
+
     #[tokio::test]
     #[cfg(unix)]
     async fn github_cli_auth_respects_saved_token_and_handles_logged_out_cli() {
         use std::os::unix::fs::PermissionsExt;
-        let pool = setup_test_db().await;
+        let secrets = memory_secrets();
         let temp = tempfile::TempDir::new().unwrap();
         let cli = temp.path().join("gh");
         std::fs::write(&cli, "#!/bin/sh\n[ \"$*\" = \"auth token --hostname github.com\" ] || exit 2\nprintf 'fixture-token\\n'\n").unwrap();
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        let auth = resolve_github_auth(&secrets, Some(&cli)).await.unwrap();
         assert_eq!(auth.source, "github_cli");
         assert_eq!(auth.token.as_deref(), Some("fixture-token"));
-        assert!(db::get_setting(&pool, GITHUB_PAT_SETTING_KEY)
-            .await
-            .unwrap()
-            .is_none());
-        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, " app-token ")
-            .await
-            .unwrap();
-        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        secrets.set(GITHUB_PAT_SETTING_KEY, " app-token ");
+        let auth = resolve_github_auth(&secrets, Some(&cli)).await.unwrap();
         assert_eq!(auth.source, "saved_token");
         assert_eq!(auth.token.as_deref(), Some("app-token"));
-        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, " ")
-            .await
-            .unwrap();
+        secrets.delete(GITHUB_PAT_SETTING_KEY).unwrap();
         std::fs::write(&cli, "#!/bin/sh\nprintf 'must-not-use'\nexit 1\n").unwrap();
-        let auth = resolve_github_auth(&pool, Some(&cli)).await.unwrap();
+        let auth = resolve_github_auth(&secrets, Some(&cli)).await.unwrap();
         assert_eq!(auth.source, "not_signed_in");
         assert!(auth.token.is_none());
         assert_eq!(
-            resolve_github_auth(&pool, None).await.unwrap().source,
+            resolve_github_auth(&secrets, None).await.unwrap().source,
             "cli_missing"
         );
     }
 
     #[tokio::test]
     async fn github_pat_setting_is_trimmed_and_empty_values_are_ignored() {
-        let pool = setup_test_db().await;
+        let secrets = memory_secrets();
 
-        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, "  test-token  ")
-            .await
-            .expect("set token");
+        secrets.set(GITHUB_PAT_SETTING_KEY, "  test-token  ");
         assert_eq!(
-            resolve_github_auth(&pool, None)
+            resolve_github_auth(&secrets, None)
                 .await
                 .expect("read token")
                 .token,
             Some("test-token".to_string())
         );
 
-        db::set_setting(&pool, GITHUB_PAT_SETTING_KEY, "   ")
-            .await
-            .expect("clear token");
+        secrets.set(GITHUB_PAT_SETTING_KEY, "   ");
         assert_eq!(
-            resolve_github_auth(&pool, None)
+            resolve_github_auth(&secrets, None)
                 .await
                 .expect("read empty")
                 .token,
             None
         );
+    }
+
+    /// 로컬 서버가 요청을 `count`번 받아 순서대로 기록한다. 응답은 요청 내용으로 정한다.
+    fn serve_requests(
+        count: usize,
+        respond: impl Fn(&str) -> String + Send + 'static,
+    ) -> (std::net::SocketAddr, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("addr");
+        let handle = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for _ in 0..count {
+                let (mut stream, _) = listener.accept().expect("accept");
+                let mut buffer = [0_u8; 4096];
+                let bytes_read = stream.read(&mut buffer).expect("read");
+                let request = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
+                stream
+                    .write_all(respond(&request).as_bytes())
+                    .expect("write");
+                captured.push(request);
+            }
+            captured
+        });
+        (address, handle)
+    }
+
+    #[test]
+    fn token_is_attached_only_to_https_github_hosts() {
+        let client = reqwest::Client::new();
+        let has_token = |url: &str| {
+            github_request(&client, url, Some("secret-token"))
+                .build()
+                .expect("request")
+                .headers()
+                .contains_key(reqwest::header::AUTHORIZATION)
+        };
+
+        assert!(has_token("https://api.github.com/repos/o/r"));
+        assert!(has_token(
+            "https://raw.githubusercontent.com/o/r/main/SKILL.md"
+        ));
+        assert!(
+            !has_token("http://api.github.com/repos/o/r"),
+            "평문 http에는 토큰을 붙이지 않는다"
+        );
+        assert!(!has_token("https://evil.example/repos/o/r"));
     }
 
     #[tokio::test]
@@ -3617,11 +4059,14 @@ mod tests {
             }
         });
 
-        let client = github_client().expect("client");
-        let direct_url = format!("http://{}/direct", address);
+        let client = reqwest::Client::builder()
+            .resolve("api.github.com", address)
+            .build()
+            .expect("client");
+        let direct_url = format!("http://api.github.com:{}/direct", address.port());
         let mirror_url = format!("http://{}/mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Api,
             |endpoint| {
@@ -3633,26 +4078,19 @@ mod tests {
             },
             "direct request failed",
             Some("direct-token"),
+            true,
         )
         .await
         .expect("fallback response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "fallback response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /mirror"))
             .expect("captured mirror request");
-        assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct github request should include bearer auth"
-        );
         assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
@@ -3698,11 +4136,17 @@ mod tests {
             }
         });
 
-        let client = github_client().expect("client");
-        let direct_url = format!("http://{}/raw-direct", address);
+        let client = reqwest::Client::builder()
+            .resolve("raw.githubusercontent.com", address)
+            .build()
+            .expect("client");
+        let direct_url = format!(
+            "http://raw.githubusercontent.com:{}/raw-direct",
+            address.port()
+        );
         let mirror_url = format!("http://{}/raw-mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Raw,
             |endpoint| {
@@ -3714,31 +4158,88 @@ mod tests {
             },
             "raw request failed",
             Some("direct-token"),
+            true,
         )
         .await
         .expect("fallback response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "fallback response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");
-        let direct_request = captured
-            .iter()
-            .find(|request| request.contains("GET /raw-direct"))
-            .expect("captured direct request");
         let mirror_request = captured
             .iter()
             .find(|request| request.contains("GET /raw-mirror"))
             .expect("captured mirror request");
         assert!(
-            direct_request.contains("authorization: Bearer direct-token")
-                || direct_request.contains("Authorization: Bearer direct-token"),
-            "direct raw request should include bearer auth"
-        );
-        assert!(
             !mirror_request.contains("authorization: Bearer direct-token")
                 && !mirror_request.contains("Authorization: Bearer direct-token"),
             "mirror raw request should not include bearer auth"
         );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_with_mirror_off_fails_with_guidance_and_skips_mirror() {
+        let (address, server) = serve_requests(1, |_| {
+            concat!(
+                "HTTP/1.1 403 Forbidden\r\n",
+                "Content-Type: application/json\r\n",
+                "X-RateLimit-Remaining: 0\r\n",
+                "Content-Length: 48\r\n\r\n",
+                "{\"message\":\"API rate limit exceeded for 1.2.3.4\"}"
+            )
+            .to_string()
+        });
+        // 미러가 잘못 호출되면 같은 서버가 응답하지 않으므로 시간 초과로 테스트가 실패한다.
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let direct_url = format!("http://{address}/direct");
+        let mirror_url = format!("http://{address}/mirror");
+
+        let error = send_github_request_with_fallback(
+            &client,
+            GitHubFetchSurface::Api,
+            |endpoint| {
+                if endpoint.label == "github" {
+                    direct_url.clone()
+                } else {
+                    mirror_url.clone()
+                }
+            },
+            "request failed",
+            None,
+            false,
+        )
+        .await
+        .expect_err("rate limited without mirror must fail");
+
+        assert!(error.starts_with("GITHUB_MIRROR_DISABLED: "), "{error}");
+        assert!(error.contains("rate limit"), "{error}");
+        assert!(
+            error.contains("GitHub token") && error.contains("mirror"),
+            "failure should point to token setup or enabling the mirror: {error}"
+        );
+        let captured = server.join().expect("server join");
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("GET /direct"));
+    }
+
+    #[tokio::test]
+    async fn github_mirror_is_off_by_default_and_follows_setting() {
+        let pool = setup_test_db().await;
+        assert!(!github_mirror_enabled(&pool).await.expect("default"));
+
+        db::set_setting(&pool, "github_mirror_enabled", "true")
+            .await
+            .expect("enable");
+        assert!(github_mirror_enabled(&pool).await.expect("enabled"));
+
+        db::set_setting(&pool, "github_mirror_enabled", "false")
+            .await
+            .expect("disable");
+        assert!(!github_mirror_enabled(&pool).await.expect("disabled"));
     }
 
     #[tokio::test]
@@ -3788,7 +4289,7 @@ mod tests {
         let direct_url = format!("http://{}/direct", address);
         let mirror_url = format!("http://{}/mirror", address);
 
-        let response = send_github_request_with_fallback(
+        let (response, via_mirror) = send_github_request_with_fallback(
             &client,
             GitHubFetchSurface::Api,
             |endpoint| {
@@ -3800,10 +4301,12 @@ mod tests {
             },
             "request failed",
             None,
+            true,
         )
         .await
         .expect("mirror retry response");
         assert!(response.status().is_success());
+        assert!(via_mirror, "retry response comes from the mirror");
 
         server.join().expect("server join");
         let captured = requests.lock().expect("captured");

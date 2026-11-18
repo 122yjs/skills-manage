@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
 use super::{github_import, skill_origin};
+use crate::text_utils::truncate_at_char_boundary;
 use crate::AppState;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -94,8 +95,10 @@ async fn fetch_github_skills(
     registry_id: &str,
 ) -> Result<Vec<MarketplaceSkill>, String> {
     let auth = github_import::github_direct_auth_from_settings(pool).await?;
-    let repo = github_import::resolve_repo_ref(url, auth.as_deref()).await?;
-    let candidates = github_import::fetch_repo_skill_candidates(&repo, auth.as_deref()).await?;
+    let mirror = github_import::github_mirror_enabled(pool).await?;
+    let repo = github_import::resolve_repo_ref(url, auth.as_deref(), mirror).await?;
+    let candidates =
+        github_import::fetch_repo_skill_candidates(&repo, auth.as_deref(), mirror).await?;
     Ok(marketplace_skills_from_candidates(registry_id, candidates))
 }
 
@@ -125,6 +128,15 @@ fn marketplace_skills_from_candidates(
     }
 
     skills
+}
+
+/// 설치할 때와 같은 폴더 이름(마켓플레이스 ID의 `<레지스트리>::` 뒤 부분)으로 설치 여부를 판정한다.
+/// 표시 이름(`name`)은 폴더 이름과 다를 수 있다.
+fn marketplace_skill_installed(central_dir: &std::path::Path, skill: &MarketplaceSkill) -> bool {
+    skill
+        .id
+        .strip_prefix(&format!("{}::", skill.registry_id))
+        .is_some_and(|folder| central_dir.join(folder).join("SKILL.md").exists())
 }
 
 // ─── IPC Commands ────────────────────────────────────────────────────────────
@@ -365,7 +377,7 @@ async fn sync_registry_impl(
 
     // Upsert skills into marketplace_skills
     for skill in &skills {
-        let is_installed = central_dir.join(&skill.name).join("SKILL.md").exists();
+        let is_installed = marketplace_skill_installed(&central_dir, skill);
 
         sqlx::query(
             "INSERT INTO marketplace_skills (id, registry_id, name, description, download_url, is_installed, synced_at, cache_updated_at)
@@ -487,7 +499,6 @@ fn row_to_marketplace_skill(row: &sqlx::sqlite::SqliteRow) -> MarketplaceSkill {
 
 #[derive(sqlx::FromRow)]
 struct MarketplaceSkillRow {
-    name: String,
     download_url: String,
 }
 
@@ -546,11 +557,63 @@ async fn ensure_new_install_target(
     Ok(())
 }
 
+/// 마켓플레이스 단건 설치 결과. 루트 스킬은 하위 폴더를 고르는 가져오기 화면으로 넘긴다.
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum MarketplaceInstallOutcome {
+    Installed,
+    #[serde(rename_all = "camelCase")]
+    NeedsFolderSelection {
+        repo_url: String,
+    },
+}
+
+/// 내려받은 저장소에서 스킬 폴더 전체를 가져오기와 같은 경로(스테이징 후 교체)로 설치한다.
+/// 이미 있는 스킬은 덮어쓰지 않는다. 루트 스킬은 쓰지 않고 폴더 선택을 요청한다.
+async fn install_marketplace_github_skill(
+    pool: &crate::db::DbPool,
+    repo: github_import::GitHubRepoRef,
+    commit_oid: Option<String>,
+    snapshot: github_import::GitHubRepoSnapshot,
+    source_path: &str,
+) -> Result<MarketplaceInstallOutcome, String> {
+    if source_path == "." {
+        return Ok(MarketplaceInstallOutcome::NeedsFolderSelection {
+            repo_url: repo.normalized_url,
+        });
+    }
+    let candidates = github_import::build_repo_skill_candidates_from_snapshot(&repo, &snapshot)?;
+    let skill_id = candidates
+        .iter()
+        .find(|candidate| candidate.source_path == source_path)
+        .map(|candidate| candidate.skill_id.clone())
+        .ok_or_else(|| format!("Skill '{}' is no longer in the repository.", source_path))?;
+    github_import::install_repo_skills_from_snapshot(
+        pool,
+        github_import::RepoSnapshotImportRequest {
+            repo,
+            commit_oid,
+            snapshot,
+            candidates,
+            selections: vec![github_import::GitHubSkillImportSelection {
+                source_path: source_path.to_string(),
+                resolution: github_import::DuplicateResolution::Rename,
+                renamed_skill_id: Some(skill_id),
+                included_folders: Vec::new(),
+            }],
+        },
+        None,
+    )
+    .await
+    .map_err(github_import::GitHubImportError::into_message)?;
+    Ok(MarketplaceInstallOutcome::Installed)
+}
+
 #[tauri::command]
 pub async fn install_marketplace_skill(
     state: State<'_, AppState>,
     skill_id: String,
-) -> Result<(), String> {
+) -> Result<MarketplaceInstallOutcome, String> {
     // Get skill info
     let skill = sqlx::query_as::<_, MarketplaceSkillRow>(
         "SELECT id, registry_id, name, description, download_url, is_installed, synced_at
@@ -562,68 +625,47 @@ pub async fn install_marketplace_skill(
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "Skill not found".to_string())?;
 
-    // Download SKILL.md content
-    let client = reqwest::Client::builder()
-        .user_agent("skills-manage/0.9.1")
-        .build()
-        .map_err(|e| e.to_string())?;
+    let (repo, source_path) = github_origin_from_raw_url(&skill.download_url)
+        .ok_or_else(|| "Only GitHub marketplace skills can be installed.".to_string())?;
 
-    let resp = client
-        .get(&skill.download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Download failed: {}", e))?;
-
-    if !resp.status().is_success() {
-        return Err(format!("Download returned {}", resp.status()));
-    }
-
-    let content = resp
-        .text()
-        .await
-        .map_err(|e| format!("Failed to read response: {}", e))?;
-
-    // Create directory and write SKILL.md
-    let skill_dir = crate::db::get_central_skills_dir(&state.db)
-        .await?
-        .join(&skill.name);
-    ensure_new_install_target(&state.db, &skill.name, &skill_dir).await?;
-    std::fs::create_dir_all(&skill_dir)
-        .map_err(|e| format!("Failed to create directory: {}", e))?;
-
-    let skill_md_path = skill_dir.join("SKILL.md");
-    std::fs::write(&skill_md_path, &content)
-        .map_err(|e| format!("Failed to write SKILL.md: {}", e))?;
-
-    if let Some((repo, source_path)) = github_origin_from_raw_url(&skill.download_url) {
-        let db_skill = crate::db::Skill {
-            id: skill.name.clone(),
-            name: skill.name.clone(),
-            description: None,
-            file_path: skill_md_path.to_string_lossy().into_owned(),
-            canonical_path: Some(skill_dir.to_string_lossy().into_owned()),
-            is_central: true,
-            source: Some(format!("github:{}/{}", repo.owner, repo.repo)),
-            content: None,
-            scanned_at: chrono::Utc::now().to_rfc3339(),
+    // 루트 스킬은 선택 화면으로 넘기므로 내려받지 않는다.
+    let (commit_oid, snapshot) = if source_path == "." {
+        (None, github_import::GitHubRepoSnapshot::default())
+    } else {
+        let auth = github_import::github_direct_auth_from_settings(&state.db).await?;
+        let mirror = github_import::github_mirror_enabled(&state.db).await?;
+        let client = reqwest::Client::builder()
+            .user_agent("skills-manage/0.9.1")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth.as_deref(), mirror)
+            .await
+            .ok();
+        let download_ref = match &commit_oid {
+            Some(commit) => github_import::GitHubRepoRef {
+                branch: commit.clone(),
+                ..repo.clone()
+            },
+            None => repo.clone(),
         };
-        if let Err(error) =
-            skill_origin::persist_imported_skill(&state.db, &db_skill, &repo, &source_path, None)
-                .await
-        {
-            let _ = std::fs::remove_dir_all(&skill_dir);
-            return Err(error);
-        }
+        let snapshot =
+            github_import::download_repo_snapshot(&client, &download_ref, auth.as_deref(), mirror)
+                .await?;
+        (commit_oid, snapshot)
+    };
+
+    let outcome =
+        install_marketplace_github_skill(&state.db, repo, commit_oid, snapshot, &source_path)
+            .await?;
+
+    if matches!(outcome, MarketplaceInstallOutcome::Installed) {
+        sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")
+            .bind(&skill_id)
+            .execute(&state.db)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-
-    // Mark as installed in DB
-    sqlx::query("UPDATE marketplace_skills SET is_installed = 1 WHERE id = ?")
-        .bind(&skill_id)
-        .execute(&state.db)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    Ok(outcome)
 }
 
 // ─── skills.sh Integration ───────────────────────────────────────────────────
@@ -856,9 +898,10 @@ pub async fn browse_skills_sh_directory(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -965,9 +1008,10 @@ pub async fn read_skills_sh_file(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1007,9 +1051,10 @@ pub async fn resolve_skills_sh_url(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1040,9 +1085,10 @@ pub async fn install_from_skills_sh(
     let repo_url = format!("https://github.com/{}", source);
     let auth_str = github_import::github_direct_auth_from_settings(&state.db).await?;
     let auth = auth_str.as_deref();
-    let repo = match github_import::resolve_repo_ref(&repo_url, auth).await {
+    let mirror = github_import::github_mirror_enabled(&state.db).await?;
+    let repo = match github_import::resolve_repo_ref(&repo_url, auth, mirror).await {
         Ok(r) => r,
-        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None)
+        Err(e) if auth.is_some() => github_import::resolve_repo_ref(&repo_url, None, mirror)
             .await
             .map_err(|_| e)?,
         Err(e) => return Err(e),
@@ -1054,7 +1100,7 @@ pub async fn install_from_skills_sh(
         .map_err(|e| e.to_string())?;
 
     // Download full repo snapshot (tarball) and find the skill directory
-    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth)
+    let commit_oid = github_import::resolve_repo_commit_oid(&repo, auth, mirror)
         .await
         .ok();
     let download_ref = commit_oid
@@ -1064,7 +1110,8 @@ pub async fn install_from_skills_sh(
             ..repo.clone()
         })
         .unwrap_or_else(|| repo.clone());
-    let snapshot = github_import::download_repo_snapshot(&client, &download_ref, auth).await?;
+    let snapshot =
+        github_import::download_repo_snapshot(&client, &download_ref, auth, mirror).await?;
 
     // Find the skill directory by matching the last directory component against skill_id
     let source_path = find_skill_path_in_snapshot(&snapshot, &skill_id).ok_or_else(|| {
@@ -1096,7 +1143,7 @@ pub async fn install_from_skills_sh(
         .join(&skill_name);
     ensure_new_install_target(&state.db, &skill_name, &skill_dir).await?;
     let mut progress_state = github_import::GitHubImportProgressState::default();
-    github_import::write_snapshot_source_to_target(
+    github_import::write_snapshot_source_atomically(
         &snapshot,
         &source_files,
         &skill_dir,
@@ -1125,6 +1172,7 @@ pub async fn install_from_skills_sh(
         &repo,
         &source_path,
         commit_oid.as_deref(),
+        snapshot.via_mirror,
     )
     .await
     {
@@ -1569,7 +1617,7 @@ pub async fn test_ai_connection(
 
     let api_key = match req.api_key.filter(|k| !k.trim().is_empty()) {
         Some(k) => k,
-        None => get_provider_setting(&state.db, "ai_api_key")
+        None => get_provider_secret(&state.db, "ai_api_key")
             .await
             .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?,
     };
@@ -1630,7 +1678,7 @@ pub async fn test_ai_connection(
 
     // Accept either Anthropic or OpenAI response shape
     let val: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| format!("无法解析响应: {}", &body[..body.len().min(200)]))?;
+        .map_err(|_| format!("无法解析响应: {}", truncate_at_char_boundary(&body, 200)))?;
 
     if parse_translation_response(&body).is_ok() {
         Ok("Connection OK".to_string())
@@ -1639,7 +1687,7 @@ pub async fn test_ai_connection(
     } else {
         Err(format!(
             "无法识别的响应格式: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
     }
 }
@@ -1664,7 +1712,7 @@ pub async fn list_ai_models(
     let api_key = match req.api_key {
         Some(k) if !k.trim().is_empty() => Some(k),
         Some(_) => None,
-        None => get_provider_setting(&state.db, "ai_api_key").await,
+        None => get_provider_secret(&state.db, "ai_api_key").await,
     };
 
     let api_url = match req.api_url.filter(|u| !u.trim().is_empty()) {
@@ -1800,7 +1848,7 @@ pub async fn list_ai_models(
         return catalog_fallback(format!(
             "模型列表返回错误 {}: {}",
             status,
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -1813,7 +1861,7 @@ pub async fn list_ai_models(
     if models.is_empty() {
         return catalog_fallback(format!(
             "无法解析模型列表响应: {}",
-            &body[..body.len().min(200)]
+            truncate_at_char_boundary(&body, 200)
         ))
         .await;
     }
@@ -2000,6 +2048,16 @@ async fn get_ai_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// 활성 제공업체의 비밀값(API 키)을 DB가 아니라 OS 키체인에서 읽는다.
+async fn get_provider_secret(pool: &crate::db::DbPool, key: &str) -> Option<String> {
+    let provider = get_ai_setting(pool, "ai_provider")
+        .await
+        .unwrap_or_default();
+    crate::secrets::shared()
+        .get(&format!("{}__{}", key, provider))
+        .filter(|v| !v.trim().is_empty())
+}
+
 async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<String> {
     let provider = get_ai_setting(pool, "ai_provider")
         .await
@@ -2011,7 +2069,10 @@ async fn get_provider_setting(pool: &crate::db::DbPool, key: &str) -> Option<Str
 /// Helper: truncate skill content to 8000 chars.
 fn truncate_content(content: &str) -> String {
     if content.len() > 8000 {
-        format!("{}...\n\n(内容已截断)", &content[..8000])
+        format!(
+            "{}...\n\n(内容已截断)",
+            truncate_at_char_boundary(content, 8000)
+        )
     } else {
         content.to_string()
     }
@@ -2288,7 +2349,7 @@ async fn do_explain_skill_stream(
     content: &str,
     lang: &str,
 ) -> Result<(), String> {
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
 
@@ -2565,7 +2626,7 @@ pub(crate) async fn translate_skill_description_impl(
         return Err("번역할 설명이 비어 있습니다.".to_string());
     }
 
-    let api_key = get_provider_setting(pool, "ai_api_key")
+    let api_key = get_provider_secret(pool, "ai_api_key")
         .await
         .ok_or_else(|| "설정에서 AI API 키를 먼저 구성하세요.".to_string())?;
     let api_url = get_provider_setting(pool, "ai_api_url")
@@ -2661,6 +2722,17 @@ pub async fn refresh_skill_explanation(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn korean_content_over_8000_bytes_is_truncated_on_a_char_boundary() {
+        let content = "가".repeat(3000);
+        let truncated = super::truncate_content(&content);
+        let clipped = truncated
+            .strip_suffix("...\n\n(内容已截断)")
+            .expect("truncated content keeps the marker");
+        assert_eq!(clipped.len(), 7998);
+        assert!(clipped.chars().all(|c| c == '가'));
+    }
+
+    #[test]
     fn raw_github_install_url_keeps_the_installed_source_directory() {
         let (repo, path) = super::github_origin_from_raw_url(
             "https://raw.githubusercontent.com/acme/skills/main/skills/demo/SKILL.md",
@@ -2670,6 +2742,109 @@ mod tests {
         assert_eq!(repo.branch, "main");
         assert_eq!(path, "skills/demo");
         assert!(super::github_origin_from_raw_url("https://example.com/demo/SKILL.md").is_none());
+    }
+
+    fn marketplace_snapshot(files: &[(&str, &str)]) -> github_import::GitHubRepoSnapshot {
+        github_import::GitHubRepoSnapshot {
+            files: files
+                .iter()
+                .map(|(path, content)| {
+                    (
+                        path.to_string(),
+                        github_import::SnapshotFile {
+                            bytes: content.as_bytes().to_vec(),
+                            executable: false,
+                        },
+                    )
+                })
+                .collect(),
+            via_mirror: false,
+        }
+    }
+
+    fn marketplace_repo() -> github_import::GitHubRepoRef {
+        github_import::GitHubRepoRef {
+            owner: "acme".to_string(),
+            repo: "skills".to_string(),
+            branch: "main".to_string(),
+            normalized_url: "https://github.com/acme/skills".to_string(),
+        }
+    }
+
+    async fn marketplace_central_dir(pool: &crate::db::DbPool) -> TempDir {
+        let central = tempdir().expect("central");
+        sqlx::query("UPDATE agents SET global_skills_dir = ? WHERE id = 'central'")
+            .bind(central.path().to_string_lossy().into_owned())
+            .execute(pool)
+            .await
+            .expect("central dir");
+        central
+    }
+
+    #[tokio::test]
+    async fn marketplace_install_copies_the_whole_skill_folder_only() {
+        let (pool, _dir) = setup_test_db().await;
+        let central = marketplace_central_dir(&pool).await;
+        let snapshot = marketplace_snapshot(&[
+            (
+                "skills/demo/SKILL.md",
+                "---\nname: demo\ndescription: d\n---\n",
+            ),
+            ("skills/demo/scripts/run.sh", "echo hi\n"),
+            ("skills/demo/references/guide.md", "guide\n"),
+            (
+                "skills/other/SKILL.md",
+                "---\nname: other\ndescription: o\n---\n",
+            ),
+        ]);
+
+        let outcome = super::install_marketplace_github_skill(
+            &pool,
+            marketplace_repo(),
+            None,
+            snapshot,
+            "skills/demo",
+        )
+        .await
+        .expect("install");
+
+        assert!(matches!(
+            outcome,
+            super::MarketplaceInstallOutcome::Installed
+        ));
+        let target = central.path().join("demo");
+        assert!(target.join("SKILL.md").is_file());
+        assert!(target.join("scripts/run.sh").is_file());
+        assert!(target.join("references/guide.md").is_file());
+        assert!(!central.path().join("other").exists());
+        assert!(crate::db::get_skill_by_id(&pool, "demo")
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn marketplace_install_of_root_skill_asks_for_folder_selection_without_writing() {
+        let (pool, _dir) = setup_test_db().await;
+        let central = marketplace_central_dir(&pool).await;
+
+        let outcome = super::install_marketplace_github_skill(
+            &pool,
+            marketplace_repo(),
+            None,
+            github_import::GitHubRepoSnapshot::default(),
+            ".",
+        )
+        .await
+        .expect("outcome");
+
+        match outcome {
+            super::MarketplaceInstallOutcome::NeedsFolderSelection { repo_url } => {
+                assert_eq!(repo_url, "https://github.com/acme/skills");
+            }
+            other => panic!("expected folder selection, got {other:?}"),
+        }
+        assert_eq!(std::fs::read_dir(central.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -2734,14 +2909,15 @@ mod tests {
         cache_skill_explanation, classify_reqwest_error, derive_models_url,
         detect_explanation_api_protocol, extract_dir_path, fallback_models, format_reqwest_error,
         get_fallback_endpoint, load_cached_skill_explanation,
-        load_english_skill_explanation_fallback, marketplace_skills_from_candidates,
-        models_fetch_url, normalize_translation_target, parse_models_dev_provider,
-        parse_models_response, parse_translation_response, registry_has_cached_skills,
-        resolve_api_protocol, resolve_custom_url, search_marketplace_skills_impl,
-        sync_registry_impl, translate_skill_description_impl, tree_entries_under_dir,
-        ExplanationApiProtocol, ExplanationErrorKind, RegistryCacheMetadata, RegistrySyncStatus,
-        SyncRegistryOptions,
+        load_english_skill_explanation_fallback, marketplace_skill_installed,
+        marketplace_skills_from_candidates, models_fetch_url, normalize_translation_target,
+        parse_models_dev_provider, parse_models_response, parse_translation_response,
+        registry_has_cached_skills, resolve_api_protocol, resolve_custom_url,
+        search_marketplace_skills_impl, sync_registry_impl, translate_skill_description_impl,
+        tree_entries_under_dir, ExplanationApiProtocol, ExplanationErrorKind,
+        RegistryCacheMetadata, RegistrySyncStatus, SyncRegistryOptions,
     };
+    use crate::commands::github_import;
     use crate::commands::github_import::RemoteSkillCandidate;
     use crate::db;
     use tempfile::{tempdir, TempDir};
@@ -2826,8 +3002,8 @@ mod tests {
         db::set_setting(pool, "ai_provider", "translation-test")
             .await
             .expect("set active provider");
+        crate::secrets::shared().set("ai_api_key__translation-test", "secret-key");
         for (key, value) in [
-            ("ai_api_key__translation-test", "secret-key"),
             ("ai_api_url__translation-test", api_url),
             ("ai_model__translation-test", "translation-model"),
             ("ai_protocol__translation-test", protocol),
@@ -2939,6 +3115,31 @@ mod tests {
         assert!(!lower_request.contains("x-api-key:"));
         assert!(request.contains("English"));
         assert!(request.contains("배포 도우미"));
+    }
+
+    #[test]
+    fn installed_check_uses_the_install_folder_not_the_display_name() {
+        let central = tempdir().expect("create tempdir");
+        let skills = marketplace_skills_from_candidates(
+            "reg",
+            vec![RemoteSkillCandidate {
+                source_path: "skills/agent-planner".to_string(),
+                skill_id: "agent-planner".to_string(),
+                skill_name: "Agent Planner".to_string(),
+                description: None,
+                root_directory: "skills".to_string(),
+                skill_directory_name: "agent-planner".to_string(),
+                download_url:
+                    "https://raw.githubusercontent.com/o/r/main/skills/agent-planner/SKILL.md"
+                        .to_string(),
+            }],
+        );
+        assert!(!marketplace_skill_installed(central.path(), &skills[0]));
+
+        std::fs::create_dir_all(central.path().join("agent-planner")).unwrap();
+        std::fs::write(central.path().join("agent-planner/SKILL.md"), "x").unwrap();
+
+        assert!(marketplace_skill_installed(central.path(), &skills[0]));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode};
+use sqlx::{Connection, Row};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
@@ -521,11 +522,22 @@ fn restore_entry_without_overwriting(source: &Path, target: &Path) -> Result<(),
 }
 
 fn write_manifest(layout: &RecoveryLayout, manifest: &RecoveryManifest) -> Result<(), String> {
+    persist_manifest(layout, manifest, false)
+}
+
+/// `replace`가 참이면 이미 있는 복구 정보를 임시 파일로 안전하게 바꿔 씁니다.
+fn persist_manifest(
+    layout: &RecoveryLayout,
+    manifest: &RecoveryManifest,
+    replace: bool,
+) -> Result<(), String> {
     let manifest_path = manifest_path(layout, &manifest.entry.id)?;
     let temp_path = layout
         .manifests
         .join(format!(".{}.partial", manifest.entry.id));
-    if fs::symlink_metadata(&manifest_path).is_ok() || fs::symlink_metadata(&temp_path).is_ok() {
+    if (!replace && fs::symlink_metadata(&manifest_path).is_ok())
+        || fs::symlink_metadata(&temp_path).is_ok()
+    {
         return Err("같은 복구 항목 ID가 이미 있습니다".to_string());
     }
     let contents = serde_json::to_vec_pretty(manifest)
@@ -895,20 +907,101 @@ pub async fn backup_vault_before_removal(
     source: &Path,
     label: String,
 ) -> Result<Option<RecoveryEntry>, String> {
-    let _guard = recovery_lock().await;
-    backup_vault_before_removal_locked(pool, source, label).await
+    Ok(backup_vault_with_snapshot(pool, source, label)
+        .await?
+        .map(|(_, vault)| vault))
 }
 
-async fn backup_vault_before_removal_locked(
+/// `backup_vault_before_removal`과 같지만 삭제가 실패했을 때 되돌릴 수 있도록
+/// 함께 만든 DB 스냅샷 항목까지 돌려줍니다.
+pub async fn backup_vault_with_snapshot(
     pool: &DbPool,
     source: &Path,
     label: String,
-) -> Result<Option<RecoveryEntry>, String> {
+) -> Result<Option<(RecoveryEntry, RecoveryEntry)>, String> {
+    let _guard = recovery_lock().await;
     let Some(layout) = recovery_layout(pool).await? else {
         return Ok(None);
     };
-    let _ = snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
-    create_file_backup(&layout, VAULT_TRASH, label, source, source, None).map(Some)
+    let snapshot =
+        snapshot_database_locked(pool, &layout, "보관함 변경 전 데이터베이스 백업").await?;
+    match create_file_backup(&layout, VAULT_TRASH, label, source, source, None) {
+        Ok(vault) => Ok(Some((snapshot, vault))),
+        Err(error) => {
+            if let Ok(manifest) = read_manifest(&layout, &snapshot.id) {
+                let _ = delete_manifest_entry(&layout, &manifest);
+            }
+            Err(error)
+        }
+    }
+}
+
+/// 삭제가 실패했을 때 그 시도에서 만든 복구 항목을 지웁니다.
+pub async fn discard_entries(pool: &DbPool, entries: &[&RecoveryEntry]) {
+    for entry in entries {
+        let _ = delete_recovery_entry_impl(pool, &entry.id).await;
+    }
+}
+
+/// 보관함 위치를 옮긴 뒤 원래 위치에 남은 백업을 보관 기간 동안 쓸 수 있는 휴지통 항목으로 보존합니다.
+///
+/// 복원 위치는 새 보관함 안(`restore_path`)이어야 보관함 밖 복원 금지 규칙을 지킵니다.
+pub async fn backup_vault_after_move(
+    pool: &DbPool,
+    backup: &Path,
+    restore_path: &Path,
+    label: String,
+) -> Result<Option<RecoveryEntry>, String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(None);
+    };
+    create_file_backup(&layout, VAULT_TRASH, label, backup, restore_path, None).map(Some)
+}
+
+/// 보관함 위치가 바뀌면 휴지통 항목의 원래 위치를 새 보관함 기준으로 옮깁니다.
+///
+/// 되돌릴 때는 `old_root`와 `new_root`를 바꿔 다시 호출합니다.
+pub async fn retarget_vault_trash(
+    pool: &DbPool,
+    old_root: &Path,
+    new_root: &Path,
+) -> Result<(), String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(());
+    };
+    for directory_entry in fs::read_dir(&layout.manifests)
+        .map_err(|error| format!("복구 목록을 읽을 수 없습니다: {error}"))?
+    {
+        let path = directory_entry
+            .map_err(|error| format!("복구 목록 항목을 읽을 수 없습니다: {error}"))?
+            .path();
+        let Some(id) = path.file_stem().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            || !valid_entry_id(id)
+        {
+            continue;
+        }
+        let Ok(mut manifest) = read_manifest(&layout, id) else {
+            continue;
+        };
+        if manifest.entry.kind != VAULT_TRASH {
+            continue;
+        }
+        let Some(relative) = Path::new(&manifest.entry.original_path)
+            .strip_prefix(old_root)
+            .ok()
+            .filter(|relative| !relative.as_os_str().is_empty())
+        else {
+            continue;
+        };
+        manifest.entry.original_path = new_root.join(relative).to_string_lossy().into_owned();
+        persist_manifest(&layout, &manifest, true)?;
+    }
+    Ok(())
 }
 
 async fn snapshot_database_locked(
@@ -982,6 +1075,69 @@ pub async fn snapshot_database(
     snapshot_database_locked(pool, &layout, label)
         .await
         .map(Some)
+}
+
+async fn blank_secrets_in_database_file(path: &Path) -> Result<(), String> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .journal_mode(SqliteJournalMode::Delete);
+    let mut connection = SqliteConnection::connect_with(&options)
+        .await
+        .map_err(|error| format!("DB 백업을 열 수 없습니다 ({}): {error}", path.display()))?;
+    let result = async {
+        let secrets = db::plaintext_secret_settings(&mut connection).await?;
+        // 지운 값이 파일의 빈 공간에 남지 않도록 덮어쓴다.
+        sqlx::query("PRAGMA secure_delete = ON")
+            .execute(&mut connection)
+            .await
+            .map_err(|error| error.to_string())?;
+        for (key, _) in secrets {
+            sqlx::query("UPDATE settings SET value = '' WHERE key = ?")
+                .bind(key)
+                .execute(&mut connection)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = connection.close().await;
+    result.map_err(|error: String| {
+        format!(
+            "DB 백업의 비밀값을 지울 수 없습니다 ({}): {error}",
+            path.display()
+        )
+    })
+}
+
+/// 모든 DB 백업 파일에서 평문 비밀값 칸만 비운다(ADR-0003). 백업 파일과 나머지 내용은 그대로 둔다.
+/// 한 파일이 실패해도 나머지는 계속 처리하고 첫 오류를 돌려준다.
+pub async fn blank_secrets_in_database_backups(pool: &DbPool) -> Result<(), String> {
+    let _guard = recovery_lock().await;
+    let Some(layout) = recovery_layout(pool).await? else {
+        return Ok(());
+    };
+    let mut first_error = None;
+    for entry in fs::read_dir(&layout.database)
+        .map_err(|error| format!("DB 백업 목록을 읽을 수 없습니다: {error}"))?
+    {
+        let path = entry
+            .map_err(|error| format!("DB 백업 목록 항목을 읽을 수 없습니다: {error}"))?
+            .path();
+        let is_backup = path
+            .extension()
+            .is_some_and(|extension| extension == "sqlite")
+            && !path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with('.'))
+            && fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file());
+        if is_backup {
+            if let Err(error) = blank_secrets_in_database_file(&path).await {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// 기존 DB의 구조 버전이 바뀌는 경우에만 초기화 전에 백업한다.

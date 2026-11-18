@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { InlineConfirmAction } from "@/components/ui/inline-confirm-action";
 import { PlatformIcon } from "@/components/platform/PlatformIcon";
 import { SharedInstallDeleteDialog } from "@/components/skill/SharedInstallDeleteDialog";
+import { useObservedImport } from "@/components/skill/ObservedImport";
 import { SkillFrontmatterCard } from "@/components/skill/SkillFrontmatterCard";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { useSkillDetailStore } from "@/stores/skillDetailStore";
@@ -103,6 +104,17 @@ function SourceOriginBadge({ originKind }: { originKind: ClaudeSourceKind }) {
         : t("platform.originUser", {
             defaultValue: i18n.language.startsWith("zh") ? "用户来源" : "User source",
           })}
+    </span>
+  );
+}
+
+function UnmanagedSourceBadge() {
+  const { t } = useTranslation();
+
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
+      <Lock className="size-3 shrink-0" />
+      {t("platform.unmanaged")}
     </span>
   );
 }
@@ -424,6 +436,8 @@ function deriveDirPathFromFilePath(path: string): string {
  * route/shell concerns are handled outside.
  */
 export interface DiscoverMetadata {
+  /** discovered_skills 테이블의 ID. 파일 읽기 명령이 스킬 폴더를 찾는 데 쓴다. */
+  id: string;
   name: string;
   description?: string;
   platformName: string;
@@ -482,6 +496,8 @@ export function SkillDetailView({
   const installingAgentId = useSkillDetailStore((s) => s.installingAgentId);
   const error = useSkillDetailStore((s) => s.error);
   const loadDetail = useSkillDetailStore((s) => s.loadDetail);
+  const listSkillDirectory = useSkillDetailStore((s) => s.listSkillDirectory);
+  const readSkillFile = useSkillDetailStore((s) => s.readSkillFile);
   const installSkill = useSkillDetailStore((s) => s.installSkill);
   const refreshInstallations = useSkillDetailStore((s) => s.refreshInstallations);
   const storeExplanation = useSkillDetailStore((s) => s.explanation);
@@ -521,6 +537,11 @@ export function SkillDetailView({
   const setSkillUsage = useSkillUsageStore((s) => s.setSkillUsage);
   const [sharedDeleteIds, setSharedDeleteIds] = useState<string[] | null>(null);
   const deleteSkillFromAgent = useSkillUsageStore((s) => s.deleteSkillFromAgent);
+  const observedImport = useObservedImport(async () => {
+    await refreshCounts();
+    if (skillId) await refreshInstallations(skillId);
+    await onInstallationsChange?.();
+  });
 
   // Local state for filePath mode
   const [fileContent, setFileContent] = useState<string | null>(null);
@@ -568,6 +589,11 @@ export function SkillDetailView({
     return detail?.dir_path ?? null;
   }, [detail?.dir_path, discoverMetadata?.dirPath, filePath, isFileMode]);
   const skillFilePath = isFileMode ? filePath ?? null : detail?.file_path ?? null;
+  // 폴더 경로가 아니라 스킬 식별자로 서버가 스킬 폴더를 찾게 한다.
+  const skillFolderRequest = useMemo<SkillDetailRequest | null>(() => {
+    if (isFileMode) return discoverMetadata?.id ? { skillId: discoverMetadata.id } : null;
+    return detail?.id ? { skillId: detail.id, agentId, rowId: detail.row_id } : null;
+  }, [isFileMode, discoverMetadata?.id, detail?.id, detail?.row_id, agentId]);
 
   useEffect(() => {
     setRemovedAgentIds(new Set());
@@ -585,7 +611,7 @@ export function SkillDetailView({
     }
   }, [detail?.is_read_only, isCollectionPickerOpen]);
 
-  const fetchDirectoryTree = useCallback(async (dirPath: string) => {
+  const fetchDirectoryTree = useCallback(async (request: SkillDetailRequest) => {
     if (!isTauriRuntime()) {
       setDirectoryTree([]);
       setDirectoryTreeError(null);
@@ -596,29 +622,28 @@ export function SkillDetailView({
     setIsDirectoryTreeLoading(true);
     setDirectoryTreeError(null);
     try {
-      const tree = await invoke<SkillDirectoryNode[]>("list_skill_directory", { dirPath });
-      setDirectoryTree(tree);
+      setDirectoryTree(await listSkillDirectory(request));
     } catch (err) {
       setDirectoryTree([]);
       setDirectoryTreeError(String(err));
     } finally {
       setIsDirectoryTreeLoading(false);
     }
-  }, []);
+  }, [listSkillDirectory]);
 
   // ── File mode: load content from path ─────────────────────────────────
   const fetchFileContent = useCallback(async () => {
-    if (!filePath) return;
+    if (!filePath || !skillFolderRequest) return;
     setFileIsLoading(true);
     try {
-      const text = await invoke<string>("read_file_by_path", { path: filePath });
+      const text = await readSkillFile(skillFolderRequest, "SKILL.md");
       setFileContent(text);
     } catch {
       setFileContent(null);
     } finally {
       setFileIsLoading(false);
     }
-  }, [filePath]);
+  }, [filePath, skillFolderRequest, readSkillFile]);
 
   useEffect(() => {
     if (isFileMode) {
@@ -658,7 +683,7 @@ export function SkillDetailView({
   }, [explanationRequestKey, skillContent, i18n.language, loadCachedExplanation]);
 
   useEffect(() => {
-    if (!currentDirectoryPath) {
+    if (!currentDirectoryPath || !skillFolderRequest) {
       setDirectoryTree([]);
       setDirectoryTreeError(null);
       return;
@@ -667,8 +692,8 @@ export function SkillDetailView({
     setSelectedFile(null);
     setSelectedFileContent(null);
     setExpandedDirectories(new Set());
-    void fetchDirectoryTree(currentDirectoryPath);
-  }, [currentDirectoryPath, contentRevision, fetchDirectoryTree]);
+    void fetchDirectoryTree(skillFolderRequest);
+  }, [currentDirectoryPath, skillFolderRequest, contentRevision, fetchDirectoryTree]);
 
   useEffect(() => {
     if (!origin) return;
@@ -694,7 +719,13 @@ export function SkillDetailView({
   }, [directoryTree, selectedFilePath, skillFilePath]);
 
   useEffect(() => {
-    if (!selectedFilePath || !skillFilePath || selectedFilePath === skillFilePath) {
+    if (
+      !selectedFilePath ||
+      !selectedRelativePath ||
+      !skillFilePath ||
+      !skillFolderRequest ||
+      selectedFilePath === skillFilePath
+    ) {
       setSelectedFileContent(null);
       setIsSelectedFileLoading(false);
       return;
@@ -707,7 +738,7 @@ export function SkillDetailView({
 
     let cancelled = false;
     setIsSelectedFileLoading(true);
-    invoke<string>("read_file_by_path", { path: selectedFilePath })
+    readSkillFile(skillFolderRequest, selectedRelativePath)
       .then((text) => {
         if (!cancelled) {
           setSelectedFileContent(text);
@@ -727,7 +758,7 @@ export function SkillDetailView({
     return () => {
       cancelled = true;
     };
-  }, [selectedFilePath, skillFilePath]);
+  }, [selectedFilePath, selectedRelativePath, skillFilePath, skillFolderRequest, readSkillFile]);
 
   // ── Derived values ───────────────────────────────────────────────────────
 
@@ -1022,6 +1053,7 @@ export function SkillDetailView({
 
   return (
     <div className={cn("flex flex-col h-full", variant === "drawer" && "min-h-0")}>
+      {observedImport.dialog}
       {sharedDeleteIds && <SharedInstallDeleteDialog skillIds={sharedDeleteIds}
         onClose={() => setSharedDeleteIds(null)} onDeleted={async () => {
           await refreshCounts();
@@ -1406,9 +1438,31 @@ export function SkillDetailView({
                           {detail.source_kind && (
                             <SourceOriginBadge originKind={detail.source_kind} />
                           )}
-                          {detail.is_read_only && !detail.can_manage_origin && <ReadOnlySourceBadge />}
+                          {detail.is_managed === false && <UnmanagedSourceBadge />}
+                          {detail.is_read_only && !detail.can_manage_origin && detail.is_managed !== false && <ReadOnlySourceBadge />}
                         </div>
-                        {detail.is_read_only && detail.can_manage_origin ? (
+                        {detail.is_managed === false ? (
+                          <>
+                            <p className="text-xs leading-relaxed text-muted-foreground">
+                              {t("detail.unmanagedDesc")}
+                            </p>
+                            {agentId && skillId && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={observedImport.busyKey !== null}
+                                title={t("observedImport.buttonHint")}
+                                aria-label={t("observedImport.buttonLabel", { name: detail.name })}
+                                onClick={() => void observedImport.run(skillId, agentId, detail.name)}
+                              >
+                                {observedImport.busyKey !== null
+                                  ? t("observedImport.importing")
+                                  : t("observedImport.button")}
+                              </Button>
+                            )}
+                          </>
+                        ) : detail.is_read_only && detail.can_manage_origin ? (
                           <p className="text-xs leading-relaxed text-muted-foreground">
                             {t("detail.sharedOriginDesc")}
                           </p>
@@ -1479,6 +1533,7 @@ export function SkillDetailView({
                                   })}
                                 </div>
                               )}
+                              {origin.viaMirror && <div>{t("skillOrigin.viaMirror")}</div>}
                             </div>
 
                             {origin.discoveryEvidence && (

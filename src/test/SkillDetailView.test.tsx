@@ -239,6 +239,11 @@ const mockRefreshCounts = vi.fn();
 const mockRefreshInstallations = vi.fn();
 const mockSetSkillUsage = vi.fn();
 
+// 실제 store처럼 렌더링마다 같은 함수 참조를 돌려줘야 효과가 다시 실행되지 않는다.
+const mockListSkillDirectory = () => mockTauriInvoke("list_skill_directory");
+const mockReadSkillFile = (_request: unknown, relativePath: string) =>
+  mockTauriInvoke("read_skill_file", { relativePath });
+
 function buildDetailStoreState(overrides = {}) {
   return {
     detail: mockDetail,
@@ -259,6 +264,8 @@ function buildDetailStoreState(overrides = {}) {
     installSkill: mockInstallSkill,
     uninstallSkill: mockUninstallSkill,
     refreshInstallations: mockRefreshInstallations,
+    listSkillDirectory: mockListSkillDirectory,
+    readSkillFile: mockReadSkillFile,
     cleanupExplanationListeners: mockCleanupExplanationListeners,
     reset: mockReset,
     ...overrides,
@@ -340,9 +347,9 @@ describe("SkillDetailView", () => {
       if (command === "list_skill_directory") {
         return mockDirectoryTree;
       }
-      if (command === "read_file_by_path") {
-        if (args && typeof args === "object" && "path" in args) {
-          return args.path === "~/.agents/skills/frontend-design/docs/notes.txt"
+      if (command === "read_skill_file") {
+        if (args && typeof args === "object" && "relativePath" in args) {
+          return args.relativePath === "docs/notes.txt"
             ? mockNotesContent
             : mockContent;
         }
@@ -447,6 +454,35 @@ describe("SkillDetailView", () => {
     expect(screen.getByRole("region", { name: "GitHub origin" })).toBeInTheDocument();
     expect(screen.queryByText(/只读观测副本仅供查看|display-only/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Install and uninstall are unavailable for read-only|只读观测副本不可安装/)).not.toBeInTheDocument();
+  });
+
+  it("관찰 항목 상세에서 가져오기를 누르면 보관함으로 가져온 뒤 설치 상태를 다시 읽는다", async () => {
+    applyStoreMocks({
+      detail: {
+        ...mockDetail,
+        is_central: false,
+        is_read_only: true,
+        is_managed: false,
+        installations: [],
+      },
+    });
+    const base = mockTauriInvoke.getMockImplementation();
+    mockTauriInvoke.mockImplementation(async (command, args) =>
+      command === "import_observed_skill" ? null : base?.(command, args)
+    );
+    render(
+      <MemoryRouter>
+        <SkillDetailView skillId="frontend-design" agentId="claude-code" variant="drawer" />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 frontend-design" }));
+
+    await waitFor(() => expect(mockRefreshInstallations).toHaveBeenCalledWith("frontend-design"));
+    expect(mockTauriInvoke).toHaveBeenCalledWith("import_observed_skill", {
+      skillId: "frontend-design",
+      agentId: "claude-code",
+    });
   });
 
   it("shows a read-only plugin source state and blocks management actions", () => {
@@ -1071,6 +1107,7 @@ describe("SkillDetailView", () => {
             description: "Discovered skill",
             platformName: "Claude Code",
             projectName: "project",
+            id: "claude-code__project__frontend-design",
             filePath,
             dirPath: "/tmp/project/.claude/skills/frontend-design",
             isAlreadyCentral: false,
@@ -1715,9 +1752,9 @@ function mockOriginInvoke(originFixture: typeof importedOriginFixture | null) {
     if (command === "list_skill_directory") {
       return mockDirectoryTree;
     }
-    if (command === "read_file_by_path") {
-      if (args && typeof args === "object" && "path" in args) {
-        return args.path === "~/.agents/skills/frontend-design/docs/notes.txt"
+    if (command === "read_skill_file") {
+      if (args && typeof args === "object" && "relativePath" in args) {
+        return args.relativePath === "docs/notes.txt"
           ? mockNotesContent
           : mockContent;
       }
@@ -1757,7 +1794,7 @@ describe("SkillDetailView imported origin", () => {
         remoteCommitOid: "latest",
       };
       if (command === "list_skill_directory") return mockDirectoryTree;
-      if (command === "read_file_by_path") return mockContent;
+      if (command === "read_skill_file") return mockContent;
       return null;
     });
     renderView();
@@ -1765,6 +1802,12 @@ describe("SkillDetailView imported origin", () => {
     expect(screen.getByText(/\/skills\/setup\/SKILL.md/)).toBeInTheDocument();
     expect(screen.getByText(/720/)).toHaveTextContent("4");
     expect(await screen.findByText(/unknown_baseline/)).toBeInTheDocument();
+  });
+
+  it("tells the user when the install came through a third-party mirror", async () => {
+    mockOriginInvoke({ ...importedOriginFixture, viaMirror: true } as typeof importedOriginFixture);
+    renderView();
+    expect(await screen.findByText("通过第三方镜像下载，而非直接来自 GitHub")).toBeInTheDocument();
   });
 
   it.each([true, false])("asks once before updating an unknown version (accept=%s)", async (accept) => {
@@ -1783,7 +1826,7 @@ describe("SkillDetailView imported origin", () => {
       };
       if (command === "apply_skill_update") return { operationId: "update-1", recoveryEntryId: "backup-1" };
       if (command === "list_skill_directory") return mockDirectoryTree;
-      if (command === "read_file_by_path") return mockContent;
+      if (command === "read_skill_file") return mockContent;
       return [];
     });
     renderView();

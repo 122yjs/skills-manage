@@ -34,6 +34,7 @@ import {
 import { MarketplaceSkillDetailDrawer, type MarketplaceSkillDetail } from "@/components/marketplace/MarketplaceSkillDetailDrawer";
 import { GitHubRepoImportWizard } from "@/components/marketplace/GitHubRepoImportWizard";
 import { invoke, isTauriRuntime } from "@/lib/tauri";
+import { localizeBackendError } from "@/lib/backendErrors";
 import { cn } from "@/lib/utils";
 import type {
   GitHubRepoImportResult,
@@ -183,16 +184,32 @@ export function MarketplaceView() {
   // ── Handlers ───────────────────────────────────────────────────────────
 
 
+  // 루트 스킬은 포함할 하위 폴더를 고르도록 기존 가져오기 위저드를 연다.
+  async function openFolderSelection(repoUrl: string) {
+    setGitHubRepoUrl(repoUrl);
+    setIsGitHubImportOpen(true);
+    toast.info(t("marketplace.previewRootSkillOpenWizard"));
+    try {
+      await previewGitHubRepoImport(repoUrl);
+    } catch {
+      // 위저드가 미리보기 오류를 직접 보여준다.
+    }
+  }
+
   async function handleInstallFromSource(skillId: string) {
     try {
-      await installSkill(skillId);
+      const outcome = await installSkill(skillId);
+      if (outcome?.status === "needsFolderSelection") {
+        await openFolderSelection(outcome.repoUrl);
+        return;
+      }
       await rescan();
       setDetailSkill((current) =>
         current && current.id === skillId ? { ...current, installed: true } : current
       );
       toast.success(t("marketplace.installSuccess"));
     } catch (err) {
-      toast.error(String(err));
+      toast.error(localizeBackendError(err));
     }
   }
 
@@ -207,7 +224,7 @@ export function MarketplaceView() {
       );
       toast.success(t("marketplace.installSuccess"));
     } catch (err) {
-      toast.error(String(err));
+      toast.error(localizeBackendError(err));
     }
   }
 
@@ -296,9 +313,9 @@ export function MarketplaceView() {
       setPreviewStatus({
         kind: "error",
         title: lang === "zh" ? "预览加载失败" : "Failed to load preview",
-        detail: String(err),
+        detail: localizeBackendError(err),
       });
-      toast.error(String(err));
+      toast.error(localizeBackendError(err));
     } finally {
       setIsPreviewLoading(false);
     }
@@ -308,7 +325,14 @@ export function MarketplaceView() {
     setPreviewInstallingIds((prev) => new Set(prev).add(skill.name));
     try {
       if (skill.marketplaceSkillId) {
-        await installSkill(skill.marketplaceSkillId);
+        const outcome = await installSkill(skill.marketplaceSkillId);
+        if (outcome?.status === "needsFolderSelection") {
+          await openFolderSelection(outcome.repoUrl);
+          return;
+        }
+      } else if (skill.repoUrl && skill.sourcePath === ".") {
+        await openFolderSelection(skill.repoUrl);
+        return;
       } else if (skill.repoUrl && skill.sourcePath) {
         let hasConflict = skill.hasConflict;
         if (hasConflict === undefined) {
@@ -346,7 +370,7 @@ export function MarketplaceView() {
         setIsGitHubImportOpen(true);
         toast.error(t("marketplace.previewConflictOpenWizard"));
       } else {
-        toast.error(failure ? failure.message : String(err));
+        toast.error(failure ? failure.message : localizeBackendError(err));
       }
     } finally {
       setPreviewInstallingIds((prev) => {
@@ -381,7 +405,7 @@ export function MarketplaceView() {
       // Structured failures are reported inline by the wizard with the failing target;
       // keep the raw toast for legacy errors only.
       if (!toGitHubImportFailure(err)) {
-        toast.error(String(err));
+        toast.error(localizeBackendError(err));
       }
       throw err;
     }
@@ -851,7 +875,7 @@ export function MarketplaceView() {
                               files,
                             });
                           } catch (err) {
-                            toast.error(String(err));
+                            toast.error(localizeBackendError(err));
                           } finally {
                             setResolvingSkillsShUrls((prev) => {
                               const next = new Set(prev);

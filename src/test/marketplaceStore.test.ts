@@ -8,7 +8,7 @@ vi.mock("@/lib/tauri", () => ({
 
 import { invoke, listen, isTauriRuntime } from "@/lib/tauri";
 
-import { useMarketplaceStore } from "@/stores/marketplaceStore";
+import { githubImportAiSummaryKey, useMarketplaceStore } from "@/stores/marketplaceStore";
 
 const mockInvoke = vi.mocked(invoke);
 const mockListen = vi.mocked(listen);
@@ -49,6 +49,15 @@ describe("marketplaceStore", () => {
 
   it("uses a Korean prompt for GitHub import summaries", async () => {
     mockInvoke.mockResolvedValue(null);
+    useMarketplaceStore.setState((state) => ({
+      githubImport: {
+        ...state.githubImport,
+        preview: {
+          repo: { owner: "acme", repo: "skills", branch: "main", normalizedUrl: "" },
+          skills: [],
+        },
+      },
+    }));
 
     await useMarketplaceStore.getState().generateGitHubImportAiSummary(
       "skills/demo/SKILL.md",
@@ -58,10 +67,50 @@ describe("marketplaceStore", () => {
     );
 
     expect(mockInvoke).toHaveBeenNthCalledWith(1, "explain_skill_stream", {
-      skillId: "github-import:skills/demo/SKILL.md",
+      skillId: "github-import:acme/skills:skills/demo/SKILL.md",
       content: expect.stringContaining("한국어로 요약"),
       lang: "ko-KR",
     });
+  });
+
+  it("keeps GitHub import AI summaries separate per repository for the same source path", async () => {
+    const previewOf = (owner: string) => ({
+      repo: {
+        owner,
+        repo: "skills",
+        branch: "main",
+        normalizedUrl: `https://github.com/${owner}/skills`,
+      },
+      skills: [],
+    });
+    mockInvoke.mockImplementation(async (command, args) => {
+      if (command === "preview_github_repo_import") {
+        return previewOf(JSON.stringify(args).includes("repo-b") ? "repo-b" : "repo-a");
+      }
+      if (command === "get_skill_explanation") {
+        return `summary for ${(args as { skillId: string }).skillId}`;
+      }
+      return null;
+    });
+    const store = useMarketplaceStore;
+
+    await store.getState().previewGitHubRepoImport("https://github.com/repo-a/skills");
+    await store.getState().generateGitHubImportAiSummary("SKILL.md", "root", "# A", "en");
+    const keyA = githubImportAiSummaryKey(previewOf("repo-a").repo, "SKILL.md");
+    expect(store.getState().githubImport.aiSummaries[keyA]?.summary).toContain("repo-a");
+
+    await store.getState().previewGitHubRepoImport("https://github.com/repo-b/skills");
+    const keyB = githubImportAiSummaryKey(previewOf("repo-b").repo, "SKILL.md");
+    expect(store.getState().githubImport.aiSummaries[keyB]).toBeUndefined();
+
+    mockInvoke.mockClear();
+    await store.getState().generateGitHubImportAiSummary("SKILL.md", "root", "# B", "en");
+
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "explain_skill_stream",
+      expect.objectContaining({ skillId: expect.stringContaining("repo-b") }),
+    );
+    expect(store.getState().githubImport.aiSummaries[keyB]?.summary).toContain("repo-b");
   });
 
   it("uses cached sync by default and refreshes registry metadata", async () => {
@@ -616,5 +665,32 @@ describe("marketplaceStore", () => {
     useMarketplaceStore.getState().clearGitHubImportFailure();
 
     expect(useMarketplaceStore.getState().githubImport.importFailure).toBeNull();
+  });
+});
+
+describe("marketplaceStore single install", () => {
+  it("leaves a root skill uninstalled and returns the folder selection request", async () => {
+    mockInvoke.mockReset();
+    useMarketplaceStore.setState({
+      skills: [
+        {
+          id: "r::root",
+          registry_id: "r",
+          name: "root",
+          description: null,
+          download_url: "https://raw.githubusercontent.com/acme/root/main/SKILL.md",
+          is_installed: false,
+          synced_at: "2026-01-01T00:00:00Z",
+        },
+      ] as never,
+      installingIds: new Set(),
+    });
+    const outcome = { status: "needsFolderSelection", repoUrl: "https://github.com/acme/root" };
+    mockInvoke.mockResolvedValueOnce(outcome);
+
+    await expect(useMarketplaceStore.getState().installSkill("r::root")).resolves.toEqual(outcome);
+
+    expect(useMarketplaceStore.getState().skills[0].is_installed).toBe(false);
+    expect(useMarketplaceStore.getState().installingIds.size).toBe(0);
   });
 });

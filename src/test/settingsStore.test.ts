@@ -50,9 +50,11 @@ describe("settingsStore", () => {
       scanDirectories: [],
       isLoadingScanDirs: false,
       error: null,
-      githubPat: "",
+      githubPatConfigured: false,
+      secretKeychainAvailable: true,
       isLoadingGitHubPat: false,
       isSavingGitHubPat: false,
+      githubMirrorEnabled: false,
     });
     vi.clearAllMocks();
   });
@@ -341,40 +343,63 @@ describe("settingsStore", () => {
     expect(useSettingsStore.getState().error).toBeNull();
   });
 
-  it("loadGitHubPat reads the saved github_pat setting", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(" github_pat_123 ");
+  it("loadGitHubPat receives only whether a token is configured", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ configured: true, keychainAvailable: false });
 
     await useSettingsStore.getState().loadGitHubPat();
 
-    expect(invoke).toHaveBeenCalledWith("get_setting", { key: "github_pat" });
-    expect(useSettingsStore.getState().githubPat).toBe(" github_pat_123 ");
+    expect(invoke).toHaveBeenCalledWith("get_secret_status", { key: "github_pat" });
+    expect(useSettingsStore.getState().githubPatConfigured).toBe(true);
+    expect(useSettingsStore.getState().secretKeychainAvailable).toBe(false);
     expect(useSettingsStore.getState().isLoadingGitHubPat).toBe(false);
   });
 
-  it("saveGitHubPat persists a trimmed github_pat setting", async () => {
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+  it("saveGitHubPat sends the token to the keychain command and keeps only the configured flag", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ configured: true, keychainAvailable: true });
 
     await useSettingsStore.getState().saveGitHubPat("  github_pat_abc  ");
 
-    expect(invoke).toHaveBeenCalledWith("set_setting", {
+    expect(invoke).toHaveBeenCalledWith("set_secret", {
       key: "github_pat",
       value: "  github_pat_abc  ",
     });
-    expect(useSettingsStore.getState().githubPat).toBe("github_pat_abc");
+    expect(useSettingsStore.getState().githubPatConfigured).toBe(true);
+    expect(JSON.stringify(useSettingsStore.getState())).not.toContain("github_pat_abc");
     expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
   });
 
-  it("clearGitHubPat clears the saved github_pat setting", async () => {
-    useSettingsStore.setState({ githubPat: "github_pat_abc" });
-    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+  it("clearGitHubPat clears the saved token", async () => {
+    useSettingsStore.setState({ githubPatConfigured: true });
+    vi.mocked(invoke).mockResolvedValueOnce({ configured: false, keychainAvailable: true });
 
     await useSettingsStore.getState().clearGitHubPat();
 
-    expect(invoke).toHaveBeenCalledWith("set_setting", {
+    expect(invoke).toHaveBeenCalledWith("set_secret", {
       key: "github_pat",
       value: "",
     });
-    expect(useSettingsStore.getState().githubPat).toBe("");
+    expect(useSettingsStore.getState().githubPatConfigured).toBe(false);
     expect(useSettingsStore.getState().isSavingGitHubPat).toBe(false);
+  });
+
+  it("loadGitHubMirror treats an unset github_mirror_enabled as off", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+
+    await useSettingsStore.getState().loadGitHubMirror();
+
+    expect(invoke).toHaveBeenCalledWith("get_setting", { key: "github_mirror_enabled" });
+    expect(useSettingsStore.getState().githubMirrorEnabled).toBe(false);
+  });
+
+  it("setGitHubMirror persists the toggle as a github_mirror_enabled setting", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await useSettingsStore.getState().setGitHubMirror(true);
+
+    expect(invoke).toHaveBeenCalledWith("set_setting", {
+      key: "github_mirror_enabled",
+      value: "true",
+    });
+    expect(useSettingsStore.getState().githubMirrorEnabled).toBe(true);
   });
 });
