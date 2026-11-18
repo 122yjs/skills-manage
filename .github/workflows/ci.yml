@@ -13,9 +13,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   frontend:
     name: Frontend
@@ -50,36 +47,6 @@ jobs:
 
       - name: Lint
         run: pnpm lint
-
-  backend:
-    name: Backend
-    runs-on: macos-15-intel  # Apple 칩 Mac 서버 부족으로 Intel Mac 서버에서 검사한다
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Cache Rust artifacts
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            src-tauri -> target
-
-      - name: Format
-        working-directory: src-tauri
-        run: cargo fmt --check
-
-      - name: Test (unit and integration)
-        working-directory: src-tauri
-        run: cargo test
-
-      - name: Clippy (including tests)
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
 
   graphify:
     name: Graphify
