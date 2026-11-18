@@ -193,6 +193,7 @@
 | **그대로 쓸 수 있는 것** | React 화면 **31,619줄**, SQLite 스키마 **20개 테이블**, Vitest 화면 테스트 **921개** | React 화면 **31,619줄**, SQLite 스키마 **20개 테이블**, Vitest 화면 테스트 **921개**, `web-dashboard/` 구조 | React 화면 **31,619줄**, SQLite 스키마 **20개 테이블**, Vitest 화면 테스트 **921개** | **Rust 핵심 28,153줄 + Rust 테스트 672개 + Swift 번역 367줄 + React 31,619줄 + Vitest 921개 + SQLite 스키마 20개 테이블 전부 그대로 유지** |
 | **새로 만들어야 할 것** | • Preload `contextBridge` + `ipcMain.handle` 123개 채널 ([공식 문서](https://www.electronjs.org/docs/latest/tutorial/ipc))<br>• `safeStorage` 기반 키체인 어댑터·기존 `keyring` 마이그레이션 ([공식 문서](https://www.electronjs.org/docs/latest/api/safe-storage))<br>• macOS Swift 번역용 N-API 네이티브 애드온(+ 숨김 `NSWindow`)<br>• Electron Builder 패키징·서명<br>• (휴대폰 접속 원하면 내부 HTTP 서버 추가) | • HTTP API(122개 라우트) + SSE(3개 스트림)<br>• 로컬/원격 인증(토큰·세션·CORS/Origin 검증)<br>• OS 키체인용 `@napi-rs/keyring` 네이티브 모듈<br>• macOS 번역용 별도 Swift 보조 바이너리(또는 기능 제외/API 대체)<br>• 백그라운드 데몬·자동 시작(LaunchAgent)·CLI/설치기 | • Wails 바인딩(데스크톱, [공식 문서](https://v3.wails.io/concepts/architecture)) **또는** Go `net/http`+SSE 서버 + 인증(웹·휴대폰)<br>• SQLite 드라이버(`modernc.org/sqlite` 등) & `zalando/go-keyring` 어댑터<br>• macOS Swift 번역용 CGo/Swift 브리지(또는 제외)<br>• Wails 또는 LaunchAgent 패키징 | • Rust HTTP 서버(`axum`) 라우터·SSE 엔드포인트 (약 500~1,000줄)<br>• 원격·로컬 접속용 토큰/Origin 인증 미들웨어<br>• `src/lib/tauri.ts` `fetch` + SSE 분기 & 3개 직접 import 파일 정리<br>• 웹용 폴더 선택 대체 UI (`plugin-dialog` 2곳)<br>• 데스크톱 없는 모드(헤드리스 데몬) 실행 진입점 |
 | **보안·데이터 경계(#18, ADR-0002·0003) 위험도** | **높음**: 3장 표의 20+ 경계 함수를 JS/Node FS API(`lstat`/`realpath`/원자적 `rename`)로 전면 재구현·재검증 필요 | **높음**: 3장 표의 20+ 경계 재구현 필요. 특히 `node:sqlite`는 Stability 1.2(Release candidate)이며 동기 API([공식 문서](https://nodejs.org/api/sqlite.html)), OS 키체인도 별도 네이티브 애드온 필요 | **높음**: 3장 표의 20+ 경계 Go `os.Lstat`/`EvalSymlinks`로 전면 재구현 필요. Windows 심볼릭 링크·권한 처리 차이도 다시 검증 필요 | **매우 낮음**: #18·ADR-0002·0003을 지키는 Rust 구현과 672개 테스트가 **손대지 않은 채 그대로 동작** (단, HTTP 인증·CSRF·Origin 경계만 새로 검증) |
+| **확장 고려: 화면 없는 Linux 서버(헤드리스)** | **부적합**: X11/Wayland 화면 없이는 가상 화면 필요, `safeStorage`도 평문 암호화(`basic_text`)로 떨어짐 | **가능**: 화면 없이 서버 단독 실행 가능(키체인은 메모리 폴백, Swift 번역·`xdg-open` 끄기) | **Go 서버만 가능 / Wails 불가**(화면 필수): 서버 시 키체인 메모리 폴백, Swift 번역·`xdg-open` 끄기 | **분리 실행 시 가능**: `tauri` GUI 없이 핵심 + `axum` 타깃만 띄우면 그대로 동작(Swift 번역 끄기, 키체인 `MemoryStore` 폴백) |
 
 ### 5-2. 대안별 주요 기술 1차 근거 (사실)
 
@@ -218,6 +219,23 @@
   2. **`Cargo.lock`에 이미 있는 HTTP 관련 크레이트 (사실)**:
      - `axum` 자체는 `Cargo.lock`에 **없다**(새 직접 의존성 1개 추가 필요).
      - 하지만 `axum`의 핵심 기반 크레이트인 **`http` (1.4.0)**, **`hyper` (1.9.0)**, **`hyper-util`**, **`tower` (0.5.3)**, **`tower-http` (0.6.8)**, **`tokio`**, **`rustls`**는 이미 `reqwest`(0.12/0.13)와 `tauri`(2.10.3)가 `Cargo.lock`에 끌어와 놓은 상태다([docs.rs/axum](https://docs.rs/axum/latest/axum/), [Tauri v2 Calling Rust](https://v2.tauri.app/develop/calling-rust/)). 따라서 `axum`을 추가해도 네트워크·비동기 핵심 스택을 중복으로 늘리지 않고 재사용할 수 있다. (참고로 [`tauri-plugin-axum`](https://docs.rs/crate/tauri-plugin-axum/0.9.0)은 TCP 포트가 아니라 커스텀 프로토콜 `axum://localhost`를 쓰며 스트리밍을 지원하지 않으므로, 휴대폰/웹 접속 목적이라면 별도 포트의 `axum::serve`가 맞다.)
+
+### 5-3. 확장 고려: 화면 없는 Linux 서버(헤드리스)에서 돌릴 수 있나 (사실)
+
+> 아직 결정되지 않은 향후 확장(화면 없는 Linux 서버 등) 가능성을 가늠하기 위한 참고 정리다.
+
+- **OS 고유 기능의 macOS 전용 여부와 Linux 헤드리스 동작**:
+  - **Swift 기기 내 번역 (`on_device_translation.rs:25-42`, `build.rs:2`)**: **macOS 전용**(`#[cfg(target_os = "macos")]`). Linux에서는 **미지원(자동 기능 끄기)**이며 API 번역(`translate_skill_description_with_api`)으로 **대체 가능**.
+  - **키체인 백엔드 (`secrets.rs:29-30, 84-134`, ADR-0003)**: macOS 전용은 아니나 Linux에서는 데스크톱 D-Bus Secret Service에 의존하므로, 화면 없는 헤드리스 Linux에서는 키체인을 쓸 수 없어 **`MemoryStore`(재시작 시 재입력)로 자동 전환(대체 가능)**.
+  - **`gh` CLI 연동 (`github_import.rs:1352-1409`)**: macOS 전용 아님. Linux 서버에 `gh`가 설치·로그인돼 있으면 **그대로 동작**하고, 없으면 `cli_missing`으로 **기능 끄기** 후 토큰 입력으로 대체. (단, `agents.rs:122-130`의 추가 탐색 경로와 `discover.rs`의 macOS Obsidian 경로는 **macOS 전용**이며 Linux에서는 일반 `PATH`와 설정된 스캔 경로를 사용.)
+  - **파일 권한·심볼릭 링크 (`linker.rs:85-88`, `platform_skill_control.rs:399-400`, `github_import.rs:1927-1953`, `recovery.rs:337-351`, `skill_duplicates.rs:66-70`)**: 모두 `#[cfg(unix)]` 공용 코드라 **Linux에서도 그대로 동작**한다.
+  - **파일 관리자 열기 (`skills.rs:1642-1668`)**: Linux에서는 `xdg-open`을 호출하므로 화면 없는 서버에서는 **기능 끄기**(UI 비노출)가 필요하다.
+
+- **대안별 헤드리스 Linux 실행 가능성 요약**:
+  - **(a) Electron (TS)**: **부적합** — 화면(X11/Wayland) 없이는 가상 디스플레이(`xvfb`)가 필요하고, `safeStorage`도 Linux 비밀 저장소가 없으면 평문 암호화(`basic_text`)로 떨어져 별도 차단이 필요하다([Electron safeStorage 문서](https://www.electronjs.org/docs/latest/api/safe-storage)).
+  - **(b) TS 로컬 서버(Node/Bun) + 웹 화면**: **바로 가능** — 화면 없이 서버만 띄울 수 있다(단, 키체인은 메모리 폴백, Swift 번역·`xdg-open`은 기능 끄기 필요).
+  - **(c) Go (Wails 또는 Go 서버)**: **Go HTTP 서버 모드는 가능, Wails 데스크톱 모드는 불가(화면 필수)** — 서버 모드 시 키체인은 메모리 폴백, Swift 번역·`xdg-open`은 기능 끄기.
+  - **(d) Rust 핵심 유지 + 로컬 HTTP 통로 추가**: **분리 실행 시 가능** — 현재 `lib.rs`의 `tauri::Builder`는 GUI 창을 전제로 하므로, `tauri` 없이 핵심 모듈 + `axum` 서버만 띄우는 헤드리스 실행 타깃(CLI/데몬)을 두면 POSIX 심볼릭 링크·권한·SQLite는 그대로 동작하고 Swift 번역은 자동 비활성(`unsupported_platform`), 키체인은 `MemoryStore` 폴백으로 돌아간다.
 
 ---
 
